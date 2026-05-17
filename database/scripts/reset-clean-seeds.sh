@@ -36,7 +36,7 @@ fi
 
 JDBC_PREFIX="jdbc:postgresql://"
 if [[ "$DB_JDBC_URL" != ${JDBC_PREFIX}* ]]; then
-  echo "Only PostgreSQL JDBC URLs are supported. Current DB_URL: $DB_JDBC_URL" >&2
+  echo "Only PostgreSQL-wire JDBC URLs are supported. Current DB_URL: $DB_JDBC_URL" >&2
   exit 1
 fi
 

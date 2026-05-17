@@ -1,6 +1,7 @@
 package com.sism.iam.application.service;
 
 import com.sism.iam.domain.user.User;
+import com.sism.iam.domain.user.UsernamePolicy;
 import com.sism.iam.domain.access.Role;
 import com.sism.iam.domain.access.RoleRepository;
 import com.sism.iam.domain.user.UserRepository;
@@ -40,9 +41,7 @@ public class UserService {
             Long orgId,
             List<String> roleCodes
     ) {
-        if (username == null || username.isBlank()) {
-            throw new IllegalArgumentException("Username is required");
-        }
+        UsernamePolicy.validate(username);
         if (userRepository.findByUsername(username).isPresent()) {
             throw new IllegalArgumentException("Username already exists");
         }

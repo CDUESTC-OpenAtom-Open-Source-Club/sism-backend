@@ -5,6 +5,7 @@ import com.sism.iam.application.dto.LoginRequest;
 import com.sism.iam.application.dto.LoginResponse;
 import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.user.UserRepository;
+import com.sism.iam.domain.user.UsernamePolicy;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.shared.domain.exception.AuthenticationException;
 import lombok.RequiredArgsConstructor;
@@ -81,9 +82,7 @@ public class AuthService {
      */
     @Transactional
     public User register(String username, String password, String realName) {
-        if (username == null || username.isBlank()) {
-            throw new IllegalArgumentException("请输入用户名");
-        }
+        UsernamePolicy.validate(username);
         if (password == null || password.isBlank()) {
             throw new IllegalArgumentException("请输入密码");
         }

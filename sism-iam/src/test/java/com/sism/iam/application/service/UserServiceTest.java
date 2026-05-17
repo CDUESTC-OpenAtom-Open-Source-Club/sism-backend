@@ -297,4 +297,28 @@ class UserServiceTest {
         assertEquals("admin_user", created.getUsername());
     }
 
+    @Test
+    @DisplayName("Should reject user creation when username is too short")
+    void shouldRejectUserCreationWhenUsernameIsTooShort() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> userService.createUser("ab", "password", "John Doe", null, null, 10L, List.of())
+        );
+
+        assertEquals("用户名长度需为3-20个字符", exception.getMessage());
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
+    @DisplayName("Should reject user creation when username contains invalid characters")
+    void shouldRejectUserCreationWhenUsernameContainsInvalidCharacters() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> userService.createUser("john-doe", "password", "John Doe", null, null, 10L, List.of())
+        );
+
+        assertEquals("用户名只能包含字母、数字和下划线", exception.getMessage());
+        verify(userRepository, never()).save(any(User.class));
+    }
+
 }

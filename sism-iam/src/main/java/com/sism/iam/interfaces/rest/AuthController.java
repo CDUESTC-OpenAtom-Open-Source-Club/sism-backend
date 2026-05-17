@@ -12,6 +12,7 @@ import com.sism.shared.application.dto.CurrentUser;
 import com.sism.iam.application.dto.LoginRequest;
 import com.sism.iam.application.dto.LoginResponse;
 import com.sism.iam.domain.user.User;
+import com.sism.iam.domain.user.UsernamePolicy;
 import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.SysOrg;
 import com.sism.organization.domain.OrganizationRepository;
@@ -428,7 +429,8 @@ public class AuthController {
     @lombok.Data
     public static class RegisterRequest {
         @NotBlank(message = "用户名不能为空")
-        @Size(max = 64, message = "用户名长度不能超过64个字符")
+        @Size(min = UsernamePolicy.MIN_LENGTH, max = UsernamePolicy.MAX_LENGTH, message = "用户名长度需为3-20个字符")
+        @Pattern(regexp = UsernamePolicy.REGEX, message = "用户名只能包含字母、数字和下划线")
         private String username;
 
         @NotBlank(message = "密码不能为空")
@@ -442,6 +444,9 @@ public class AuthController {
 
     @lombok.Data
     public static class CreateUserRequest {
+        @NotBlank(message = "用户名不能为空")
+        @Size(min = UsernamePolicy.MIN_LENGTH, max = UsernamePolicy.MAX_LENGTH, message = "用户名长度需为3-20个字符")
+        @Pattern(regexp = UsernamePolicy.REGEX, message = "用户名只能包含字母、数字和下划线")
         private String username;
         private String password;
         private String realName;

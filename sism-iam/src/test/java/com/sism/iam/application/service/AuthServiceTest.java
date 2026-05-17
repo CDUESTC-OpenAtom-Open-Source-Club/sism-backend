@@ -297,6 +297,19 @@ class AuthServiceTest {
     }
 
     @Test
+    @DisplayName("Should throw exception when register with invalid username characters")
+    void shouldThrowExceptionWhenRegisterWithInvalidUsernameCharacters() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> authService.register("test-user", "password123", "Test User")
+        );
+
+        assertEquals("用户名只能包含字母、数字和下划线", exception.getMessage());
+        verify(passwordEncoder, never()).encode(anyString());
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    @Test
     @DisplayName("Should validate token successfully")
     void shouldValidateTokenSuccessfully() {
         String token = "valid.jwt.token";

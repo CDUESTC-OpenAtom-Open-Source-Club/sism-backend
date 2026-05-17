@@ -39,7 +39,7 @@ function parseJdbcUrl(jdbcUrl) {
   );
 
   if (!match || !match.groups) {
-    fail(`Unsupported DB_URL: ${jdbcUrl}`);
+    fail(`Unsupported DB_URL. Expected PostgreSQL-wire JDBC URL, got: ${jdbcUrl}`);
   }
 
   return {
