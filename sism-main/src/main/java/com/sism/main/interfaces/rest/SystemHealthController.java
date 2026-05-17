@@ -31,7 +31,7 @@ public class SystemHealthController {
     public ResponseEntity<ApiResponse<Map<String, Object>>> health() {
         LivenessState livenessState = applicationAvailability.getLivenessState();
         ReadinessState readinessState = applicationAvailability.getReadinessState();
-        boolean up = livenessState == LivenessState.CORRECT && readinessState == ReadinessState.ACCEPTING_TRAFFIC;
+        boolean up = livenessState == LivenessState.CORRECT;
         return ResponseEntity.ok(ApiResponse.success(Map.of(
                 "status", up ? "UP" : "DOWN",
                 "service", "sism-backend",

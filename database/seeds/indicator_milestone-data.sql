@@ -229,17 +229,6 @@ VALUES
     -- ========== 2043 保卫处 - 开展消防安全应急演练与培训 ==========
     (6127, 2043, '制定演练计划', '制定全年消防安全应急演练与培训计划', DATE '2026-03-31', 'IN_PROGRESS', 1, NOW(), NOW(), 33, false),
     (6128, 2043, '组织核心区演练', '组织教学楼、实验室等核心区域消防演练', DATE '2026-06-30', 'NOT_STARTED', 2, NOW(), NOW(), 67, false),
-    (6129, 2043, '全面复盘总结', '完成全年消防培训与演练的复盘与总结', DATE '2026-12-31', 'NOT_STARTED', 3, NOW(), NOW(), 100, false)
-ON CONFLICT (id) DO UPDATE
-SET
-    indicator_id = EXCLUDED.indicator_id,
-    milestone_name = EXCLUDED.milestone_name,
-    milestone_desc = EXCLUDED.milestone_desc,
-    due_date = EXCLUDED.due_date,
-    status = EXCLUDED.status,
-    sort_order = EXCLUDED.sort_order,
-    updated_at = EXCLUDED.updated_at,
-    target_progress = EXCLUDED.target_progress,
-    is_paired = EXCLUDED.is_paired;
+    (6129, 2043, '全面复盘总结', '完成全年消防培训与演练的复盘与总结', DATE '2026-12-31', 'NOT_STARTED', 3, NOW(), NOW(), 100, false);
 
 COMMIT;

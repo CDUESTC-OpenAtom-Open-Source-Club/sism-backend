@@ -1,0 +1,2 @@
+ALTER TABLE public.sys_user
+    ADD COLUMN IF NOT EXISTS token_version BIGINT NOT NULL DEFAULT 0;

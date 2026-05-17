@@ -1,0 +1,6 @@
+spring:
+  flyway:
+    locations: classpath:db/migration-opentenbase,classpath:db/migration-opentenbase-followups
+    placeholders:
+      otb_table_distribution: " DISTRIBUTE BY REPLICATION TO GROUP default_group"
+      sys_org_updated_at_trigger: ""
