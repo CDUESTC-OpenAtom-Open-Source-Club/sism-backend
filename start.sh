@@ -98,6 +98,7 @@ set +a
 
 echo "✓ 已加载环境文件: $SCRIPT_DIR/$ENV_FILE"
 echo "✓ 当前数据库: ${DB_URL:-<missing DB_URL>}"
+echo "✓ 当前 Profile: ${SPRING_PROFILES_ACTIVE:-default}"
 echo ""
 
 APP_JAVA_OPTS="${APP_JAVA_OPTS:-${JAVA_OPTS:-$DEFAULT_APP_JAVA_OPTS}}"

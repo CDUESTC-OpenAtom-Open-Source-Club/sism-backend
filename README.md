@@ -95,6 +95,10 @@ DB_URL=jdbc:postgresql://localhost:5432/sism_dev
 DB_USERNAME=your_username
 DB_PASSWORD=your_password
 
+# 数据库 profile 切换
+# PostgreSQL 默认留空
+SPRING_PROFILES_ACTIVE=
+
 # JWT 配置 (至少 256 位)
 JWT_SECRET=your_jwt_secret_key_minimum_256_bits_long
 
@@ -105,6 +109,21 @@ APP_NAME=sism-backend
 # Swagger 配置 (可选，生产环境建议禁用)
 SWAGGER_ENABLED=true
 ```
+
+切换到 OpenTenBase 时，仍然只改这个 `.env` 文件：
+
+```properties
+DB_URL="jdbc:postgresql://127.0.0.1:33004/postgres?stringtype=unspecified&sslmode=disable&connectTimeout=10&socketTimeout=30&tcpKeepAlive=true"
+DB_USERNAME=opentenbase
+DB_PASSWORD=unused_for_trust_auth
+SPRING_PROFILES_ACTIVE=opentenbase
+```
+
+说明：
+
+- PostgreSQL：默认 profile，`SPRING_PROFILES_ACTIVE` 留空即可
+- OpenTenBase：设置 `SPRING_PROFILES_ACTIVE=opentenbase`
+- 两种数据库都通过同一个 `.env` 管理
 
 #### 3. 创建数据库
 

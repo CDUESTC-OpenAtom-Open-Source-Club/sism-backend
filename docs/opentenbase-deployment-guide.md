@@ -30,15 +30,28 @@ replacement. The risk is in:
 
 ## Fast Verification Flow
 
-### 1. Point `.env` to OpenTenBase
+### 1. Use the same `.env` file and point it to OpenTenBase
 
 Example:
 
 ```properties
-DB_URL=jdbc:postgresql://otb-host:5432/strategic?stringtype=unspecified&sslmode=disable&connectTimeout=10&socketTimeout=30&tcpKeepAlive=true
+DB_URL="jdbc:postgresql://otb-host:5432/strategic?stringtype=unspecified&sslmode=disable&connectTimeout=10&socketTimeout=30&tcpKeepAlive=true"
+DB_USERNAME=opentenbase
+DB_PASSWORD=change-me
+SPRING_PROFILES_ACTIVE=opentenbase
+```
+
+For PostgreSQL, keep using the same `.env` file and either clear
+`SPRING_PROFILES_ACTIVE` or omit it:
+
+```properties
+DB_URL=jdbc:postgresql://localhost:5432/strategic?stringtype=unspecified&sslmode=disable&connectTimeout=10&socketTimeout=30&tcpKeepAlive=true
 DB_USERNAME=postgres
 DB_PASSWORD=change-me
+SPRING_PROFILES_ACTIVE=
 ```
+
+This keeps database switching inside one configuration file.
 
 ### 2. Run endpoint validation
 
