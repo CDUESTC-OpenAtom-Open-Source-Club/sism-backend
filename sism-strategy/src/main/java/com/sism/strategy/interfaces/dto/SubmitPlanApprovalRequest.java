@@ -8,4 +8,6 @@ public class SubmitPlanApprovalRequest {
 
     @NotBlank(message = "Workflow code is required")
     private String workflowCode;
+
+    private String comment;
 }

@@ -283,13 +283,15 @@ public class PlanApplicationService {
         Plan saved = planRepository.save(plan);
         publishAndClearEvents(saved);
         boolean resumedWithdrawnWorkflow = planWorkflowRuntimeService.reactivateWithdrawnWorkflowCurrentStep(
-                existingSnapshot == null ? null : existingSnapshot.getWorkflowInstanceId());
+                existingSnapshot == null ? null : existingSnapshot.getWorkflowInstanceId(),
+                request == null ? null : request.getComment());
         if (!resumedWithdrawnWorkflow) {
             eventPublisher.publish(new PlanSubmittedForApprovalEvent(
                     saved.getId(),
                     request.getWorkflowCode(),
                     currentUserId,
-                    currentOrgId
+                    currentOrgId,
+                    request.getComment()
             ));
         }
         return saved;

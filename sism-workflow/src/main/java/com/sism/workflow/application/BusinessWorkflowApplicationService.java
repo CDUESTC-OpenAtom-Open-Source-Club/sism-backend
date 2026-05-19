@@ -33,6 +33,7 @@ import java.util.Comparator;
 @Service
 @RequiredArgsConstructor
 public class BusinessWorkflowApplicationService {
+    private static final String SUBMIT_COMMENT_VARIABLE = "submitComment";
 
     private static final String PLAN_ENTITY_TYPE = "PLAN";
     private static final String PLAN_REPORT_ENTITY_TYPE = "PLAN_REPORT";
@@ -97,10 +98,10 @@ public class BusinessWorkflowApplicationService {
         instance.setEntityId(request.getBusinessEntityId());
 
         // 4. 启动实例
-        AuditInstance started = workflowApplicationService.startAuditInstance(
-                instance,
-                userId,
-                orgId);
+        String submitComment = resolveSubmitComment(request);
+        AuditInstance started = submitComment == null
+                ? workflowApplicationService.startAuditInstance(instance, userId, orgId)
+                : workflowApplicationService.startAuditInstance(instance, userId, orgId, submitComment);
 
         return workflowReadModelMapper.toInstanceResponse(started);
     }
@@ -232,15 +233,16 @@ public class BusinessWorkflowApplicationService {
             throw new SecurityException("You are not authorized to approve this task");
         }
 
+        String resolvedComment = resolveApprovalComment(request == null ? null : request.getComment());
         AuditInstance approved = workflowApplicationService.approveAuditInstance(
-                instance, userId, request.getComment());
+                instance, userId, resolvedComment);
         createApprovalResultNotification(
                 approved,
                 userId,
                 detailBeforeApproval,
                 currentStepDef,
                 true,
-                request.getComment()
+                resolvedComment
         );
 
         return workflowReadModelMapper.toInstanceResponse(approved);
@@ -251,12 +253,12 @@ public class BusinessWorkflowApplicationService {
             String taskId, WorkflowTaskDecisionRequest request, Long userId) {
         if (Boolean.TRUE.equals(request.getApproved())) {
             ApprovalRequest approvalRequest = new ApprovalRequest();
-            approvalRequest.setComment(request.getComment() != null ? request.getComment() : "APPROVED");
+            approvalRequest.setComment(resolveApprovalComment(request.getComment()));
             return approveTask(taskId, approvalRequest, userId);
         }
 
         RejectionRequest rejectionRequest = new RejectionRequest();
-        rejectionRequest.setReason(request.getComment() != null ? request.getComment() : "REJECTED");
+        rejectionRequest.setReason(resolveRejectComment(request.getComment()));
         return rejectTask(taskId, rejectionRequest, userId);
     }
 
@@ -281,15 +283,16 @@ public class BusinessWorkflowApplicationService {
             throw new SecurityException("You are not authorized to reject this task");
         }
 
+        String resolvedReason = resolveRejectComment(request == null ? null : request.getReason());
         AuditInstance rejected = workflowApplicationService.rejectAuditInstance(
-                instance, userId, request.getReason());
+                instance, userId, resolvedReason);
         createApprovalResultNotification(
                 rejected,
                 userId,
                 detailBeforeRejection,
                 currentStepDef,
                 false,
-                request.getReason()
+                resolvedReason
         );
 
         return workflowReadModelMapper.toInstanceResponse(rejected);
@@ -507,5 +510,31 @@ public class BusinessWorkflowApplicationService {
         } catch (NumberFormatException ex) {
             throw new IllegalArgumentException(fieldName + " must be a numeric value: " + value, ex);
         }
+    }
+
+    private String resolveSubmitComment(StartWorkflowRequest request) {
+        if (request == null || request.getVariables() == null) {
+            return null;
+        }
+        Object rawComment = request.getVariables().get(SUBMIT_COMMENT_VARIABLE);
+        if (!(rawComment instanceof String comment)) {
+            return null;
+        }
+        String normalized = comment.trim();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private String resolveApprovalComment(String comment) {
+        if (comment != null && !comment.trim().isEmpty()) {
+            return comment.trim();
+        }
+        return "审批通过";
+    }
+
+    private String resolveRejectComment(String comment) {
+        if (comment != null && !comment.trim().isEmpty()) {
+            return comment.trim();
+        }
+        return "审批驳回";
     }
 }

@@ -11,7 +11,7 @@ import java.util.Comparator;
 @Component
 public class SubmissionStepAutoCompletePolicy {
 
-    public void apply(AuditInstance instance, AuditStepDef firstStepDef, Long requesterId) {
+    public void apply(AuditInstance instance, AuditStepDef firstStepDef, Long requesterId, String submitComment) {
         if (instance.getStepInstances() == null || instance.getStepInstances().isEmpty()) {
             return;
         }
@@ -31,7 +31,7 @@ public class SubmissionStepAutoCompletePolicy {
 
         firstStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
         firstStep.setApprovedAt(LocalDateTime.now());
-        firstStep.setComment("系统自动完成提交流程节点");
+        firstStep.setComment(resolveSubmitComment(submitComment));
 
         AuditStepInstance nextStep = instance.getStepInstances().stream()
                 .filter(step -> !step.equals(firstStep))
@@ -45,6 +45,10 @@ public class SubmissionStepAutoCompletePolicy {
         }
     }
 
+    public void apply(AuditInstance instance, AuditStepDef firstStepDef, Long requesterId) {
+        apply(instance, firstStepDef, requesterId, null);
+    }
+
     public boolean shouldAutoCompleteSubmissionStep(AuditStepInstance firstStep, AuditStepDef firstStepDef, Long requesterId) {
         if (!AuditInstance.STEP_STATUS_PENDING.equals(firstStep.getStatus())) {
             return false;
@@ -55,5 +59,12 @@ public class SubmissionStepAutoCompletePolicy {
         }
 
         return requesterId != null && requesterId.equals(firstStep.getApproverId());
+    }
+
+    private String resolveSubmitComment(String submitComment) {
+        if (submitComment != null && !submitComment.trim().isEmpty()) {
+            return submitComment.trim();
+        }
+        return "系统自动完成提交流程节点";
     }
 }

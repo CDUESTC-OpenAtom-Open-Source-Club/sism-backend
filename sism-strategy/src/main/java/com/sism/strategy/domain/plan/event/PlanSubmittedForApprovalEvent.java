@@ -20,12 +20,14 @@ public class PlanSubmittedForApprovalEvent implements DomainEvent {
     private final String workflowCode;
     private final Long submitterId;
     private final Long submitterOrgId;
+    private final String comment;
 
     public PlanSubmittedForApprovalEvent(Long planId,
                                          String workflowCode,
                                          Long submitterId,
-                                         Long submitterOrgId) {
-        this(UUID.randomUUID().toString(), LocalDateTime.now(), planId, workflowCode, submitterId, submitterOrgId);
+                                         Long submitterOrgId,
+                                         String comment) {
+        this(UUID.randomUUID().toString(), LocalDateTime.now(), planId, workflowCode, submitterId, submitterOrgId, comment);
     }
 
     @JsonCreator
@@ -34,13 +36,15 @@ public class PlanSubmittedForApprovalEvent implements DomainEvent {
                                          @JsonProperty("planId") Long planId,
                                          @JsonProperty("workflowCode") String workflowCode,
                                          @JsonProperty("submitterId") Long submitterId,
-                                         @JsonProperty("submitterOrgId") Long submitterOrgId) {
+                                         @JsonProperty("submitterOrgId") Long submitterOrgId,
+                                         @JsonProperty("comment") String comment) {
         this.eventId = eventId;
         this.occurredOn = occurredOn;
         this.planId = planId;
         this.workflowCode = workflowCode;
         this.submitterId = submitterId;
         this.submitterOrgId = submitterOrgId;
+        this.comment = comment;
     }
 
     @Override

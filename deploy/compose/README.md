@@ -17,6 +17,9 @@ container stack.
 
 1. Copy `.env.example` to `.env`
 2. Fill in database credentials, JWT secret, allowed origins, and image tags
+3. Keep this mode as the default production path. It assumes the server runs
+   only the compose-managed PostgreSQL container and does not depend on any
+   host-level OpenTenBase experiment processes.
 3. Run:
 
 ```bash
@@ -40,6 +43,13 @@ docker compose -f docker-compose.external-db.yml ps
 
 ## Notes
 
+- Production deployment defaults to the compose-managed PostgreSQL container.
+  Host-level OpenTenBase or other database experiments are out of scope for
+  the automated deployment path.
+- If a server operator manually starts OpenTenBase on the same host for
+  experiments, they must stop those processes before running a normal
+  production deployment. The automated workflow does not coordinate or resize
+  itself around host-level OTB memory usage.
 - Empty databases must start from active Flyway `V1` baseline plus `V2+`
   migrations.
 - External OpenTenBase deployments must not rely on the internal `postgres`
@@ -52,6 +62,9 @@ docker compose -f docker-compose.external-db.yml ps
   on first deploy. It auto-generates `JWT_SECRET` and `POSTGRES_PASSWORD`, keeps
   them stable on later deploys, and only refreshes image tags plus missing
   defaults.
+- Low-memory hosts should keep the backend JVM and connection-pool sizing in
+  `.env` aligned with the compose defaults unless there is a measured reason to
+  increase them.
 - If GHCR images remain private, configure server-side `docker login` in
   advance or provide optional GHCR credentials to the workflow. Public images
   need no extra registry secret.

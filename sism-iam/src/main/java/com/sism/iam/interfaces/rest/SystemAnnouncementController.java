@@ -5,6 +5,8 @@ import com.sism.iam.application.dto.AnnouncementResponse;
 import com.sism.iam.application.dto.CreateAnnouncementRequest;
 import com.sism.iam.application.dto.UpdateAnnouncementRequest;
 import com.sism.iam.application.service.SystemAnnouncementService;
+import com.sism.organization.domain.OrgType;
+import com.sism.organization.domain.OrganizationRepository;
 import com.sism.shared.application.dto.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -25,9 +27,10 @@ import java.util.Map;
 public class SystemAnnouncementController {
 
     private final SystemAnnouncementService announcementService;
+    private final OrganizationRepository organizationRepository;
 
     @PostMapping
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("isAuthenticated()")
     @Operation(summary = "创建公告", description = "创建一条系统维护公告（草稿状态）")
     public ResponseEntity<ApiResponse<AnnouncementResponse>> create(
             @RequestBody CreateAnnouncementRequest request,
@@ -35,12 +38,16 @@ public class SystemAnnouncementController {
         if (currentUser == null) {
             return ResponseEntity.status(401).body(ApiResponse.error(2000, "未登录"));
         }
+        ResponseEntity<ApiResponse<AnnouncementResponse>> denied = denyIfNoAdminOrgAccess(currentUser);
+        if (denied != null) {
+            return denied;
+        }
         AnnouncementResponse response = announcementService.create(request, currentUser.getId());
         return ResponseEntity.status(201).body(ApiResponse.success(response));
     }
 
     @PutMapping("/{id}")
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("isAuthenticated()")
     @Operation(summary = "编辑公告", description = "编辑草稿或已撤回公告，已发布公告不允许修改")
     public ResponseEntity<ApiResponse<AnnouncementResponse>> update(
             @PathVariable Long id,
@@ -49,22 +56,38 @@ public class SystemAnnouncementController {
         if (currentUser == null) {
             return ResponseEntity.status(401).body(ApiResponse.error(2000, "未登录"));
         }
+        ResponseEntity<ApiResponse<AnnouncementResponse>> denied = denyIfNoAdminOrgAccess(currentUser);
+        if (denied != null) {
+            return denied;
+        }
         AnnouncementResponse response = announcementService.update(id, request, currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 
     @PostMapping("/{id}/publish")
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("isAuthenticated()")
     @Operation(summary = "发布公告", description = "立即发布公告，发布后所有活跃用户将收到站内通知和邮件")
-    public ResponseEntity<ApiResponse<AnnouncementResponse>> publish(@PathVariable Long id) {
+    public ResponseEntity<ApiResponse<AnnouncementResponse>> publish(
+            @PathVariable Long id,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        ResponseEntity<ApiResponse<AnnouncementResponse>> denied = denyIfNoAdminOrgAccess(currentUser);
+        if (denied != null) {
+            return denied;
+        }
         AnnouncementResponse response = announcementService.publish(id);
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 
     @PostMapping("/{id}/withdraw")
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("isAuthenticated()")
     @Operation(summary = "撤回公告", description = "撤回已发布的公告")
-    public ResponseEntity<ApiResponse<AnnouncementResponse>> withdraw(@PathVariable Long id) {
+    public ResponseEntity<ApiResponse<AnnouncementResponse>> withdraw(
+            @PathVariable Long id,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        ResponseEntity<ApiResponse<AnnouncementResponse>> denied = denyIfNoAdminOrgAccess(currentUser);
+        if (denied != null) {
+            return denied;
+        }
         AnnouncementResponse response = announcementService.withdraw(id);
         return ResponseEntity.ok(ApiResponse.success(response));
     }
@@ -111,5 +134,23 @@ public class SystemAnnouncementController {
         response.put("size", announcements.getSize());
 
         return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    private boolean hasAdminOrgAccess(CurrentUser currentUser) {
+        if (currentUser == null || currentUser.getOrgId() == null) {
+            return false;
+        }
+
+        return organizationRepository.findById(currentUser.getOrgId())
+                .map(org -> org.getType() == OrgType.admin)
+                .orElse(false);
+    }
+
+    private <T> ResponseEntity<ApiResponse<T>> denyIfNoAdminOrgAccess(CurrentUser currentUser) {
+        if (hasAdminOrgAccess(currentUser)) {
+            return null;
+        }
+
+        return ResponseEntity.status(403).body(ApiResponse.error(403, "无权限访问"));
     }
 }

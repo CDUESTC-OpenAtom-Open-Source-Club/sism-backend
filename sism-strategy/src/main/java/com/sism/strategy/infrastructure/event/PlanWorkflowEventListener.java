@@ -19,6 +19,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import java.util.Comparator;
 
 @Component
@@ -48,6 +51,7 @@ public class PlanWorkflowEventListener {
             request.setWorkflowCode(event.getWorkflowCode());
             request.setBusinessEntityId(event.getPlanId());
             request.setBusinessEntityType(PLAN_ENTITY_TYPE);
+            request.setVariables(buildWorkflowVariables(event));
 
             var response = startWorkflowWithRetry(request, event.getSubmitterId(), event.getSubmitterOrgId());
             log.info("Started plan workflow for planId={}, instanceId={}", event.getPlanId(), response.getInstanceId());
@@ -60,6 +64,14 @@ public class PlanWorkflowEventListener {
                     ex
             );
         }
+    }
+
+    private Map<String, Object> buildWorkflowVariables(PlanSubmittedForApprovalEvent event) {
+        Map<String, Object> variables = new HashMap<>();
+        if (event.getComment() != null && !event.getComment().trim().isEmpty()) {
+            variables.put("submitComment", event.getComment().trim());
+        }
+        return variables;
     }
 
     private com.sism.workflow.interfaces.dto.WorkflowInstanceResponse startWorkflowWithRetry(

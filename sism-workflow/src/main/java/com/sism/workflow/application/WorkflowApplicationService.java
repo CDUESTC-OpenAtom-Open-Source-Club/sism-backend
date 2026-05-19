@@ -80,8 +80,15 @@ public class WorkflowApplicationService {
 
     public AuditInstance startAuditInstance(AuditInstance instance,
                                             Long requesterId,
+                                            Long requesterOrgId,
+                                            String submitComment) {
+        return startWorkflowUseCase.startAuditInstance(instance, requesterId, requesterOrgId, submitComment);
+    }
+
+    public AuditInstance startAuditInstance(AuditInstance instance,
+                                            Long requesterId,
                                             Long requesterOrgId) {
-        return startWorkflowUseCase.startAuditInstance(instance, requesterId, requesterOrgId);
+        return startAuditInstance(instance, requesterId, requesterOrgId, null);
     }
 
     public AuditInstance approveAuditInstance(AuditInstance instance, Long userId, String comment) {

@@ -22,7 +22,8 @@ public class StepInstanceFactory {
     public void initialize(AuditInstance instance,
                            AuditFlowDef flowDef,
                            Long requesterId,
-                           Long requesterOrgId) {
+                           Long requesterOrgId,
+                           String submitComment) {
         if (instance.getStepInstances() != null && !instance.getStepInstances().isEmpty()) {
             return;
         }
@@ -65,7 +66,7 @@ public class StepInstanceFactory {
         firstStep.setStatus(AuditInstance.STEP_STATUS_PENDING);
         instance.addStepInstance(firstStep);
 
-        submissionStepAutoCompletePolicy.apply(instance, orderedStepDefs.get(0), requesterId);
+        submissionStepAutoCompletePolicy.apply(instance, orderedStepDefs.get(0), requesterId, submitComment);
 
         // 如果第一步被自动完成，创建第二个步骤
         if (AuditInstance.STEP_STATUS_APPROVED.equals(firstStep.getStatus()) && orderedStepDefs.size() > 1) {
@@ -85,6 +86,13 @@ public class StepInstanceFactory {
             secondStep.setStatus(AuditInstance.STEP_STATUS_PENDING);
             instance.addStepInstance(secondStep);
         }
+    }
+
+    public void initialize(AuditInstance instance,
+                           AuditFlowDef flowDef,
+                           Long requesterId,
+                           Long requesterOrgId) {
+        initialize(instance, flowDef, requesterId, requesterOrgId, null);
     }
 
     private void validateStepDefinition(AuditStepDef stepDef) {

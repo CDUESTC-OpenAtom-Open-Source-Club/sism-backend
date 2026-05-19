@@ -159,7 +159,8 @@ public class WorkflowController {
         AuditInstance started = workflowApplicationService.startAuditInstance(
                 instance,
                 currentUser.getId(),
-                currentUser.getOrgId()
+                currentUser.getOrgId(),
+                null
         );
         return ResponseEntity.ok(ApiResponse.success(workflowReadModelMapper.toInstanceResponse(started)));
     }

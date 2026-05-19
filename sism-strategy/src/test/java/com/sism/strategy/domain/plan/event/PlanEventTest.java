@@ -32,7 +32,8 @@ class PlanEventTest {
                 22L,
                 "PLAN_APPROVAL_FUNCDEPT",
                 188L,
-                36L
+                36L,
+                "提交说明"
         );
 
         String eventId = event.getEventId();

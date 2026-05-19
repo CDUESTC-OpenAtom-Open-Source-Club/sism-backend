@@ -76,7 +76,7 @@ class PlanWorkflowRuntimeService {
                 """, workflowInstanceId);
     }
 
-    boolean reactivateWithdrawnWorkflowCurrentStep(Long workflowInstanceId) {
+    boolean reactivateWithdrawnWorkflowCurrentStep(Long workflowInstanceId, String submitComment) {
         if (workflowInstanceId == null) {
             return false;
         }
@@ -126,13 +126,14 @@ class PlanWorkflowRuntimeService {
             );
         }
         if (withdrawnStep.isSubmitStep()) {
+            String resolvedSubmitComment = normalizeSubmitComment(submitComment);
             jdbcTemplate.update("""
                     UPDATE public.audit_step_instance
                     SET status = 'APPROVED',
                         approved_at = CURRENT_TIMESTAMP,
-                        comment = '系统自动完成提交流程节点'
+                        comment = ?
                     WHERE id = ?
-                    """, withdrawnStep.id());
+                    """, resolvedSubmitComment, withdrawnStep.id());
 
             if (workflowContext.flowDefId() == null) {
                 if (withdrawnStep.stepNo() <= 1) {
@@ -242,6 +243,13 @@ class PlanWorkflowRuntimeService {
                 WHERE id = ?
                 """, workflowInstanceId);
         return true;
+    }
+
+    private String normalizeSubmitComment(String submitComment) {
+        if (submitComment != null && !submitComment.trim().isEmpty()) {
+            return submitComment.trim();
+        }
+        return "系统自动完成提交流程节点";
     }
 
     private WorkflowInstanceContext loadWorkflowInstanceContext(Long workflowInstanceId) {

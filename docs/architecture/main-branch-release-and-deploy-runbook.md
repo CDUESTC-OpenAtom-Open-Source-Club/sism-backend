@@ -193,8 +193,22 @@ curl -I http://127.0.0.1/
 - `SPRING_FLYWAY_ENABLED`
 - `BACKEND_PORT`
 - `FRONTEND_PORT`
+- `JAVA_HEAP_SIZE`
+- `JAVA_METASPACE_SIZE`
+- `JAVA_STACK_SIZE`
+- `DB_HIKARI_MAX_POOL_SIZE`
+- `DB_HIKARI_MIN_IDLE`
 
 即，首次部署不要求人工先写完整业务 `.env`，只要 GitHub secrets 到位即可拉起基础环境。
+
+### 6.3 数据库边界
+
+- 标准生产部署路径只面向 compose 管理的 PostgreSQL 容器。
+- 如果服务器上手动启动过 OpenTenBase / OTB 作为临时实验数据库：
+  - 不把它视为生产依赖
+  - 不要求自动部署为它保留额外内存
+  - 在正式部署前应先手动停止宿主机 OTB 进程，避免与生产容器栈争抢内存
+- OTB 的启停与切换属于人工实验流程，不属于 `main` 自动部署链的一部分。
 
 ## 7. 故障排查手册
 
@@ -218,6 +232,28 @@ curl -I http://127.0.0.1/
 ### 7.2 场景二：前端已构建成功，但服务器仍是旧前端
 
 优先检查：
+
+- 服务器上的前端镜像是否仍然使用可变标签缓存
+- 当前 deploy workflow 是否对前端镜像执行了强制 `pull`
+- `/opt/sism-stack/production/.env` 里的 `FRONTEND_IMAGE` 是否已切到预期 SHA
+
+### 7.3 场景三：后端镜像已更新，但容器在小内存主机上反复重启
+
+优先检查：
+
+- 宿主机是否还跑着额外的 OpenTenBase / OTB 进程
+- `/opt/sism-stack/production/.env` 中的 JVM 参数是否已透传到 compose backend 服务
+- `dmesg -T | grep -i oom` 是否出现 `Killed process (java)`
+
+低内存主机的默认兜底参数：
+
+```properties
+JAVA_HEAP_SIZE=384m
+JAVA_METASPACE_SIZE=128m
+JAVA_STACK_SIZE=512k
+DB_HIKARI_MAX_POOL_SIZE=2
+DB_HIKARI_MIN_IDLE=1
+```
 
 1. 前端 `Build and Push Frontend Image` 是否成功
 2. 前端 workflow 的 `Trigger backend system deployment` 是否成功

@@ -24,7 +24,8 @@ public class StartWorkflowUseCase {
     @Transactional
     public AuditInstance startAuditInstance(AuditInstance instance,
                                             Long requesterId,
-                                            Long requesterOrgId) {
+                                            Long requesterOrgId,
+                                            String submitComment) {
         instance.validate();
         flowResolver.resolveAndAttachFlow(instance);
         instance.start(requesterId, requesterOrgId);
@@ -32,10 +33,17 @@ public class StartWorkflowUseCase {
         AuditFlowDef flowDef = instance.getFlowDefId() == null
                 ? null
                 : flowDefinitionRepository.findById(instance.getFlowDefId()).orElse(null);
-        stepInstanceFactory.initialize(instance, flowDef, requesterId, requesterOrgId);
+        stepInstanceFactory.initialize(instance, flowDef, requesterId, requesterOrgId, submitComment);
 
         AuditInstance saved = auditInstanceRepository.save(instance);
         workflowEventDispatcher.publish(saved);
         return saved;
+    }
+
+    @Transactional
+    public AuditInstance startAuditInstance(AuditInstance instance,
+                                            Long requesterId,
+                                            Long requesterOrgId) {
+        return startAuditInstance(instance, requesterId, requesterOrgId, null);
     }
 }
