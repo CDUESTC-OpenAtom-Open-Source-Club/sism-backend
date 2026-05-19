@@ -285,9 +285,8 @@ public class AuthController {
     public ResponseEntity<ApiResponse<List<UserSummaryResponse>>> getUsersByOrgId(
             @AuthenticationPrincipal CurrentUser currentUser,
             @PathVariable Long orgId) {
-        ResponseEntity<ApiResponse<List<UserSummaryResponse>>> denied = denyIfNoAdminOrgAccess(currentUser);
-        if (denied != null) {
-            return denied;
+        if (currentUser == null) {
+            return ResponseEntity.status(401).body(ApiResponse.error(2000, "未登录"));
         }
         return ResponseEntity.ok(ApiResponse.success(
                 userService.findByOrgId(orgId).stream().map(this::toUserSummaryResponse).collect(Collectors.toList())

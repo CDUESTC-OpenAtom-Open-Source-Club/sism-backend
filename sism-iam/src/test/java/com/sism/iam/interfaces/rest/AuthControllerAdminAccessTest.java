@@ -147,6 +147,28 @@ class AuthControllerAdminAccessTest {
         assertEquals(124L, response.getBody().getData().getId());
     }
 
+    @Test
+    @DisplayName("getUsersByOrgId should allow authenticated non-admin users")
+    void getUsersByOrgIdShouldAllowAuthenticatedNonAdminUsers() {
+        AuthController controller = controller();
+        User user = mock(User.class);
+
+        when(userService.findByOrgId(53L)).thenReturn(List.of(user));
+        when(user.getId()).thenReturn(124L);
+        when(user.getUsername()).thenReturn("demo");
+        when(user.getRealName()).thenReturn("演示用户");
+        when(user.getOrgId()).thenReturn(53L);
+        when(user.getIsActive()).thenReturn(true);
+        when(user.getRoles()).thenReturn(Set.of());
+
+        ResponseEntity<ApiResponse<List<AuthController.UserSummaryResponse>>> response =
+                controller.getUsersByOrgId(currentUser, 53L);
+
+        assertEquals(200, response.getStatusCodeValue());
+        assertEquals(1, response.getBody().getData().size());
+        verify(userService).findByOrgId(53L);
+    }
+
     private AuthController controller() {
         return new AuthController(authService, userService, organizationRepository, passwordResetService);
     }
