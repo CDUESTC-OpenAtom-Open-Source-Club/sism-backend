@@ -394,11 +394,11 @@ jobs:
             BACKEND_IMAGE="$(awk -F= '/^BACKEND_IMAGE=/{print $2}' .env)"
             if [[ "${DEPLOY_MODE}" != "backend-only" ]]; then
               if podman image exists "${FRONTEND_IMAGE}"; then
-                echo "FRONTEND_PULL_MODE=cache-hit" >> "${STATUS_FILE}"
+                echo "FRONTEND_PULL_MODE=refreshed" >> "${STATUS_FILE}"
               else
                 echo "FRONTEND_PULL_MODE=pulled" >> "${STATUS_FILE}"
-                pull_image "${FRONTEND_IMAGE}"
               fi
+              pull_image "${FRONTEND_IMAGE}"
             else
               echo "FRONTEND_PULL_MODE=skipped" >> "${STATUS_FILE}"
             fi
