@@ -406,7 +406,11 @@ class PlanApplicationServiceTest {
         assertEquals("IN_REVIEW", response.getWorkflowStatus());
         assertEquals("战略发展部负责人审批", response.getCurrentStepName());
         assertTrue(Boolean.TRUE.equals(response.getCanWithdraw()));
-        verify(jdbcTemplate).update(contains("SET status = 'APPROVED'"), anyLong());
+        verify(jdbcTemplate).update(
+                contains("SET status = 'APPROVED'"),
+                eq("系统自动完成提交流程节点"),
+                anyLong()
+        );
         verify(jdbcTemplate).update(contains("SET status = 'PENDING'"), eq(18L));
         verify(jdbcTemplate).update(contains("UPDATE public.audit_instance"), eq(18L));
         ArgumentCaptor<DomainEvent> eventCaptor = ArgumentCaptor.forClass(DomainEvent.class);
@@ -459,7 +463,11 @@ class PlanApplicationServiceTest {
 
         assertEquals(PlanStatus.PENDING.value(), plan.getStatus());
         assertEquals(PlanStatus.PENDING.value(), response.getStatus());
-        verify(jdbcTemplate).update(contains("SET status = 'APPROVED'"), eq(81L));
+        verify(jdbcTemplate).update(
+                contains("SET status = 'APPROVED'"),
+                eq("系统自动完成提交流程节点"),
+                eq(81L)
+        );
         verify(jdbcTemplate).update(contains("INSERT INTO public.audit_step_instance"), eq(4L), eq(28L));
         verify(jdbcTemplate).update(contains("UPDATE public.audit_instance"), eq(28L));
         ArgumentCaptor<DomainEvent> eventCaptor = ArgumentCaptor.forClass(DomainEvent.class);

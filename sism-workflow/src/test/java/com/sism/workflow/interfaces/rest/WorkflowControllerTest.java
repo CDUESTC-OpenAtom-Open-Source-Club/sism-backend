@@ -85,14 +85,24 @@ class WorkflowControllerTest {
         started.setId(11L);
         CurrentUser currentUser = new CurrentUser(91L, "tester", "Tester", "tester@example.com", 38L, java.util.List.of());
 
-        when(workflowApplicationService.startAuditInstance(org.mockito.ArgumentMatchers.any(AuditInstance.class), org.mockito.ArgumentMatchers.eq(91L), org.mockito.ArgumentMatchers.eq(38L)))
+        when(workflowApplicationService.startAuditInstance(
+                org.mockito.ArgumentMatchers.any(AuditInstance.class),
+                org.mockito.ArgumentMatchers.eq(91L),
+                org.mockito.ArgumentMatchers.eq(38L),
+                org.mockito.ArgumentMatchers.isNull()
+        ))
                 .thenReturn(started);
 
         var response = controller.startInstance(request, currentUser);
 
         assertEquals(200, response.getStatusCodeValue());
         assertEquals("11", response.getBody().getData().getInstanceId());
-        verify(workflowApplicationService).startAuditInstance(org.mockito.ArgumentMatchers.any(AuditInstance.class), org.mockito.ArgumentMatchers.eq(91L), org.mockito.ArgumentMatchers.eq(38L));
+        verify(workflowApplicationService).startAuditInstance(
+                org.mockito.ArgumentMatchers.any(AuditInstance.class),
+                org.mockito.ArgumentMatchers.eq(91L),
+                org.mockito.ArgumentMatchers.eq(38L),
+                org.mockito.ArgumentMatchers.isNull()
+        );
     }
 
     @Test
