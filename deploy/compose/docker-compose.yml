@@ -28,7 +28,7 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}?stringtype=unspecified
       DB_USERNAME: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}

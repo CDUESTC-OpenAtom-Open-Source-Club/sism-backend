@@ -1211,7 +1211,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DB_URL: jdbc:postgresql://postgres:5432/sism_prod
+      DB_URL: jdbc:postgresql://postgres:5432/sism_prod?stringtype=unspecified
       DB_USERNAME: sism_prod_user
       DB_PASSWORD: ${DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
