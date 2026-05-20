@@ -4,6 +4,8 @@ import com.sism.shared.domain.model.base.AggregateRoot;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -48,6 +50,7 @@ public class Notification extends AggregateRoot<Long> {
     @Column(name = "gap_percent", nullable = false)
     private BigDecimal gapPercent;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "detail_json", columnDefinition = "jsonb")
     private String detailJson;
 

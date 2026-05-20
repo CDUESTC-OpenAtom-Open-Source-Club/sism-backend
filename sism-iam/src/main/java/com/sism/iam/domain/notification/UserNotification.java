@@ -4,6 +4,8 @@ import com.sism.shared.domain.model.base.AggregateRoot;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 
@@ -51,6 +53,7 @@ public class UserNotification extends AggregateRoot<Long> {
     @Column(name = "batch_key", length = 64)
     private String batchKey;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "metadata_json", columnDefinition = "jsonb")
     private String metadataJson;
 
