@@ -4,6 +4,7 @@ import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.user.UserRepository;
 import com.sism.shared.domain.exception.AuthorizationException;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,14 @@ public class UserProfileService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+
+    @Cacheable(cacheNames = "currentUserSummary", cacheManager = "applicationCacheManager", key = "#userId", sync = true)
+    public User findCurrentUserById(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        return userRepository.findById(userId).orElse(null);
+    }
 
     public User findCurrentUser(Authentication authentication) {
         if (authentication == null || authentication.getName() == null || authentication.getName().isBlank()) {

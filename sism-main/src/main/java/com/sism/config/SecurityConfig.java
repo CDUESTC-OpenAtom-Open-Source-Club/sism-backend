@@ -1,7 +1,7 @@
 package com.sism.config;
 
-import com.sism.iam.application.UserDetailsServiceImpl;
 import com.sism.iam.application.JwtTokenService;
+import com.sism.shared.application.dto.CurrentUser;
 import lombok.extern.slf4j.Slf4j;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -28,6 +28,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Security Configuration
@@ -61,8 +63,7 @@ public class SecurityConfig {
      * 从请求头中提取JWT token并验证
      */
     @Bean
-    public OncePerRequestFilter jwtAuthenticationFilter(JwtTokenService jwtTokenService,
-                                                        UserDetailsServiceImpl userDetailsService) {
+    public OncePerRequestFilter jwtAuthenticationFilter(JwtTokenService jwtTokenService) {
         return new OncePerRequestFilter() {
             @Override
             protected void doFilterInternal(HttpServletRequest request,
@@ -74,14 +75,29 @@ public class SecurityConfig {
                     try {
                         if (jwtTokenService.validateToken(token)) {
                             String username = jwtTokenService.extractUsername(token);
-                            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+                            Long userId = jwtTokenService.getUserIdFromToken(token);
+                            Long orgId = jwtTokenService.getOrgIdFromToken(token);
+                            String email = jwtTokenService.getEmailFromToken(token);
+                            List<SimpleGrantedAuthority> authorities = jwtTokenService.getRolesFromToken(token).stream()
+                                    .map(roleCode -> roleCode != null && roleCode.startsWith("ROLE_")
+                                            ? new SimpleGrantedAuthority(roleCode)
+                                            : new SimpleGrantedAuthority("ROLE_" + roleCode))
+                                    .collect(Collectors.toList());
+                            UserDetails userDetails = new CurrentUser(
+                                    userId,
+                                    username,
+                                    username,
+                                    email,
+                                    orgId,
+                                    authorities
+                            );
                             UsernamePasswordAuthenticationToken auth =
                                     new UsernamePasswordAuthenticationToken(
                                             userDetails,
                                             token,
-                                            userDetails.getAuthorities().isEmpty()
+                                            authorities.isEmpty()
                                                     ? Collections.singletonList(new SimpleGrantedAuthority("ROLE_USER"))
-                                                    : userDetails.getAuthorities()
+                                                    : authorities
                                     );
                             SecurityContextHolder.getContext().setAuthentication(auth);
                         }

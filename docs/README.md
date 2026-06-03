@@ -22,6 +22,8 @@
 
 - `architecture/main-branch-release-and-deploy-runbook.md`
   - 主线发布、自动部署、服务器验证、故障排查入口
+- `deployment-image-arch-note.md`
+  - 生产服务器镜像架构要求与 2026-05-27 Docker 替换复盘
 - `flyway-migration-guide.md`
   - 当前 Flyway 迁移执行规范
 - `workflow-test-guide.md`

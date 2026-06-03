@@ -3,7 +3,6 @@ package com.sism.analytics.application;
 import com.sism.analytics.domain.repository.DashboardSummaryQueryRepository;
 import com.sism.analytics.interfaces.dto.DashboardSummaryDTO;
 import com.sism.analytics.interfaces.dto.DepartmentProgressDTO;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.cache.CacheManager;
@@ -24,7 +23,6 @@ import java.util.Map;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class DashboardSummaryService {
 
@@ -33,8 +31,15 @@ public class DashboardSummaryService {
     private static final double AT_RISK_THRESHOLD = 50.0;
 
     private final DashboardSummaryQueryRepository dashboardSummaryQueryRepository;
-    @Qualifier("analyticsCacheManager")
     private final CacheManager cacheManager;
+
+    public DashboardSummaryService(
+            DashboardSummaryQueryRepository dashboardSummaryQueryRepository,
+            @Qualifier("analyticsCacheManager") CacheManager cacheManager
+    ) {
+        this.dashboardSummaryQueryRepository = dashboardSummaryQueryRepository;
+        this.cacheManager = cacheManager;
+    }
 
     /**
      * Get dashboard summary aggregating indicator stats

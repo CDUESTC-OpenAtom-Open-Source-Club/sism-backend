@@ -4,6 +4,7 @@ import com.sism.common.ApiResponse;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.iam.application.service.PasswordResetService;
 import com.sism.iam.application.service.AuthService;
+import com.sism.iam.application.service.UserProfileService;
 import com.sism.iam.application.service.UserService;
 import com.sism.iam.domain.user.User;
 import com.sism.organization.domain.OrgType;
@@ -43,6 +44,9 @@ class AuthControllerAdminAccessTest {
 
     @Mock
     private PasswordResetService passwordResetService;
+
+    @Mock
+    private UserProfileService userProfileService;
 
     @Mock
     private CurrentUser currentUser;
@@ -170,6 +174,6 @@ class AuthControllerAdminAccessTest {
     }
 
     private AuthController controller() {
-        return new AuthController(authService, userService, organizationRepository, passwordResetService);
+        return new AuthController(authService, userService, userProfileService, organizationRepository, passwordResetService);
     }
 }

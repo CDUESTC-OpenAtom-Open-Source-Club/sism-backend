@@ -115,6 +115,10 @@ public class JwtTokenService {
         return List.of();
     }
 
+    public String getEmailFromToken(String token) {
+        return extractClaims(token).get("email", String.class);
+    }
+
     private Claims extractClaims(String token) {
         return Jwts.parser()
                 .verifyWith(getSigningKey())
@@ -128,7 +132,8 @@ public class JwtTokenService {
     }
 
     public Map<String, Object> refreshToken(String refreshToken) {
-        if (!isRefreshToken(refreshToken)) {
+        Claims claims = parseRefreshTokenClaims(refreshToken);
+        if (!"refresh".equalsIgnoreCase(claims.get("type", String.class))) {
             throw new IllegalArgumentException("Not a refresh token");
         }
 
@@ -200,6 +205,18 @@ public class JwtTokenService {
 
     private boolean isRefreshToken(String token) {
         return "refresh".equalsIgnoreCase(extractClaims(token).get("type", String.class));
+    }
+
+    private Claims parseRefreshTokenClaims(String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new IllegalArgumentException("Refresh token is required");
+        }
+
+        try {
+            return extractClaims(refreshToken);
+        } catch (JwtException | IllegalArgumentException ex) {
+            throw new IllegalArgumentException("Invalid refresh token", ex);
+        }
     }
 
     private boolean isTokenVersionCurrent(String token) {

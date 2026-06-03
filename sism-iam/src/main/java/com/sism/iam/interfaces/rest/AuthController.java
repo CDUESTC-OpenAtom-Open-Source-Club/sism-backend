@@ -7,6 +7,7 @@ import com.sism.iam.application.dto.UpdateContactRequest;
 import com.sism.iam.application.service.AuthService;
 import com.sism.iam.application.service.ContactInfoPolicy;
 import com.sism.iam.application.service.PasswordResetService;
+import com.sism.iam.application.service.UserProfileService;
 import com.sism.iam.application.service.UserService;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.iam.application.dto.LoginRequest;
@@ -50,6 +51,7 @@ public class AuthController {
 
     private final AuthService authService;
     private final UserService userService;
+    private final UserProfileService userProfileService;
     private final OrganizationRepository organizationRepository;
     private final PasswordResetService passwordResetService;
 
@@ -172,9 +174,11 @@ public class AuthController {
         if (currentUser == null) {
             return ResponseEntity.status(401).body(ApiResponse.error(2000, "未登录"));
         }
-        return userService.findById(currentUser.getId())
-                .map(user -> ResponseEntity.ok(ApiResponse.success(toUserSummaryResponse(user))))
-                .orElse(ResponseEntity.notFound().build());
+        User user = userProfileService.findCurrentUserById(currentUser.getId());
+        if (user == null) {
+            return ResponseEntity.status(404).body(ApiResponse.error(404, "用户不存在"));
+        }
+        return ResponseEntity.ok(ApiResponse.success(toUserSummaryResponse(user)));
     }
 
     /**

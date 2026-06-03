@@ -125,7 +125,7 @@ public class PasswordResetService {
         user.setPassword(passwordEncoder.encode(newPassword));
         user.setTokenVersion(user.getTokenVersion() == null ? 1L : user.getTokenVersion() + 1L);
         user.setUpdatedAt(LocalDateTime.now());
-        userRepository.save(user);
+        user = userRepository.save(user);
 
         token.setUsed(true);
         token.setFailedAttempts(0);

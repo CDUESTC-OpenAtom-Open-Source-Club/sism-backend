@@ -3,6 +3,9 @@ package com.sism.iam.infrastructure.persistence;
 import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.user.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Caching;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Repository;
@@ -43,16 +46,19 @@ public class JpaUserRepository implements UserRepository {
     }
 
     @Override
+    @Cacheable(cacheNames = "userByUsername", cacheManager = "applicationCacheManager", key = "#username", unless = "#result == null")
     public Optional<User> findByUsername(String username) {
         return jpaRepository.findByUsername(username);
     }
 
     @Override
+    @Cacheable(cacheNames = "userByEmail", cacheManager = "applicationCacheManager", key = "#email", unless = "#result == null")
     public Optional<User> findByEmail(String email) {
         return jpaRepository.findByEmail(email);
     }
 
     @Override
+    @Cacheable(cacheNames = "userByPhone", cacheManager = "applicationCacheManager", key = "#phone", unless = "#result == null")
     public Optional<User> findByPhone(String phone) {
         return jpaRepository.findByPhone(phone);
     }
@@ -73,6 +79,7 @@ public class JpaUserRepository implements UserRepository {
     }
 
     @Override
+    @Cacheable(cacheNames = "roleCodesByUserId", cacheManager = "applicationCacheManager", key = "#userId", unless = "#result == null")
     public List<String> findRoleCodesByUserId(Long userId) {
         return jpaRepository.findRoleCodesByUserId(userId);
     }
@@ -101,11 +108,23 @@ public class JpaUserRepository implements UserRepository {
     }
 
     @Override
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "userByUsername", cacheManager = "applicationCacheManager", key = "#user.username", condition = "#user != null && #user.username != null"),
+            @CacheEvict(cacheNames = "userByEmail", cacheManager = "applicationCacheManager", key = "#user.email", condition = "#user != null && #user.email != null"),
+            @CacheEvict(cacheNames = "userByPhone", cacheManager = "applicationCacheManager", key = "#user.phone", condition = "#user != null && #user.phone != null"),
+            @CacheEvict(cacheNames = "roleCodesByUserId", cacheManager = "applicationCacheManager", key = "#user.id", condition = "#user != null && #user.id != null")
+    })
     public User save(User user) {
         return jpaRepository.save(user);
     }
 
     @Override
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "userByUsername", cacheManager = "applicationCacheManager", key = "#user.username", condition = "#user != null && #user.username != null"),
+            @CacheEvict(cacheNames = "userByEmail", cacheManager = "applicationCacheManager", key = "#user.email", condition = "#user != null && #user.email != null"),
+            @CacheEvict(cacheNames = "userByPhone", cacheManager = "applicationCacheManager", key = "#user.phone", condition = "#user != null && #user.phone != null"),
+            @CacheEvict(cacheNames = "roleCodesByUserId", cacheManager = "applicationCacheManager", key = "#user.id", condition = "#user != null && #user.id != null")
+    })
     public void delete(User user) {
         jpaRepository.delete(user);
     }

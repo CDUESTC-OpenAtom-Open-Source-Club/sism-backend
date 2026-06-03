@@ -139,6 +139,7 @@ class PasswordResetServiceTest {
         when(passwordResetTokenRepository.findLatestActiveByEmail(any(), any()))
                 .thenReturn(Optional.of(token));
         when(userRepository.findById(7L)).thenReturn(Optional.of(user));
+        when(userRepository.save(user)).thenReturn(user);
         when(passwordEncoder.encode("new-pass-123")).thenReturn("encoded");
 
         passwordResetService.resetPassword("user@example.com", "123456", "new-pass-123", "127.0.0.1", "JUnit");

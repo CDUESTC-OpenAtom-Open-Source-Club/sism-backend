@@ -14,6 +14,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -127,5 +128,12 @@ class UserProfileServiceTest {
 
         assertNull(updated.getEmail());
         assertNull(updated.getPhone());
+    }
+
+    @Test
+    @DisplayName("findCurrentUserById should return null when user id is missing")
+    void findCurrentUserByIdShouldReturnNullWhenUserIdIsMissing() {
+        assertNull(userProfileService.findCurrentUserById(null));
+        verify(userRepository, never()).findById(any());
     }
 }

@@ -267,14 +267,14 @@
             <plugin>
                 <groupId>org.flywaydb</groupId>
                 <artifactId>flyway-maven-plugin</artifactId>
-                <version>9.22.3</version>
+                <version>${flyway.version}</version>
                 <configuration>
                     <url>${env.DB_URL}</url>
                     <user>${env.DB_USERNAME}</user>
                     <password>${env.DB_PASSWORD}</password>
                     <locations>
-                        <location>filesystem:sism-main/src/main/resources/db/migration</location>
-                        <location>filesystem:sism-analytics/src/main/resources/db/migration</location>
+                        <location>filesystem:${maven.multiModuleProjectDirectory}/sism-main/src/main/resources/db/migration</location>
+                        <location>filesystem:${maven.multiModuleProjectDirectory}/sism-analytics/src/main/resources/db/migration</location>
                     </locations>
                     <baselineOnMigrate>true</baselineOnMigrate>
                     <baselineVersion>1</baselineVersion>
@@ -283,6 +283,11 @@
                     <placeholderReplacement>false</placeholderReplacement>
                 </configuration>
                 <dependencies>
+                    <dependency>
+                        <groupId>org.flywaydb</groupId>
+                        <artifactId>flyway-database-postgresql</artifactId>
+                        <version>${flyway.version}</version>
+                    </dependency>
                     <dependency>
                         <groupId>org.postgresql</groupId>
                         <artifactId>postgresql</artifactId>

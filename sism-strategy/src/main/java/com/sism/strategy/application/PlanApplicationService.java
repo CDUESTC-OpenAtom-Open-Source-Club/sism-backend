@@ -24,6 +24,9 @@ import com.sism.strategy.infrastructure.StrategyOrgProperties;
 import com.sism.task.domain.task.StrategicTask;
 import com.sism.task.domain.repository.TaskRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Caching;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -167,6 +170,10 @@ public class PlanApplicationService {
      * 创建计划
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse createPlan(CreatePlanRequest request) {
         // 验证周期是否存在
         Cycle cycle = requireCycle(request.getCycleId());
@@ -205,6 +212,11 @@ public class PlanApplicationService {
      * 更新计划
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse updatePlan(Long id, UpdatePlanRequest request) {
         Plan plan = requirePlan(id);
 
@@ -228,6 +240,11 @@ public class PlanApplicationService {
      * 删除计划
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public void deletePlan(Long id) {
         Plan plan = requirePlan(id);
 
@@ -239,6 +256,11 @@ public class PlanApplicationService {
      * 同时同步所有关联指标的状态为 DISTRIBUTED
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse publishPlan(Long id) {
         Plan plan = requirePlan(id);
 
@@ -256,6 +278,11 @@ public class PlanApplicationService {
     /**
      * 提交计划审批
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse submitPlanForApproval(Long id,
                                               SubmitPlanApprovalRequest request,
                                               Long currentUserId,
@@ -319,6 +346,11 @@ public class PlanApplicationService {
      * 同时同步所有关联指标的状态为 DISTRIBUTED
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse approvePlan(Long id) {
         Plan plan = requirePlan(id);
 
@@ -337,6 +369,11 @@ public class PlanApplicationService {
      * 驳回计划
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse rejectPlan(Long id) {
         Plan plan = requirePlan(id);
 
@@ -350,6 +387,11 @@ public class PlanApplicationService {
      * 撤回计划到草稿
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse withdrawPlan(Long id) {
         Plan plan = planRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Plan not found: " + id));
@@ -423,6 +465,11 @@ public class PlanApplicationService {
      * 归档计划
      */
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id"),
+            @CacheEvict(cacheNames = "plansPage", cacheManager = "applicationCacheManager", allEntries = true),
+            @CacheEvict(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", allEntries = true)
+    })
     public PlanResponse archivePlan(Long id) {
         Plan plan = requirePlan(id);
 
@@ -446,6 +493,7 @@ public class PlanApplicationService {
     /**
      * 根据ID查询计划
      */
+    @Cacheable(cacheNames = "planById", cacheManager = "applicationCacheManager", key = "#id", sync = true)
     public Optional<PlanResponse> getPlanById(Long id) {
         planIntegrityService.ensurePlanMatrix();
         return planRepository.findById(id)
@@ -490,6 +538,13 @@ public class PlanApplicationService {
     /**
      * 分页查询计划
      */
+    // This key is only safe while listPlans remains a public query without user-scoped data permissions.
+    @Cacheable(
+            cacheNames = "plansPage",
+            cacheManager = "applicationCacheManager",
+            key = "T(String).format('%s:%s:%s:%s', #page, #size, #year, #status)",
+            sync = true
+    )
     public Page<PlanResponse> getPlans(int page, int size, Integer year, String status) {
         planIntegrityService.ensurePlanMatrix();
         long startedAt = System.currentTimeMillis();
@@ -542,6 +597,7 @@ public class PlanApplicationService {
     /**
      * 根据周期ID查询计划
      */
+    @Cacheable(cacheNames = "plansByCycle", cacheManager = "applicationCacheManager", key = "#cycleId", sync = true)
     public List<PlanResponse> getPlansByCycle(Long cycleId) {
         planIntegrityService.ensurePlanMatrix();
         Cycle cycle = requireCycle(cycleId);

@@ -25,6 +25,14 @@ on:
         required: false
         default: production
         type: string
+      db_mode:
+        description: Database mode
+        required: false
+        default: external
+        type: choice
+        options:
+          - external
+          - internal
 
 permissions:
   contents: read
@@ -159,14 +167,17 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             DEPLOY_MODE="${{ github.event.inputs.deploy_mode || 'full-stack' }}"
             FRONTEND_TAG="${{ github.event.inputs.frontend_tag || 'main' }}"
+            DB_MODE="${{ github.event.inputs.db_mode || 'external' }}"
           else
             DEPLOY_MODE="full-stack"
             FRONTEND_TAG="main"
+            DB_MODE="external"
           fi
           echo "target_env=${TARGET_ENV}" >> "$GITHUB_OUTPUT"
           echo "deploy_mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
           echo "frontend_tag=${FRONTEND_TAG}" >> "$GITHUB_OUTPUT"
           echo "backend_ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "db_mode=${DB_MODE}" >> "$GITHUB_OUTPUT"
 
       - name: Create deployment record
         id: create_deployment
@@ -196,6 +207,7 @@ jobs:
           FRONTEND_TAG: ${{ steps.meta.outputs.frontend_tag }}
           BACKEND_REF: ${{ steps.meta.outputs.backend_ref }}
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
+          DB_MODE: ${{ steps.meta.outputs.db_mode }}
 
       - name: Mark deployment in progress
         uses: actions/github-script@v8
@@ -250,6 +262,7 @@ jobs:
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
           ssh "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '${REMOTE_DIR}/nginx'"
           scp deploy/compose/docker-compose.yml "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/docker-compose.yml"
+          scp deploy/compose/docker-compose.external-db.yml "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/docker-compose.external-db.yml"
           scp deploy/compose/nginx/frontend.conf "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/nginx/frontend.conf"
 
       - name: Bootstrap runtime env file
@@ -262,6 +275,7 @@ jobs:
           BACKEND_IMAGE: ${{ steps.image.outputs.backend }}
           TARGET_ENV: ${{ steps.meta.outputs.target_env }}
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
+          DB_MODE: ${{ steps.meta.outputs.db_mode }}
         run: |
           set -euo pipefail
           cat > /tmp/bootstrap-runtime-env.sh <<'SCRIPT'
@@ -288,9 +302,15 @@ jobs:
           }
           if [[ ! -f "${ENV_FILE}" ]]; then
             {
+              printf 'DB_MODE=%s\n' "${DB_MODE}"
               printf 'POSTGRES_DB=%s\n' 'sism_prod'
               printf 'POSTGRES_USER=%s\n' 'sism_prod_user'
               printf 'POSTGRES_PASSWORD=%s\n' "$(generate_secret 24)"
+              printf 'DB_HOST=%s\n' '127.0.0.1'
+              printf 'DB_PORT=%s\n' '5432'
+              printf 'DB_URL=%s\n' 'jdbc:postgresql://127.0.0.1:5432/sism_prod?stringtype=unspecified'
+              printf 'DB_USERNAME=%s\n' 'sism_prod_user'
+              printf 'DB_PASSWORD=%s\n' "$(generate_secret 24)"
               printf 'JWT_SECRET=%s\n' "$(generate_secret 64)"
               printf 'ALLOWED_ORIGINS=%s\n' "http://${SERVER_HOST}"
               printf 'FRONTEND_IMAGE=%s\n' "${FRONTEND_IMAGE}"
@@ -301,6 +321,7 @@ jobs:
               printf 'FRONTEND_PORT=%s\n' '80'
             } > "${ENV_FILE}"
           fi
+          upsert_env DB_MODE "${DB_MODE}"
           if [[ "${DEPLOY_MODE}" != "backend-only" ]]; then
             upsert_env FRONTEND_IMAGE "${FRONTEND_IMAGE}"
           fi
@@ -311,12 +332,17 @@ jobs:
           grep -q '^AUTO_LOAD_CLEAN_SEEDS=' "${ENV_FILE}" || upsert_env AUTO_LOAD_CLEAN_SEEDS true
           grep -q '^BACKEND_PORT=' "${ENV_FILE}" || upsert_env BACKEND_PORT 8080
           grep -q '^FRONTEND_PORT=' "${ENV_FILE}" || upsert_env FRONTEND_PORT 80
+          grep -q '^DB_HOST=' "${ENV_FILE}" || upsert_env DB_HOST 127.0.0.1
+          grep -q '^DB_PORT=' "${ENV_FILE}" || upsert_env DB_PORT 5432
+          grep -q '^DB_URL=' "${ENV_FILE}" || upsert_env DB_URL 'jdbc:postgresql://127.0.0.1:5432/sism_prod?stringtype=unspecified'
+          grep -q '^DB_USERNAME=' "${ENV_FILE}" || upsert_env DB_USERNAME sism_prod_user
+          grep -q '^DB_PASSWORD=' "${ENV_FILE}" || upsert_env DB_PASSWORD "$(generate_secret 24)"
           grep -q '^ALLOWED_ORIGINS=' "${ENV_FILE}" || upsert_env ALLOWED_ORIGINS "http://${SERVER_HOST}"
           SCRIPT
           chmod +x /tmp/bootstrap-runtime-env.sh
           scp /tmp/bootstrap-runtime-env.sh "${SERVER_USER}@${SERVER_HOST}:/tmp/bootstrap-runtime-env.sh"
           ssh "${SERVER_USER}@${SERVER_HOST}" \
-            "SERVER_HOST='${SERVER_HOST}' TARGET_ENV='${TARGET_ENV}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' BACKEND_IMAGE='${BACKEND_IMAGE}' DEPLOY_MODE='${DEPLOY_MODE}' bash /tmp/bootstrap-runtime-env.sh && rm -f /tmp/bootstrap-runtime-env.sh"
+            "SERVER_HOST='${SERVER_HOST}' TARGET_ENV='${TARGET_ENV}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' BACKEND_IMAGE='${BACKEND_IMAGE}' DEPLOY_MODE='${DEPLOY_MODE}' DB_MODE='${DB_MODE}' bash /tmp/bootstrap-runtime-env.sh && rm -f /tmp/bootstrap-runtime-env.sh"
           if [[ -n "${GHCR_USERNAME:-}" && -n "${GHCR_TOKEN:-}" ]]; then
             ssh "${SERVER_USER}@${SERVER_HOST}" "docker login ghcr.io -u '${GHCR_USERNAME}' -p '${GHCR_TOKEN}'"
           fi
@@ -327,6 +353,7 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
+          DB_MODE: ${{ steps.meta.outputs.db_mode }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
@@ -337,6 +364,7 @@ jobs:
           set -euo pipefail
           REMOTE_DIR="$1"
           DEPLOY_MODE="$2"
+          DB_MODE="$3"
           LOG_FILE="${REMOTE_DIR}/deploy-run.log"
           STATUS_FILE="${REMOTE_DIR}/deploy-status.env"
           LOCK_FILE="${REMOTE_DIR}/deploy.lock"
@@ -368,13 +396,16 @@ jobs:
               } >> "${STATUS_FILE}"
             fi
           }
+          ctr() {
+            docker "$@"
+          }
           pull_image() {
             local image="$1"
             local attempt
             for attempt in $(seq 1 "${PULL_MAX_ATTEMPTS}"); do
               echo "[deploy] pulling ${image}, attempt ${attempt}" >> "${LOG_FILE}" 2>&1
               set_stage "pull:${image}:attempt-${attempt}"
-              if timeout "${PULL_TIMEOUT_SECONDS}" podman pull "${image}"; then
+              if timeout "${PULL_TIMEOUT_SECONDS}" ctr pull "${image}"; then
                 return 0
               fi
               echo "[deploy] pull failed for ${image}, attempt ${attempt}" >> "${LOG_FILE}" 2>&1
@@ -389,11 +420,15 @@ jobs:
           {
             echo "[deploy] start ${START_TS}"
             cd "${REMOTE_DIR}"
+            COMPOSE_FILE="docker-compose.yml"
+            if [[ "${DB_MODE}" == "external" ]]; then
+              COMPOSE_FILE="docker-compose.external-db.yml"
+            fi
             set_stage "resolve-images"
             FRONTEND_IMAGE="$(awk -F= '/^FRONTEND_IMAGE=/{print $2}' .env)"
             BACKEND_IMAGE="$(awk -F= '/^BACKEND_IMAGE=/{print $2}' .env)"
             if [[ "${DEPLOY_MODE}" != "backend-only" ]]; then
-              if podman image exists "${FRONTEND_IMAGE}"; then
+              if ctr image inspect "${FRONTEND_IMAGE}" >/dev/null 2>&1; then
                 echo "FRONTEND_PULL_MODE=refreshed" >> "${STATUS_FILE}"
               else
                 echo "FRONTEND_PULL_MODE=pulled" >> "${STATUS_FILE}"
@@ -407,7 +442,7 @@ jobs:
 
             echo "BACKEND_PULL_START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${STATUS_FILE}"
             if [[ "${DEPLOY_MODE}" != "frontend-only" ]]; then
-              if podman image exists "${BACKEND_IMAGE}"; then
+              if ctr image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1; then
                 echo "BACKEND_PULL_MODE=cache-hit" >> "${STATUS_FILE}"
               else
                 echo "BACKEND_PULL_MODE=pulled" >> "${STATUS_FILE}"
@@ -423,13 +458,13 @@ jobs:
             set_stage "compose-up"
             case "${DEPLOY_MODE}" in
               frontend-only)
-                docker compose up -d --force-recreate frontend
+                docker compose -f "${COMPOSE_FILE}" up -d --force-recreate frontend
                 ;;
               backend-only)
-                docker compose up -d --force-recreate backend
+                docker compose -f "${COMPOSE_FILE}" up -d --force-recreate backend
                 ;;
               *)
-                docker compose up -d --force-recreate
+                docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
                 ;;
             esac
             STACK_UP_END="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -458,13 +493,13 @@ jobs:
             for pid in \$(pgrep -f \"run-remote-deploy.sh ${REMOTE_DIR}\" || true); do
               if [ \"\$pid\" != \"\$\$\" ]; then kill \"\$pid\" || true; fi
             done
-            for pid in \$(pgrep -f 'podman pull ghcr.io/.*/sism-backend' || true); do
+            for pid in \$(pgrep -f 'docker pull ghcr.io/.*/sism-backend' || true); do
               if [ \"\$pid\" != \"\$\$\" ]; then kill \"\$pid\" || true; fi
             done
-            for pid in \$(pgrep -f 'podman pull ghcr.io/.*/strategic-task-management' || true); do
+            for pid in \$(pgrep -f 'docker pull ghcr.io/.*/strategic-task-management' || true); do
               if [ \"\$pid\" != \"\$\$\" ]; then kill \"\$pid\" || true; fi
             done
-            setsid bash ./run-remote-deploy.sh '${REMOTE_DIR}' '${DEPLOY_MODE}' </dev/null >/dev/null 2>&1 &
+            setsid bash ./run-remote-deploy.sh '${REMOTE_DIR}' '${DEPLOY_MODE}' '${DB_MODE}' </dev/null >/dev/null 2>&1 &
             exit 0
           "
 
@@ -485,6 +520,7 @@ jobs:
           ssh "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '${REMOTE_DIR}/seed-bundle' && tar -xzf '${REMOTE_DIR}/sism-seed-bundle.tgz' -C '${REMOTE_DIR}/seed-bundle' && rm -f '${REMOTE_DIR}/sism-seed-bundle.tgz'"
 
       - name: Load clean seeds when database is empty
+        if: ${{ steps.meta.outputs.db_mode != 'external' }}
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -505,13 +541,13 @@ jobs:
           fi
 
           USER_COUNT="$(
-            podman exec production_postgres_1 psql \
+            docker exec production-postgres-1 psql \
               -U "${POSTGRES_USER}" \
               -d "${POSTGRES_DB}" \
               -tAc "SELECT COUNT(*) FROM public.sys_user;" | tr -d '[:space:]'
           )"
           ORG_COUNT="$(
-            podman exec production_postgres_1 psql \
+            docker exec production-postgres-1 psql \
               -U "${POSTGRES_USER}" \
               -d "${POSTGRES_DB}" \
               -tAc "SELECT COUNT(*) FROM public.sys_org;" | tr -d '[:space:]'
@@ -523,18 +559,18 @@ jobs:
           fi
 
           echo "Database is empty. Loading clean seed baseline."
-          podman exec production_postgres_1 rm -rf /tmp/sism-seed-bundle || true
-          podman cp "${REMOTE_DIR}/seed-bundle" production_postgres_1:/tmp/sism-seed-bundle
+          docker exec production-postgres-1 rm -rf /tmp/sism-seed-bundle || true
+          docker cp "${REMOTE_DIR}/seed-bundle" production-postgres-1:/tmp/sism-seed-bundle
 
-          podman exec production_postgres_1 psql \
+          docker exec production-postgres-1 psql \
             -U "${POSTGRES_USER}" \
             -d "${POSTGRES_DB}" \
             -f /tmp/sism-seed-bundle/scripts/bootstrap-local-seed-support.sql
 
-          podman exec production_postgres_1 sh -lc \
+          docker exec production-postgres-1 sh -lc \
             "cd /tmp/sism-seed-bundle/seeds && psql -U '${POSTGRES_USER}' -d '${POSTGRES_DB}' -f reset-and-load-clean-seeds.sql"
 
-          podman exec production_postgres_1 psql \
+          docker exec production-postgres-1 psql \
             -U "${POSTGRES_USER}" \
             -d "${POSTGRES_DB}" \
             -f /tmp/sism-seed-bundle/scripts/validate-clean-seeds.sql
@@ -545,9 +581,14 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
+          DB_MODE: ${{ steps.meta.outputs.db_mode }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
+          COMPOSE_FILE="docker-compose.yml"
+          if [[ "${DB_MODE}" == "external" ]]; then
+            COMPOSE_FILE="docker-compose.external-db.yml"
+          fi
           DEPLOY_COMPLETED=false
           for i in $(seq 1 360); do
             STATUS_RAW="$(ssh "${SERVER_USER}@${SERVER_HOST}" "test -f '${REMOTE_DIR}/deploy-status.env' && cat '${REMOTE_DIR}/deploy-status.env' || true")"
@@ -570,7 +611,7 @@ jobs:
           fi
           STATUS_RAW="$(ssh "${SERVER_USER}@${SERVER_HOST}" "cat '${REMOTE_DIR}/deploy-status.env'")"
           echo "$STATUS_RAW"
-          ssh "${SERVER_USER}@${SERVER_HOST}" "cd '${REMOTE_DIR}' && docker compose ps"
+          ssh "${SERVER_USER}@${SERVER_HOST}" "cd '${REMOTE_DIR}' && docker compose -f '${COMPOSE_FILE}' ps"
           if [[ "${DEPLOY_MODE}" != "frontend-only" ]]; then
             ssh "${SERVER_USER}@${SERVER_HOST}" '
               set -euo pipefail
@@ -581,7 +622,7 @@ jobs:
                 sleep 5
               done
               echo "Backend health check did not become UP in time" >&2
-              podman ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
+              docker ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
               exit 1
             '
           fi
@@ -595,7 +636,7 @@ jobs:
                 sleep 5
               done
               echo "Frontend health check did not become ready in time" >&2
-              podman ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
+              docker ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
               exit 1
             '
           fi

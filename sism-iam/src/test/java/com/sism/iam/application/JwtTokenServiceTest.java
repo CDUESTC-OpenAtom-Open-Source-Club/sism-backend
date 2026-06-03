@@ -331,6 +331,18 @@ class JwtTokenServiceTest {
     }
 
     @Test
+    @DisplayName("Should reject malformed refresh token in refresh flow")
+    void shouldRejectMalformedRefreshTokenInRefreshFlow() {
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> jwtTokenService.refreshToken("invalid-token")
+        );
+
+        assertEquals("Invalid refresh token", exception.getMessage());
+        verify(blacklistService, never()).blacklist("invalid-token");
+    }
+
+    @Test
     @DisplayName("Should invalidate blacklisted token")
     void shouldInvalidateBlacklistedToken() {
         com.sism.util.TokenBlacklistService blacklistService = Mockito.mock(com.sism.util.TokenBlacklistService.class);
