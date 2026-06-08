@@ -232,10 +232,10 @@ public interface JpaTaskRepositoryInternal extends JpaRepository<StrategicTask, 
               AND (:orgId IS NULL OR t.org_id = :orgId)
               AND (:createdByOrgId IS NULL OR t.created_by_org_id = :createdByOrgId)
               AND (:accessibleOrgId IS NULL OR t.org_id = :accessibleOrgId OR t.created_by_org_id = :accessibleOrgId)
-              AND (COALESCE(:taskType, '') = '' OR t.task_type = :taskType)
-              AND (COALESCE(:name, '') = '' OR t.name ILIKE CONCAT('%', :name, '%'))
-              AND (COALESCE(:planStatus, '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(:planStatus))
-              AND (COALESCE(:taskStatus, '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(:taskStatus))
+              AND (COALESCE(CAST(:taskType AS TEXT), '') = '' OR t.task_type = CAST(:taskType AS TEXT))
+              AND (COALESCE(CAST(:name AS TEXT), '') = '' OR t.name ILIKE CONCAT('%', CAST(:name AS TEXT), '%'))
+              AND (COALESCE(CAST(:planStatus AS TEXT), '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(CAST(:planStatus AS TEXT)))
+              AND (COALESCE(CAST(:taskStatus AS TEXT), '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(CAST(:taskStatus AS TEXT)))
             """,
             countQuery = """
             SELECT COUNT(*)
@@ -247,10 +247,10 @@ public interface JpaTaskRepositoryInternal extends JpaRepository<StrategicTask, 
               AND (:orgId IS NULL OR t.org_id = :orgId)
               AND (:createdByOrgId IS NULL OR t.created_by_org_id = :createdByOrgId)
               AND (:accessibleOrgId IS NULL OR t.org_id = :accessibleOrgId OR t.created_by_org_id = :accessibleOrgId)
-              AND (COALESCE(:taskType, '') = '' OR t.task_type = :taskType)
-              AND (COALESCE(:name, '') = '' OR t.name ILIKE CONCAT('%', :name, '%'))
-              AND (COALESCE(:planStatus, '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(:planStatus))
-              AND (COALESCE(:taskStatus, '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(:taskStatus))
+              AND (COALESCE(CAST(:taskType AS TEXT), '') = '' OR t.task_type = CAST(:taskType AS TEXT))
+              AND (COALESCE(CAST(:name AS TEXT), '') = '' OR t.name ILIKE CONCAT('%', CAST(:name AS TEXT), '%'))
+              AND (COALESCE(CAST(:planStatus AS TEXT), '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(CAST(:planStatus AS TEXT)))
+              AND (COALESCE(CAST(:taskStatus AS TEXT), '') = '' OR LOWER(COALESCE(p.status, 'DRAFT')) = LOWER(CAST(:taskStatus AS TEXT)))
             """,
             nativeQuery = true)
     Page<TaskFlatView> findPagedFlatViewsByCriteria(
