@@ -12,6 +12,8 @@ import com.sism.main.interfaces.dto.BusinessImportDtos.ImportType;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportWorkflowResult;
 import com.sism.main.interfaces.dto.BusinessImportDtos.MilestoneImportValue;
 import com.sism.main.interfaces.dto.BusinessImportDtos.NormalizedImportRow;
+import com.sism.iam.domain.user.User;
+import com.sism.iam.domain.user.UserRepository;
 import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
@@ -30,10 +32,11 @@ import com.sism.task.domain.task.TaskType;
 import com.sism.workflow.application.WorkflowApplicationService;
 import com.sism.workflow.domain.definition.AuditFlowDef;
 import com.sism.workflow.domain.runtime.AuditInstance;
+import com.sism.workflow.domain.runtime.AuditInstanceRepository;
 import com.sism.workflow.domain.runtime.AuditStepInstance;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
@@ -54,10 +57,13 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class BusinessImportApplicationService {
 
+    private static final String SYSTEM_ADMIN_USERNAME = "admin";
+    private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
     private static final String STRATEGIC_WORKFLOW_CODE = "PLAN_DISPATCH_STRATEGY";
     private static final String DISTRIBUTION_WORKFLOW_CODE = "PLAN_DISPATCH_FUNCDEPT";
 
     private final ExcelBusinessImportParser parser;
+    private final UserRepository userRepository;
     private final OrganizationRepository organizationRepository;
     private final PlanRepository planRepository;
     private final TaskRepository taskRepository;
@@ -65,6 +71,8 @@ public class BusinessImportApplicationService {
     private final StrategyApplicationService strategyApplicationService;
     private final MilestoneApplicationService milestoneApplicationService;
     private final WorkflowApplicationService workflowApplicationService;
+    private final AuditInstanceRepository auditInstanceRepository;
+    private final TransactionTemplate transactionTemplate;
     private final Map<String, PreviewContext> previews = new ConcurrentHashMap<>();
 
     public ImportPreviewResponse previewStrategicTasks(MultipartFile file,
@@ -80,26 +88,34 @@ public class BusinessImportApplicationService {
 
         ParsedWorkbook parsed = parser.parse(file, ImportType.STRATEGIC_TASK, sheetName);
         List<ImportRowPreview> rows = enrichStrategicRows(parsed.rows(), cycleId, targetOrg, currentUser);
-        return storePreview(file, parsed, rows, ImportType.STRATEGIC_TASK, cycleId, targetOrg, currentUser);
+        return storePreview(file, parsed, rows, ImportType.STRATEGIC_TASK, cycleId, currentUser.getOrgId(), targetOrg, currentUser);
     }
 
     public ImportPreviewResponse previewDistribution(MultipartFile file,
                                                      Long cycleId,
                                                      Long targetCollegeOrgId,
+                                                     Long sourceOrgId,
                                                      String sheetName,
                                                      CurrentUser currentUser) {
         requireCycleAndUser(cycleId, currentUser);
+        Long effectiveSourceOrgId = sourceOrgId == null ? currentUser.getOrgId() : sourceOrgId;
+        if (!Objects.equals(effectiveSourceOrgId, currentUser.getOrgId()) && !isSystemAdmin(currentUser)) {
+            throw new SecurityException("只能导入当前职能部门的学院子指标");
+        }
+        SysOrg sourceOrg = requireOrg(effectiveSourceOrgId, "来源职能部门不存在");
+        if (sourceOrg.getType() != OrgType.functional) {
+            throw new IllegalArgumentException("学院子指标导入来源必须是职能部门");
+        }
         SysOrg targetOrg = requireOrg(targetCollegeOrgId, "目标学院不存在");
         if (targetOrg.getType() != OrgType.academic) {
             throw new IllegalArgumentException("指标下发导入目标必须是学院");
         }
 
         ParsedWorkbook parsed = parser.parse(file, ImportType.DISTRIBUTION, sheetName);
-        List<ImportRowPreview> rows = enrichDistributionRows(parsed.rows(), cycleId, targetOrg, currentUser);
-        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, targetOrg, currentUser);
+        List<ImportRowPreview> rows = enrichDistributionRows(parsed.rows(), cycleId, sourceOrg, targetOrg);
+        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, sourceOrg.getId(), targetOrg, currentUser);
     }
 
-    @Transactional
     public ImportCommitResponse commit(String batchId,
                                        ImportCommitRequest request,
                                        CurrentUser currentUser) {
@@ -117,14 +133,17 @@ public class BusinessImportApplicationService {
             throw new IllegalArgumentException("当前导入存在阻断错误，不能确认导入");
         }
 
-        ConflictMode conflictMode = request.conflictMode() == null ? ConflictMode.UPDATE : request.conflictMode();
+        ConflictMode conflictMode = request.conflictMode() == null ? ConflictMode.APPEND : request.conflictMode();
         if (conflictMode == ConflictMode.REPLACE_SCOPE) {
             throw new IllegalArgumentException("替换当前表格暂未开放，请先使用更新已有模式");
         }
 
-        CommitCounters counters = context.type() == ImportType.STRATEGIC_TASK
+        CommitCounters counters = transactionTemplate.execute(status -> context.type() == ImportType.STRATEGIC_TASK
                 ? commitStrategic(context, conflictMode, currentUser)
-                : commitDistribution(context, conflictMode, currentUser);
+                : commitDistribution(context, conflictMode));
+        if (counters == null) {
+            throw new IllegalStateException("导入事务未返回提交结果");
+        }
 
         ImportWorkflowResult workflow = null;
         if (Boolean.TRUE.equals(request.autoSubmitAndApprove())) {
@@ -132,6 +151,7 @@ public class BusinessImportApplicationService {
                     counters.plan(),
                     context.type() == ImportType.STRATEGIC_TASK ? STRATEGIC_WORKFLOW_CODE : DISTRIBUTION_WORKFLOW_CODE,
                     currentUser,
+                    counters.plan() == null ? currentUser.getOrgId() : counters.plan().getCreatedByOrgId(),
                     firstNonBlank(request.comment(), "导入后自动下发审批"));
         } else {
             workflow = new ImportWorkflowResult(
@@ -145,9 +165,7 @@ public class BusinessImportApplicationService {
         }
 
         previews.remove(batchId);
-        String status = Boolean.TRUE.equals(request.autoSubmitAndApprove())
-                ? ("APPROVED".equalsIgnoreCase(workflow.status()) ? "COMMITTED" : "COMMITTED_WITH_WORKFLOW_PENDING")
-                : "COMMITTED";
+        String status = resolveCommitStatus(request.autoSubmitAndApprove(), workflow);
         return new ImportCommitResponse(
                 batchId,
                 status,
@@ -156,6 +174,19 @@ public class BusinessImportApplicationService {
                 counters.skipped(),
                 workflow
         );
+    }
+
+    private String resolveCommitStatus(Boolean autoSubmitAndApprove, ImportWorkflowResult workflow) {
+        if (!Boolean.TRUE.equals(autoSubmitAndApprove) || workflow == null) {
+            return "COMMITTED";
+        }
+        if ("APPROVED".equalsIgnoreCase(workflow.status())) {
+            return "COMMITTED";
+        }
+        if ("FAILED".equalsIgnoreCase(workflow.status())) {
+            return "COMMITTED_WITH_WORKFLOW_FAILED";
+        }
+        return "COMMITTED_WITH_WORKFLOW_PENDING";
     }
 
     public ImportPreviewResponse getPreview(String batchId, CurrentUser currentUser) {
@@ -174,6 +205,7 @@ public class BusinessImportApplicationService {
                                                List<ImportRowPreview> rows,
                                                ImportType type,
                                                Long cycleId,
+                                               Long sourceOrgId,
                                                SysOrg targetOrg,
                                                CurrentUser currentUser) {
         ImportSummary summary = summarize(rows);
@@ -196,6 +228,7 @@ public class BusinessImportApplicationService {
                 batchId,
                 type,
                 cycleId,
+                sourceOrgId,
                 targetOrg.getId(),
                 currentUser.getId(),
                 parsed.confirmToken(),
@@ -238,14 +271,14 @@ public class BusinessImportApplicationService {
     }
 
     private List<ImportRowPreview> enrichDistributionRows(List<ImportRowPreview> rows,
-                                                         Long cycleId,
-                                                         SysOrg targetCollege,
-                                                         CurrentUser currentUser) {
-        Map<String, List<Indicator>> parentByName = indicatorRepository.findByTargetOrgId(currentUser.getOrgId()).stream()
+                                                          Long cycleId,
+                                                          SysOrg sourceOrg,
+                                                          SysOrg targetCollege) {
+        Map<String, List<Indicator>> parentByName = indicatorRepository.findByTargetOrgId(sourceOrg.getId()).stream()
                 .filter(indicator -> Boolean.FALSE.equals(indicator.getIsDeleted()))
                 .collect(Collectors.groupingBy(indicator -> normalizeKey(indicator.getIndicatorDesc())));
 
-        Plan plan = findPlan(cycleId, PlanLevel.FUNC_TO_COLLEGE, currentUser.getOrgId(), targetCollege.getId()).orElse(null);
+        Plan plan = findPlan(cycleId, PlanLevel.FUNC_TO_COLLEGE, sourceOrg.getId(), targetCollege.getId()).orElse(null);
         Map<String, Indicator> existingChildren = existingDistributionIndicators(plan, targetCollege);
 
         return rows.stream().map(row -> {
@@ -266,7 +299,7 @@ public class BusinessImportApplicationService {
                 normalized = withParentIndicatorId(normalized, parentCandidates.get(0).getId());
             }
 
-            String businessKey = distributionBusinessKey(cycleId, currentUser.getOrgId(), targetCollege.getId(), normalized);
+            String businessKey = distributionBusinessKey(cycleId, sourceOrg.getId(), targetCollege.getId(), normalized);
             ImportAction action = errors.isEmpty()
                     ? (existingChildren.containsKey(businessKey) ? ImportAction.UPDATE : ImportAction.CREATE)
                     : ImportAction.ERROR;
@@ -293,10 +326,6 @@ public class BusinessImportApplicationService {
 
         for (ImportRowPreview row : context.response().rows()) {
             if (row.action() == ImportAction.ERROR) {
-                counter.skipped++;
-                continue;
-            }
-            if (conflictMode == ConflictMode.APPEND && row.action() == ImportAction.UPDATE) {
                 counter.skipped++;
                 continue;
             }
@@ -338,14 +367,14 @@ public class BusinessImportApplicationService {
                 counter.updated++;
             }
             saveMilestones(indicator.getId(), normalized.milestones());
+            activateIndicatorIfPlanDistributed(plan, indicator);
         }
         return counter.toCounters();
     }
 
     private CommitCounters commitDistribution(PreviewContext context,
-                                             ConflictMode conflictMode,
-                                             CurrentUser currentUser) {
-        SysOrg currentOrg = requireOrg(currentUser.getOrgId(), "当前组织不存在");
+                                             ConflictMode conflictMode) {
+        SysOrg currentOrg = requireOrg(context.sourceOrgId(), "来源职能部门不存在");
         SysOrg targetCollege = requireOrg(context.targetOrgId(), "目标学院不存在");
         Plan plan = findOrCreatePlan(context.cycleId(), PlanLevel.FUNC_TO_COLLEGE, currentOrg.getId(), targetCollege.getId());
         CommitCounter counter = new CommitCounter(plan);
@@ -355,11 +384,6 @@ public class BusinessImportApplicationService {
                 counter.skipped++;
                 continue;
             }
-            if (conflictMode == ConflictMode.APPEND && row.action() == ImportAction.UPDATE) {
-                counter.skipped++;
-                continue;
-            }
-
             NormalizedImportRow normalized = row.normalized();
             Indicator parent = indicatorRepository.findById(normalized.parentIndicatorId())
                     .orElseThrow(() -> new IllegalArgumentException("父级指标不存在: " + normalized.parentIndicatorId()));
@@ -399,6 +423,7 @@ public class BusinessImportApplicationService {
                 counter.updated++;
             }
             saveMilestones(indicator.getId(), normalized.milestones());
+            activateIndicatorIfPlanDistributed(plan, indicator);
         }
         return counter.toCounters();
     }
@@ -406,11 +431,19 @@ public class BusinessImportApplicationService {
     private ImportWorkflowResult autoSubmitAndApprove(Plan plan,
                                                       String workflowCode,
                                                       CurrentUser currentUser,
+                                                      Long requesterOrgId,
                                                       String comment) {
         if (plan == null) {
             return new ImportWorkflowResult(true, workflowCode, null, "FAILED", 0, null, "导入未产生可审批计划");
         }
+        if (plan.isDistributed()) {
+            return new ImportWorkflowResult(true, workflowCode, plan.getAuditInstanceId(), "FAILED", 0, null, "当前计划已下发，不能重复发起自动审批");
+        }
+        String originalPlanStatus = plan.getStatus();
+        Long originalAuditInstanceId = plan.getAuditInstanceId();
+        AuditInstance startedInstance = null;
         try {
+            User systemAdmin = resolveSystemAdmin();
             AuditFlowDef flowDef = workflowApplicationService.getAuditFlowDefByCode(workflowCode);
             if (flowDef == null || !Boolean.TRUE.equals(flowDef.getIsActive())) {
                 return new ImportWorkflowResult(true, workflowCode, null, "FAILED", 0, null, "自动审批流程未启用");
@@ -428,8 +461,9 @@ public class BusinessImportApplicationService {
             AuditInstance current = workflowApplicationService.startAuditInstance(
                     instance,
                     currentUser.getId(),
-                    currentUser.getOrgId(),
+                    requesterOrgId,
                     comment);
+            startedInstance = current;
 
             int approvedSteps = 0;
             for (int attempt = 0; attempt < 20 && AuditInstance.STATUS_PENDING.equals(current.getStatus()); attempt++) {
@@ -437,13 +471,10 @@ public class BusinessImportApplicationService {
                 if (pending.isEmpty()) {
                     break;
                 }
-                Long approverId = pending.get().getApproverId() != null
-                        ? pending.get().getApproverId()
-                        : currentUser.getId();
                 current = workflowApplicationService.approveAuditInstance(
                         current,
-                        approverId,
-                        "系统自动审批通过：来源于导入批次，确认人 " + currentUser.getUsername());
+                        systemAdmin.getId(),
+                        "系统自动审批通过：来源于导入批次，系统管理员统一处理，确认人 " + currentUser.getUsername());
                 approvedSteps++;
             }
 
@@ -460,8 +491,57 @@ public class BusinessImportApplicationService {
                             ? "自动下发审批已完成"
                             : "自动审批未全部完成，请进入审批中心处理");
         } catch (Exception ex) {
+            removeFailedAutoWorkflowInstance(startedInstance);
+            restorePlanAfterAutoWorkflowFailure(plan, originalPlanStatus, originalAuditInstanceId);
             return new ImportWorkflowResult(true, workflowCode, null, "FAILED", 0, null, ex.getMessage());
         }
+    }
+
+    private void removeFailedAutoWorkflowInstance(AuditInstance startedInstance) {
+        if (startedInstance == null || startedInstance.getId() == null) {
+            return;
+        }
+        auditInstanceRepository.findById(startedInstance.getId())
+                .ifPresent(auditInstanceRepository::delete);
+    }
+
+    private void restorePlanAfterAutoWorkflowFailure(Plan plan, String originalStatus, Long originalAuditInstanceId) {
+        if (plan == null || plan.isDistributed()) {
+            return;
+        }
+        plan.setStatus(originalStatus);
+        plan.setAuditInstanceId(originalAuditInstanceId);
+        planRepository.save(plan);
+    }
+
+    private User resolveSystemAdmin() {
+        User systemAdmin = userRepository.findByUsername(SYSTEM_ADMIN_USERNAME)
+                .orElseThrow(() -> new IllegalStateException("系统管理员账号不存在，无法自动审批"));
+        if (!Boolean.TRUE.equals(systemAdmin.getIsActive())) {
+            throw new IllegalStateException("系统管理员账号已停用，无法自动审批");
+        }
+        boolean hasSystemAdminRole = systemAdmin.getRoles() != null
+                && systemAdmin.getRoles().stream()
+                .anyMatch(role -> SYSTEM_ADMIN_ROLE_CODE.equals(role.getRoleCode()));
+        if (!hasSystemAdminRole) {
+            throw new IllegalStateException("系统管理员账号未配置系统管理员角色，无法自动审批");
+        }
+        return systemAdmin;
+    }
+
+    private boolean isSystemAdmin(CurrentUser currentUser) {
+        return currentUser != null
+                && currentUser.getAuthorities() != null
+                && currentUser.getAuthorities().stream()
+                .anyMatch(authority -> SYSTEM_ADMIN_ROLE_CODE.equals(authority.getAuthority()));
+    }
+
+    private void activateIndicatorIfPlanDistributed(Plan plan, Indicator indicator) {
+        if (plan == null || indicator == null || indicator.getId() == null || !plan.isDistributed()) {
+            return;
+        }
+        indicator.activate();
+        indicatorRepository.save(indicator);
     }
 
     private Plan findOrCreatePlan(Long cycleId, PlanLevel planLevel, Long createdByOrgId, Long targetOrgId) {
@@ -715,6 +795,7 @@ public class BusinessImportApplicationService {
             String batchId,
             ImportType type,
             Long cycleId,
+            Long sourceOrgId,
             Long targetOrgId,
             Long currentUserId,
             String confirmToken,

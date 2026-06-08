@@ -33,7 +33,7 @@ public class BusinessImportController {
     private final BusinessImportApplicationService businessImportApplicationService;
 
     @PostMapping(value = "/strategic-tasks/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
     @Operation(summary = "预览战略任务指标导入")
     public ResponseEntity<ApiResponse<ImportPreviewResponse>> previewStrategicTasks(
             @RequestPart("file") MultipartFile file,
@@ -51,7 +51,7 @@ public class BusinessImportController {
     }
 
     @PostMapping("/strategic-tasks/{batchId}/commit")
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
     @Operation(summary = "确认战略任务指标导入")
     public ResponseEntity<ApiResponse<ImportCommitResponse>> commitStrategicTasks(
             @PathVariable String batchId,
@@ -62,12 +62,13 @@ public class BusinessImportController {
     }
 
     @PostMapping(value = "/distribution/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
     @Operation(summary = "预览学院子指标导入")
     public ResponseEntity<ApiResponse<ImportPreviewResponse>> previewDistribution(
             @RequestPart("file") MultipartFile file,
             @RequestParam Long cycleId,
             @RequestParam Long targetCollegeOrgId,
+            @RequestParam(required = false) Long sourceOrgId,
             @RequestParam(required = false) String sheetName,
             @AuthenticationPrincipal CurrentUser currentUser) {
         return ResponseEntity.ok(ApiResponse.success(
@@ -75,12 +76,13 @@ public class BusinessImportController {
                         file,
                         cycleId,
                         targetCollegeOrgId,
+                        sourceOrgId,
                         sheetName,
                         currentUser)));
     }
 
     @PostMapping("/distribution/{batchId}/commit")
-    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
     @Operation(summary = "确认学院子指标导入")
     public ResponseEntity<ApiResponse<ImportCommitResponse>> commitDistribution(
             @PathVariable String batchId,

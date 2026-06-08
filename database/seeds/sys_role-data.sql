@@ -1,8 +1,9 @@
 -- sys_role clean seed
 -- Source rule:
 -- - Align to the current plan-centric workflow model.
--- - Keep only the four canonical business roles:
+-- - Keep four canonical business roles plus one technical system role:
 --   reporter / department head / strategy dept head / vice president.
+--   system admin is reserved for maintenance and automatic workflow actions.
 -- - Workflow seat names such as college dean or strategy final approver are resolved
 --   from workflow step + organization scope, not from extra role rows.
 
@@ -58,6 +59,16 @@ VALUES
         '高级审批角色。用于分管校领导审批节点与学院院长审批节点，具体身份由组织层级与当前流程节点共同决定。',
         NOW(),
         NOW()
+    ),
+    (
+        5,
+        'ROLE_SYSTEM_ADMIN',
+        '系统管理员',
+        'ALL',
+        true,
+        '系统维护与自动审批专用角色，不作为人工业务审批席位参与候选人解析。',
+        NOW(),
+        NOW()
     )
 ON CONFLICT (id) DO UPDATE
 SET
@@ -69,6 +80,6 @@ SET
     updated_at = EXCLUDED.updated_at;
 
 DELETE FROM public.sys_role
-WHERE id NOT IN (1, 2, 3, 4);
+WHERE id NOT IN (1, 2, 3, 4, 5);
 
 COMMIT;

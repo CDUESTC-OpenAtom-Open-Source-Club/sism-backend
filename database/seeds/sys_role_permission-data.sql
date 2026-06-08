@@ -42,9 +42,22 @@ INSERT INTO public.sys_role_permission (id, role_id, perm_id, created_at) VALUES
     (DEFAULT, 4, 7, NOW()),
     (DEFAULT, 4, 9, NOW()),
     (DEFAULT, 4, 11, NOW()),
-    (DEFAULT, 4, 12, NOW());
+    (DEFAULT, 4, 12, NOW()),
+
+    (DEFAULT, 5, 1, NOW()),
+    (DEFAULT, 5, 2, NOW()),
+    (DEFAULT, 5, 3, NOW()),
+    (DEFAULT, 5, 4, NOW()),
+    (DEFAULT, 5, 5, NOW()),
+    (DEFAULT, 5, 6, NOW()),
+    (DEFAULT, 5, 7, NOW()),
+    (DEFAULT, 5, 8, NOW()),
+    (DEFAULT, 5, 9, NOW()),
+    (DEFAULT, 5, 10, NOW()),
+    (DEFAULT, 5, 11, NOW()),
+    (DEFAULT, 5, 12, NOW());
 
 DELETE FROM public.sys_role_permission
-WHERE role_id NOT IN (1, 2, 3, 4);
+WHERE role_id NOT IN (1, 2, 3, 4, 5);
 
 COMMIT;

@@ -28,7 +28,7 @@ on:
       db_mode:
         description: Database mode
         required: false
-        default: external
+        default: internal
         type: choice
         options:
           - external
@@ -167,11 +167,11 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             DEPLOY_MODE="${{ github.event.inputs.deploy_mode || 'full-stack' }}"
             FRONTEND_TAG="${{ github.event.inputs.frontend_tag || 'main' }}"
-            DB_MODE="${{ github.event.inputs.db_mode || 'external' }}"
+            DB_MODE="${{ github.event.inputs.db_mode || 'internal' }}"
           else
             DEPLOY_MODE="full-stack"
             FRONTEND_TAG="main"
-            DB_MODE="external"
+            DB_MODE="internal"
           fi
           echo "target_env=${TARGET_ENV}" >> "$GITHUB_OUTPUT"
           echo "deploy_mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
@@ -615,8 +615,11 @@ jobs:
           if [[ "${DEPLOY_MODE}" != "frontend-only" ]]; then
             ssh "${SERVER_USER}@${SERVER_HOST}" '
               set -euo pipefail
+              cd "'"${REMOTE_DIR}"'"
+              BACKEND_PORT="$(awk -F= "/^BACKEND_PORT=/{print \$2}" .env | tail -n 1)"
+              BACKEND_PORT="${BACKEND_PORT:-8080}"
               for i in $(seq 1 24); do
-                if curl -fsS http://127.0.0.1:8080/api/v1/actuator/health | grep -q "\"status\":\"UP\""; then
+                if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/v1/actuator/health" | grep -q "\"status\":\"UP\""; then
                   exit 0
                 fi
                 sleep 5
@@ -629,8 +632,11 @@ jobs:
           if [[ "${DEPLOY_MODE}" != "backend-only" ]]; then
             ssh "${SERVER_USER}@${SERVER_HOST}" '
               set -euo pipefail
+              cd "'"${REMOTE_DIR}"'"
+              FRONTEND_PORT="$(awk -F= "/^FRONTEND_PORT=/{print \$2}" .env | tail -n 1)"
+              FRONTEND_PORT="${FRONTEND_PORT:-80}"
               for i in $(seq 1 12); do
-                if curl -fsS http://127.0.0.1/ >/dev/null; then
+                if curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/" >/dev/null; then
                   exit 0
                 fi
                 sleep 5

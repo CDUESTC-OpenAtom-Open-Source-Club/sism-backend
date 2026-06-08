@@ -89,17 +89,11 @@ class BasicTaskWeightValidationServiceTest {
         Indicator basicChildB = buildChildIndicator(2043L, 41001L, 36L, 55L, BigDecimal.valueOf(50));
         Indicator developmentChild = buildChildIndicator(2041L, 41023L, 36L, 55L, BigDecimal.valueOf(40));
 
-        when(jdbcTemplate.queryForList(
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.eq(Long.class),
-                org.mockito.ArgumentMatchers.eq(403655L)))
-                .thenReturn(List.of());
         when(planRepository.findById(403655L)).thenReturn(java.util.Optional.of(plan));
         when(jdbcTemplate.queryForList(
-                org.mockito.ArgumentMatchers.contains("t.org_id = ?"),
+                org.mockito.ArgumentMatchers.contains("t.plan_id = ?"),
                 org.mockito.ArgumentMatchers.eq(Long.class),
-                org.mockito.ArgumentMatchers.eq(36L),
-                org.mockito.ArgumentMatchers.eq(4L)))
+                org.mockito.ArgumentMatchers.eq(403655L)))
                 .thenReturn(List.of(41001L));
         when(indicatorRepository.findByTaskIds(List.of(41001L)))
                 .thenReturn(List.of(basicChildA, basicChildB));

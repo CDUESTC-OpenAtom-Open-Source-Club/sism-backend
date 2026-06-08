@@ -23,6 +23,7 @@ INSERT INTO public.sys_user (
 )
 VALUES
     (124, NOW(), NOW(), true, '$2b$10$D6/ksnZaAwCkuD13HaTHTOrTKNnlawU5eThyDlK7t.rZx5PrRpgLy', '系统管理员', NULL, 'admin', 35, NULL, 0),
+    (186, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '战略发展部分管校领导1', NULL, 'zlb_vp1', 35, NULL, 0),
     (188, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '战略部管理员', NULL, 'zlb_admin', 35, NULL, 0),
     (189, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '战略发展部负责人1', NULL, 'zlb_final1', 35, NULL, 0),
     (190, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '战略发展部负责人2', NULL, 'zlb_final2', 35, NULL, 0),

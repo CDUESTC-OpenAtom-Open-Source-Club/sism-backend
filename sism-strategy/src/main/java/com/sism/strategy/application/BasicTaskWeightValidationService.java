@@ -32,6 +32,12 @@ public class BasicTaskWeightValidationService {
             return;
         }
 
+        java.util.Optional<Plan> plan = planRepository.findById(planId);
+        if (plan.map(Plan::getPlanLevel).filter(PlanLevel.FUNC_TO_COLLEGE::equals).isPresent()) {
+            validateFuncToCollegeIndicators(plan.get(), targetOrgId);
+            return;
+        }
+
         Set<Long> basicTaskIds = jdbcTemplate.queryForList("""
                         SELECT t.task_id
                         FROM public.sys_task t
@@ -44,8 +50,7 @@ public class BasicTaskWeightValidationService {
         ).stream().collect(Collectors.toSet());
 
         if (basicTaskIds.isEmpty()) {
-            validateFuncToCollegeIndicators(planId, targetOrgId);
-            return;
+            throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
         }
 
         BigDecimal totalWeight = indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
@@ -67,7 +72,10 @@ public class BasicTaskWeightValidationService {
     private void validateFuncToCollegeIndicators(Long planId, Long targetOrgId) {
         Plan plan = planRepository.findById(planId)
                 .orElseThrow(() -> new IllegalArgumentException("Plan not found: " + planId));
+        validateFuncToCollegeIndicators(plan, targetOrgId);
+    }
 
+    private void validateFuncToCollegeIndicators(Plan plan, Long targetOrgId) {
         if (plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
             throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
         }
@@ -75,14 +83,12 @@ public class BasicTaskWeightValidationService {
         Set<Long> basicTaskIds = jdbcTemplate.queryForList("""
                         SELECT t.task_id
                         FROM public.sys_task t
-                        WHERE t.org_id = ?
-                          AND t.cycle_id = ?
+                        WHERE t.plan_id = ?
                           AND COALESCE(t.is_deleted, false) = false
                           AND t.task_type = 'BASIC'
                         """,
                 Long.class,
-                plan.getCreatedByOrgId(),
-                plan.getCycleId()
+                plan.getId()
         ).stream().collect(Collectors.toSet());
 
         if (basicTaskIds.isEmpty()) {

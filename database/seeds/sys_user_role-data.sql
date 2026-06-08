@@ -1,7 +1,7 @@
 -- sys_user_role clean seed
 -- Scope:
 -- - Bind the workflow roles to the full organization test-account matrix.
--- - Keep only four business roles.
+-- - Keep four business roles plus the technical system administrator role.
 -- - College dean seats are merged into vice president role (4).
 -- - Strategy final approver seats are merged into strategy dept head role (3).
 -- - Functional department leader seats are mapped to vice president role (4) for
@@ -10,7 +10,8 @@
 BEGIN;
 
 INSERT INTO public.sys_user_role (id, user_id, role_id, created_at) VALUES
-    (DEFAULT, 124, 4, NOW()),
+    (DEFAULT, 124, 5, NOW()),
+    (DEFAULT, 186, 4, NOW()),
     (DEFAULT, 188, 1, NOW()),
     (DEFAULT, 189, 3, NOW()),
     (DEFAULT, 190, 3, NOW()),
@@ -97,6 +98,6 @@ INSERT INTO public.sys_user_role (id, user_id, role_id, created_at) VALUES
     (DEFAULT, 387, 4, NOW());
 
 DELETE FROM public.sys_user_role
-WHERE role_id NOT IN (1, 2, 3, 4);
+WHERE role_id NOT IN (1, 2, 3, 4, 5);
 
 COMMIT;

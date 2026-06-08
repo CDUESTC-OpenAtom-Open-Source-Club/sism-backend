@@ -268,6 +268,23 @@ public class ExcelBusinessImportParser {
                 || row.weight().compareTo(BigDecimal.valueOf(100)) > 0)) {
             errors.add("权重必须在 0 到 100 之间");
         }
+        if (row.milestones() != null) {
+            for (int index = 0; index < row.milestones().size(); index++) {
+                MilestoneImportValue milestone = row.milestones().get(index);
+                if (milestone == null || isBlank(milestone.name())) {
+                    continue;
+                }
+                int displayIndex = index + 1;
+                if (milestone.dueAt() == null) {
+                    errors.add("第 " + displayIndex + " 个里程碑截止时间无法解析");
+                }
+                if (milestone.targetProgress() == null
+                        || milestone.targetProgress() < 0
+                        || milestone.targetProgress() > 100) {
+                    errors.add("第 " + displayIndex + " 个里程碑目标进度必须在 0 到 100 之间");
+                }
+            }
+        }
         return errors;
     }
 

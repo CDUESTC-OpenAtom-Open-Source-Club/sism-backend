@@ -103,4 +103,39 @@ class ExcelBusinessImportParserTest {
             throw new AssertionError(ex);
         }
     }
+
+    @Test
+    @DisplayName("Should block invalid milestone due date and progress")
+    void shouldBlockInvalidMilestoneDueDateAndProgress() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("战略任务");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("任务类型");
+            header.createCell(1).setCellValue("战略任务");
+            header.createCell(2).setCellValue("核心指标");
+            header.createCell(3).setCellValue("指标类型");
+            header.createCell(4).setCellValue("权重");
+            header.createCell(5).setCellValue("里程碑明细");
+
+            Row data = sheet.createRow(1);
+            data.createCell(0).setCellValue("发展性");
+            data.createCell(1).setCellValue("完善校院两级提案办理机制");
+            data.createCell(2).setCellValue("提案办理满意度");
+            data.createCell(3).setCellValue("定量");
+            data.createCell(4).setCellValue("25%");
+            data.createCell(5).setCellValue("""
+                    1. 梳理提案清单（不是日期，33%）
+                    2. 推进督办与反馈（2026-06-30，120%）""");
+
+            var parsed = parser.parseSheet(sheet, ImportType.STRATEGIC_TASK);
+
+            assertEquals(1, parsed.rows().size());
+            var row = parsed.rows().get(0);
+            assertTrue(row.hasErrors());
+            assertTrue(row.errors().contains("第 1 个里程碑截止时间无法解析"));
+            assertTrue(row.errors().contains("第 2 个里程碑目标进度必须在 0 到 100 之间"));
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
 }
