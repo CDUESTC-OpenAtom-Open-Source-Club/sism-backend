@@ -507,8 +507,17 @@ public class IndicatorController {
     @GetMapping("/search")
     @Operation(summary = "按关键词搜索指标")
     public ResponseEntity<ApiResponse<List<IndicatorResponse>>> searchIndicators(
-            @RequestParam String keyword) {
-        List<Indicator> result = strategyApplicationService.searchIndicators(keyword);
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        List<Indicator> result;
+        if (keyword == null || keyword.isBlank()) {
+            int safePage = Math.max(page, 0);
+            int safeSize = Math.max(size, 1);
+            result = strategyApplicationService.getIndicators(PageRequest.of(safePage, safeSize)).getContent();
+        } else {
+            result = strategyApplicationService.searchIndicators(keyword);
+        }
         List<IndicatorResponse> responses = toIndicatorResponses(result);
         return ResponseEntity.ok(ApiResponse.success(responses));
     }

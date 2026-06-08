@@ -121,8 +121,45 @@ class TaskApplicationServiceTest {
                 pageableCaptor.capture());
         assertEquals(0, pageableCaptor.getValue().getPageNumber());
         assertEquals(2, pageableCaptor.getValue().getPageSize());
-        assertEquals("t.name: DESC", pageableCaptor.getValue().getSort().toString());
+        assertEquals("name: DESC", pageableCaptor.getValue().getSort().toString());
         verifyNoInteractions(organizationRepository, eventPublisher, eventStore, planBindingRepository);
+    }
+
+    @Test
+    @DisplayName("Should use projection aliases for default search sort")
+    void shouldUseProjectionAliasesForDefaultSearchSort() {
+        TaskQueryRequest request = new TaskQueryRequest();
+        request.setPage(0);
+        request.setSize(5);
+
+        when(taskRepository.findPagedFlatViewsByCriteria(
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), org.springframework.data.domain.PageRequest.of(0, 5), 0));
+
+        taskApplicationService.searchTasks(request, null);
+
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(taskRepository).findPagedFlatViewsByCriteria(
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                eq(null),
+                pageableCaptor.capture());
+        assertEquals("sortOrder: ASC,id: ASC", pageableCaptor.getValue().getSort().toString());
     }
 
     @Test

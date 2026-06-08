@@ -430,22 +430,22 @@ public class TaskApplicationService {
                 : Sort.Direction.ASC;
 
         if (sortBy == null || sortBy.isBlank()) {
-            return Sort.by(Sort.Order.asc("t.sort_order"), Sort.Order.asc("t.task_id"));
+            return Sort.by(Sort.Order.asc("sortOrder"), Sort.Order.asc("id"));
         }
 
         return switch (sortBy) {
-            case "id" -> Sort.by(direction, "t.task_id");
-            case "name" -> Sort.by(direction, "t.name");
-            case "taskType" -> Sort.by(direction, "t.task_type");
-            case "planId" -> Sort.by(direction, "t.plan_id");
-            case "cycleId" -> Sort.by(direction, "t.cycle_id");
-            case "orgId" -> Sort.by(direction, "t.org_id");
-            case "createdByOrgId" -> Sort.by(direction, "t.created_by_org_id");
-            case "sortOrder" -> Sort.by(direction, "t.sort_order");
-            case "planStatus" -> Sort.by(direction, "p.status");
-            case "taskStatus" -> Sort.by(direction, "p.status");
-            case "createdAt" -> Sort.by(direction, "t.created_at");
-            case "updatedAt" -> Sort.by(direction, "t.updated_at");
+            case "id" -> Sort.by(direction, "id");
+            case "name" -> Sort.by(direction, "name");
+            case "taskType" -> Sort.by(direction, "taskType");
+            case "planId" -> Sort.by(direction, "planId");
+            case "cycleId" -> Sort.by(direction, "cycleId");
+            case "orgId" -> Sort.by(direction, "orgId");
+            case "createdByOrgId" -> Sort.by(direction, "createdByOrgId");
+            case "sortOrder" -> Sort.by(direction, "sortOrder");
+            case "planStatus" -> Sort.by(direction, "planStatus");
+            case "taskStatus" -> Sort.by(direction, "taskStatus");
+            case "createdAt" -> Sort.by(direction, "createdAt");
+            case "updatedAt" -> Sort.by(direction, "updatedAt");
             default -> throw new IllegalArgumentException("不支持的排序字段: " + sortBy);
         };
     }

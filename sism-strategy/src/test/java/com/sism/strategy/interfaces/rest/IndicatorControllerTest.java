@@ -84,6 +84,22 @@ class IndicatorControllerTest {
     }
 
     @Test
+    @DisplayName("searchIndicators should return a paged list when keyword is absent")
+    void shouldReturnPagedIndicatorsWhenSearchKeywordIsAbsent() {
+        Indicator indicator = createIndicator(2006L, 41003L);
+        when(strategyApplicationService.getIndicators(PageRequest.of(0, 5)))
+                .thenReturn(new PageImpl<>(List.of(indicator), PageRequest.of(0, 5), 1));
+
+        ResponseEntity<ApiResponse<List<IndicatorController.IndicatorResponse>>> response =
+                controller.searchIndicators(null, 0, 5);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(1, response.getBody().getData().size());
+        assertEquals(2006L, response.getBody().getData().get(0).getId());
+        verify(strategyApplicationService).getIndicators(PageRequest.of(0, 5));
+    }
+
+    @Test
     @DisplayName("getIndicatorById should populate cycleId and year from task-plan-cycle chain")
     void shouldPopulateCycleIdAndYearWhenGettingById() {
         Indicator indicator = createIndicator(2005L, 41003L);
