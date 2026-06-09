@@ -105,6 +105,58 @@ class ExcelBusinessImportParserTest {
     }
 
     @Test
+    @DisplayName("Should parse distribution export headers and milestone column")
+    void shouldParseDistributionExportHeadersAndMilestoneColumn() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("指标下发");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("学院");
+            header.createCell(2).setCellValue("父级战略任务");
+            header.createCell(3).setCellValue("父级核心指标");
+            header.createCell(4).setCellValue("子指标名称");
+            header.createCell(5).setCellValue("指标类型");
+            header.createCell(6).setCellValue("备注");
+            header.createCell(7).setCellValue("权重");
+            header.createCell(8).setCellValue("进度");
+            header.createCell(9).setCellValue("里程碑");
+
+            Row data = sheet.createRow(1);
+            data.createCell(0).setCellValue(1);
+            data.createCell(1).setCellValue("工学院");
+            data.createCell(2).setCellValue("人力资源部师资队伍优化任务");
+            data.createCell(3).setCellValue("推进绩效薪酬制度改革方案落地");
+            data.createCell(4).setCellValue("推进绩效薪酬制度改革方案落地");
+            data.createCell(5).setCellValue("定性");
+            data.createCell(6).setCellValue("战略发展部下发至人力资源部");
+            data.createCell(7).setCellValue(40);
+            data.createCell(8).setCellValue("当前进度：0%");
+            data.createCell(9).setCellValue("""
+                    1. 完成绩效薪酬改革调研（2026-03-31 00:00，33%）
+                    2. 完成方案论证与试点（2026-06-30 00:00，67%）
+                    3. 全面推进与效果评估（2026-12-31 00:00，100%）""");
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(1, parsed.rows().size());
+            var row = parsed.rows().get(0);
+            assertTrue(row.errors().isEmpty());
+            assertTrue(row.warnings().isEmpty());
+            assertEquals("工学院", row.normalized().college());
+            assertEquals("人力资源部师资队伍优化任务", row.normalized().parentStrategicTask());
+            assertEquals("推进绩效薪酬制度改革方案落地", row.normalized().parentIndicator());
+            assertEquals("推进绩效薪酬制度改革方案落地", row.normalized().indicatorName());
+            assertEquals(3, row.normalized().milestones().size());
+            assertEquals(LocalDateTime.of(2026, 3, 31, 0, 0), row.normalized().milestones().get(0).dueAt());
+            assertEquals(33, row.normalized().milestones().get(0).targetProgress());
+            assertEquals(LocalDateTime.of(2026, 12, 31, 0, 0), row.normalized().milestones().get(2).dueAt());
+            assertEquals(100, row.normalized().milestones().get(2).targetProgress());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
     @DisplayName("Should block invalid milestone due date and progress")
     void shouldBlockInvalidMilestoneDueDateAndProgress() {
         try (Workbook workbook = new XSSFWorkbook()) {

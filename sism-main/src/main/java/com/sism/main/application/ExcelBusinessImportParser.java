@@ -65,7 +65,7 @@ public class ExcelBusinessImportParser {
             Map.entry("indicatorName", List.of("子指标名称", "指标名称", "学院指标")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "子指标权重")),
-            Map.entry("milestoneDetail", List.of("里程碑明细", "阶段任务", "阶段安排")),
+            Map.entry("milestoneDetail", List.of("里程碑", "里程碑明细", "阶段任务", "阶段安排")),
             Map.entry("milestoneName", List.of("里程碑名称", "阶段名称")),
             Map.entry("milestoneDueAt", List.of("截止时间", "完成时间", "节点时间")),
             Map.entry("milestoneProgress", List.of("目标进度", "阶段进度")),
