@@ -7,6 +7,7 @@ import com.sism.common.PageResult;
 import com.sism.strategy.domain.indicator.IndicatorStatus;
 import com.sism.organization.domain.SysOrg;
 import com.sism.organization.domain.OrganizationRepository;
+import com.sism.strategy.application.DistributedPlanMutationBlockedException;
 import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
@@ -30,6 +31,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -245,19 +247,23 @@ public class IndicatorController {
         SysOrg targetOrg = organizationRepository.findById(targetOrgId)
                 .orElseThrow(() -> new IllegalArgumentException("目标组织未找到: " + targetOrgId));
 
-        Indicator created = strategyApplicationService.createIndicator(
-                description,
-                ownerOrg,
-                targetOrg,
-                request.getTaskId(),
-                request.getParentIndicatorId(),
-                indicatorType,
-                request.getWeightPercent(),
-                request.getSortOrder(),
-                request.getRemark(),
-                request.getProgress()
-        );
-        return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(created)));
+        try {
+            Indicator created = strategyApplicationService.createIndicator(
+                    description,
+                    ownerOrg,
+                    targetOrg,
+                    request.getTaskId(),
+                    request.getParentIndicatorId(),
+                    indicatorType,
+                    request.getWeightPercent(),
+                    request.getSortOrder(),
+                    request.getRemark(),
+                    request.getProgress()
+            );
+            return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(created)));
+        } catch (DistributedPlanMutationBlockedException ex) {
+            return distributedPlanBlockedResponse(ex);
+        }
     }
 
     @PutMapping("/{id}")
@@ -278,26 +284,48 @@ public class IndicatorController {
         if ((indicatorDesc == null || indicatorDesc.isBlank()) && request.getIndicatorName() != null) {
             indicatorDesc = request.getIndicatorName();
         }
-        Indicator updated = strategyApplicationService.updateIndicator(
-                id,
-                indicatorDesc,
-                request.getWeightPercent(),
-                request.getProgress(),
-                request.getSortOrder(),
-                request.getRemark(),
-                request.getTaskId(),
-                ownerOrg,
-                targetOrg
-        );
-        return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(updated)));
+        try {
+            Indicator updated = strategyApplicationService.updateIndicator(
+                    id,
+                    indicatorDesc,
+                    request.getWeightPercent(),
+                    request.getProgress(),
+                    request.getSortOrder(),
+                    request.getRemark(),
+                    request.getTaskId(),
+                    ownerOrg,
+                    targetOrg
+            );
+            return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(updated)));
+        } catch (DistributedPlanMutationBlockedException ex) {
+            return distributedPlanBlockedResponse(ex);
+        }
     }
 
     @DeleteMapping("/{id}")
     @PreAuthorize(INDICATOR_DELETE_ACCESS)
     @Operation(summary = "删除指标")
     public ResponseEntity<ApiResponse<Void>> deleteIndicator(@PathVariable Long id) {
-        strategyApplicationService.deleteIndicator(id);
-        return ResponseEntity.ok(ApiResponse.success());
+        try {
+            strategyApplicationService.deleteIndicator(id);
+            return ResponseEntity.ok(ApiResponse.success());
+        } catch (DistributedPlanMutationBlockedException ex) {
+            return distributedPlanBlockedVoidResponse(ex);
+        }
+    }
+
+    private ResponseEntity<ApiResponse<IndicatorResponse>> distributedPlanBlockedResponse(
+            DistributedPlanMutationBlockedException ex) {
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error(HttpStatus.CONFLICT.value(), ex.getMessage()));
+    }
+
+    private ResponseEntity<ApiResponse<Void>> distributedPlanBlockedVoidResponse(
+            DistributedPlanMutationBlockedException ex) {
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error(HttpStatus.CONFLICT.value(), ex.getMessage()));
     }
 
     @PostMapping("/{id}/submit")

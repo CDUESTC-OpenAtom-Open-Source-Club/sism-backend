@@ -18,6 +18,7 @@ import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
 import com.sism.shared.application.dto.CurrentUser;
+import com.sism.strategy.application.BasicTaskWeightValidationService;
 import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
@@ -70,6 +71,7 @@ public class BusinessImportApplicationService {
     private final IndicatorRepository indicatorRepository;
     private final StrategyApplicationService strategyApplicationService;
     private final MilestoneApplicationService milestoneApplicationService;
+    private final BasicTaskWeightValidationService basicTaskWeightValidationService;
     private final WorkflowApplicationService workflowApplicationService;
     private final AuditInstanceRepository auditInstanceRepository;
     private final TransactionTemplate transactionTemplate;
@@ -138,18 +140,49 @@ public class BusinessImportApplicationService {
             throw new IllegalArgumentException("替换当前表格暂未开放，请先使用更新已有模式");
         }
 
-        CommitCounters counters = transactionTemplate.execute(status -> context.type() == ImportType.STRATEGIC_TASK
-                ? commitStrategic(context, conflictMode, currentUser)
-                : commitDistribution(context, conflictMode));
+        boolean autoSubmitAndApprove = Boolean.TRUE.equals(request.autoSubmitAndApprove());
+        String workflowCode = context.type() == ImportType.STRATEGIC_TASK
+                ? STRATEGIC_WORKFLOW_CODE
+                : DISTRIBUTION_WORKFLOW_CODE;
+
+        Optional<Plan> currentPlan = findPlanForImportContext(context);
+        if (currentPlan.map(Plan::isDistributed).orElse(false)) {
+            return blockedCommitResponse(
+                    batchId,
+                    autoSubmitAndApprove,
+                    workflowCode,
+                    currentPlan.map(Plan::getAuditInstanceId).orElse(null),
+                    "当前任务已下发，不能重复导入或下发");
+        }
+
+        CommitCounters counters;
+        try {
+            counters = transactionTemplate.execute(status -> {
+                CommitCounters committed = context.type() == ImportType.STRATEGIC_TASK
+                        ? commitStrategic(context, conflictMode, currentUser)
+                        : commitDistribution(context, conflictMode);
+                if (autoSubmitAndApprove) {
+                    validateCommittedPlanForAutoDispatch(committed.plan());
+                }
+                return committed;
+            });
+        } catch (ImportCommitBlockedException ex) {
+            return blockedCommitResponse(
+                    batchId,
+                    autoSubmitAndApprove,
+                    workflowCode,
+                    null,
+                    ex.getMessage());
+        }
         if (counters == null) {
             throw new IllegalStateException("导入事务未返回提交结果");
         }
 
         ImportWorkflowResult workflow = null;
-        if (Boolean.TRUE.equals(request.autoSubmitAndApprove())) {
+        if (autoSubmitAndApprove) {
             workflow = autoSubmitAndApprove(
                     counters.plan(),
-                    context.type() == ImportType.STRATEGIC_TASK ? STRATEGIC_WORKFLOW_CODE : DISTRIBUTION_WORKFLOW_CODE,
+                    workflowCode,
                     currentUser,
                     counters.plan() == null ? currentUser.getOrgId() : counters.plan().getCreatedByOrgId(),
                     firstNonBlank(request.comment(), "导入后自动下发审批"));
@@ -165,7 +198,7 @@ public class BusinessImportApplicationService {
         }
 
         previews.remove(batchId);
-        String status = resolveCommitStatus(request.autoSubmitAndApprove(), workflow);
+        String status = resolveCommitStatus(autoSubmitAndApprove, workflow);
         return new ImportCommitResponse(
                 batchId,
                 status,
@@ -174,6 +207,45 @@ public class BusinessImportApplicationService {
                 counters.skipped(),
                 workflow
         );
+    }
+
+    private ImportCommitResponse blockedCommitResponse(String batchId,
+                                                       boolean autoSubmitAndApprove,
+                                                       String workflowCode,
+                                                       Long auditInstanceId,
+                                                       String message) {
+        return new ImportCommitResponse(
+                batchId,
+                "COMMIT_BLOCKED",
+                0,
+                0,
+                0,
+                new ImportWorkflowResult(
+                        autoSubmitAndApprove,
+                        workflowCode,
+                        auditInstanceId,
+                        "BLOCKED",
+                        0,
+                        null,
+                        message));
+    }
+
+    private void validateCommittedPlanForAutoDispatch(Plan plan) {
+        if (plan == null) {
+            throw new ImportCommitBlockedException("导入未产生可审批计划");
+        }
+        try {
+            basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
+        } catch (IllegalStateException ex) {
+            throw new ImportCommitBlockedException(ex.getMessage(), ex);
+        }
+    }
+
+    private Optional<Plan> findPlanForImportContext(PreviewContext context) {
+        PlanLevel planLevel = context.type() == ImportType.STRATEGIC_TASK
+                ? PlanLevel.STRAT_TO_FUNC
+                : PlanLevel.FUNC_TO_COLLEGE;
+        return findPlan(context.cycleId(), planLevel, context.sourceOrgId(), context.targetOrgId());
     }
 
     private String resolveCommitStatus(Boolean autoSubmitAndApprove, ImportWorkflowResult workflow) {
@@ -436,13 +508,15 @@ public class BusinessImportApplicationService {
         if (plan == null) {
             return new ImportWorkflowResult(true, workflowCode, null, "FAILED", 0, null, "导入未产生可审批计划");
         }
-        if (plan.isDistributed()) {
-            return new ImportWorkflowResult(true, workflowCode, plan.getAuditInstanceId(), "FAILED", 0, null, "当前计划已下发，不能重复发起自动审批");
-        }
         String originalPlanStatus = plan.getStatus();
         Long originalAuditInstanceId = plan.getAuditInstanceId();
         AuditInstance startedInstance = null;
         try {
+            basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
+            if (plan.isDistributed()) {
+                return new ImportWorkflowResult(true, workflowCode, plan.getAuditInstanceId(), "FAILED", 0, null, "当前计划已下发，不能重复发起自动审批");
+            }
+
             User systemAdmin = resolveSystemAdmin();
             AuditFlowDef flowDef = workflowApplicationService.getAuditFlowDefByCode(workflowCode);
             if (flowDef == null || !Boolean.TRUE.equals(flowDef.getIsActive())) {
@@ -823,6 +897,16 @@ public class BusinessImportApplicationService {
 
         private CommitCounters toCounters() {
             return new CommitCounters(created, updated, skipped, plan);
+        }
+    }
+
+    private static class ImportCommitBlockedException extends RuntimeException {
+        private ImportCommitBlockedException(String message) {
+            super(message);
+        }
+
+        private ImportCommitBlockedException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

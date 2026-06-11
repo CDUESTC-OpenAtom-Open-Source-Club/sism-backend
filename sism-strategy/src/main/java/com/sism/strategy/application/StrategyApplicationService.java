@@ -6,7 +6,10 @@ import com.sism.shared.infrastructure.event.DomainEventPublisher;
 import com.sism.shared.infrastructure.event.EventStore;
 import com.sism.strategy.domain.indicator.IndicatorStatus;
 import com.sism.strategy.domain.indicator.Indicator;
+import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.plan.PlanStatus;
 import com.sism.strategy.domain.repository.IndicatorRepository;
+import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.task.domain.task.StrategicTask;
 import com.sism.task.domain.repository.TaskRepository;
 import org.hibernate.Hibernate;
@@ -28,7 +31,11 @@ public class StrategyApplicationService {
     private final EventStore eventStore;
     private final IndicatorRepository indicatorRepository;
     private final TaskRepository taskRepository;
+    private final PlanRepository planRepository;
     private final BasicTaskWeightValidationService basicTaskWeightValidationService;
+
+    private static final String DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE =
+            "当前任务已下发，不能重复导入或下发";
 
     @Transactional
     public Indicator createIndicator(String indicatorDesc, SysOrg ownerOrg, SysOrg targetOrg, String indicatorType) {
@@ -51,6 +58,8 @@ public class StrategyApplicationService {
             Integer sortOrder,
             String remark,
             Integer progress) {
+        ensurePlanNotDistributedForTask(taskId);
+
         Indicator indicator = Indicator.create(indicatorDesc, ownerOrg, targetOrg, indicatorType);
 
         if (taskId != null) {
@@ -293,6 +302,11 @@ public class StrategyApplicationService {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
 
+        ensurePlanNotDistributedForTask(indicator.getTaskId());
+        if (taskId != null && !taskId.equals(indicator.getTaskId())) {
+            ensurePlanNotDistributedForTask(taskId);
+        }
+
         if (indicatorDesc != null) {
             String normalizedDesc = indicatorDesc.trim();
             if (normalizedDesc.isEmpty()) {
@@ -339,9 +353,24 @@ public class StrategyApplicationService {
     public void deleteIndicator(Long id) {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
+        ensurePlanNotDistributedForTask(indicator.getTaskId());
         indicator.archive();
         indicatorRepository.save(indicator);
         publishAndSaveEvents(indicator);
+    }
+
+    private void ensurePlanNotDistributedForTask(Long taskId) {
+        if (taskId == null) {
+            return;
+        }
+
+        StrategicTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        Plan plan = planRepository.findById(task.getPlanId())
+                .orElseThrow(() -> new IllegalArgumentException("Plan not found: " + task.getPlanId()));
+        if (PlanStatus.fromRaw(plan.getStatus()) == PlanStatus.DISTRIBUTED) {
+            throw new DistributedPlanMutationBlockedException(DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE);
+        }
     }
 
     @Transactional

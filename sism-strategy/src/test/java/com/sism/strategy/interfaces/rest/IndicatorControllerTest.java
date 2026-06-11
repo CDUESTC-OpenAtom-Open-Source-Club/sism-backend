@@ -4,6 +4,7 @@ import com.sism.common.ApiResponse;
 import com.sism.common.PageResult;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.organization.domain.OrganizationRepository;
+import com.sism.strategy.application.DistributedPlanMutationBlockedException;
 import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
@@ -34,6 +35,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -144,6 +146,21 @@ class IndicatorControllerTest {
         assertEquals(403, response.getStatusCode().value());
         assertFalse(response.getBody().isSuccess());
         verify(strategyApplicationService).getIndicatorByIdAndOwnerOrgId(3005L, 99L);
+    }
+
+    @Test
+    @DisplayName("deleteIndicator should return specific conflict message when plan is distributed")
+    void shouldReturnSpecificConflictMessageWhenDeletingDistributedPlanIndicator() {
+        doThrow(new DistributedPlanMutationBlockedException("当前任务已下发，不能重复导入或下发"))
+                .when(strategyApplicationService)
+                .deleteIndicator(2007L);
+
+        ResponseEntity<ApiResponse<Void>> response = controller.deleteIndicator(2007L);
+
+        assertEquals(409, response.getStatusCode().value());
+        assertFalse(response.getBody().isSuccess());
+        assertEquals("当前任务已下发，不能重复导入或下发", response.getBody().getMessage());
+        verify(strategyApplicationService).deleteIndicator(2007L);
     }
 
     @Test

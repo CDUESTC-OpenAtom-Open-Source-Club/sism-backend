@@ -5,7 +5,11 @@ import com.sism.organization.domain.SysOrg;
 import com.sism.shared.infrastructure.event.DomainEventPublisher;
 import com.sism.shared.infrastructure.event.EventStore;
 import com.sism.strategy.domain.indicator.Indicator;
+import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.plan.PlanLevel;
+import com.sism.strategy.domain.plan.PlanStatus;
 import com.sism.strategy.domain.repository.IndicatorRepository;
+import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.task.domain.task.StrategicTask;
 import com.sism.task.domain.task.TaskType;
 import com.sism.task.domain.repository.TaskRepository;
@@ -43,24 +47,26 @@ class StrategyApplicationServiceTest {
     private TaskRepository taskRepository;
 
     @Mock
+    private PlanRepository planRepository;
+
+    @Mock
     private BasicTaskWeightValidationService basicTaskWeightValidationService;
 
     @Test
     @DisplayName("Should keep provided task id when creating indicator for functional to college flow")
     void shouldKeepProvidedTaskIdWhenCreatingIndicator() {
-        StrategyApplicationService service = new StrategyApplicationService(
-                eventPublisher,
-                eventStore,
-                indicatorRepository,
-                taskRepository,
-                basicTaskWeightValidationService
-        );
+        StrategyApplicationService service = createService();
 
         SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
         ownerOrg.setId(41L);
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(61L);
 
+        StrategicTask task = createTask(901L, 7001L, targetOrg, ownerOrg);
+        Plan plan = createPlan(7001L, PlanStatus.DRAFT);
+
+        when(taskRepository.findById(901L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(7001L)).thenReturn(Optional.of(plan));
         when(indicatorRepository.save(any(Indicator.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -87,13 +93,7 @@ class StrategyApplicationServiceTest {
     @Test
     @DisplayName("Should not remap task id or create plan task during distribution")
     void shouldNotRemapTaskIdOrCreatePlanTaskDuringDistribution() {
-        StrategyApplicationService service = new StrategyApplicationService(
-                eventPublisher,
-                eventStore,
-                indicatorRepository,
-                taskRepository,
-                basicTaskWeightValidationService
-        );
+        StrategyApplicationService service = createService();
 
         SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
         ownerOrg.setId(41L);
@@ -106,15 +106,7 @@ class StrategyApplicationServiceTest {
         indicator.setId(301L);
         indicator.setTaskId(902L);
 
-        StrategicTask sourceTask = StrategicTask.create(
-                "既有任务",
-                TaskType.BASIC,
-                Long.valueOf(7001L),
-                Long.valueOf(2026L),
-                sourceTargetOrg,
-                ownerOrg
-        );
-        sourceTask.setId(902L);
+        StrategicTask sourceTask = createTask(902L, 7001L, sourceTargetOrg, ownerOrg);
 
         when(indicatorRepository.findById(301L)).thenReturn(Optional.of(indicator));
         when(taskRepository.findById(902L)).thenReturn(Optional.of(sourceTask));
@@ -133,16 +125,142 @@ class StrategyApplicationServiceTest {
     @Test
     @DisplayName("Should throw when indicator is missing instead of returning null")
     void shouldThrowWhenIndicatorMissing() {
-        StrategyApplicationService service = new StrategyApplicationService(
-                eventPublisher,
-                eventStore,
-                indicatorRepository,
-                taskRepository,
-                basicTaskWeightValidationService
-        );
+        StrategyApplicationService service = createService();
 
         when(indicatorRepository.findById(999L)).thenReturn(Optional.empty());
 
         assertThrows(IllegalArgumentException.class, () -> service.getIndicatorById(999L));
+    }
+
+    @Test
+    @DisplayName("Should block creating indicator when task plan is already distributed")
+    void shouldBlockCreatingIndicatorWhenTaskPlanDistributed() {
+        StrategyApplicationService service = createService();
+
+        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
+        ownerOrg.setId(41L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(61L);
+        StrategicTask task = createTask(903L, 7002L, targetOrg, ownerOrg);
+        Plan plan = createPlan(7002L, PlanStatus.DISTRIBUTED);
+
+        when(taskRepository.findById(903L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(7002L)).thenReturn(Optional.of(plan));
+
+        DistributedPlanMutationBlockedException exception = assertThrows(
+                DistributedPlanMutationBlockedException.class,
+                () -> service.createIndicator(
+                        "复制指标",
+                        ownerOrg,
+                        targetOrg,
+                        903L,
+                        null,
+                        "定量",
+                        BigDecimal.valueOf(20),
+                        1,
+                        "备注",
+                        0
+                )
+        );
+
+        assertEquals("当前任务已下发，不能重复导入或下发", exception.getMessage());
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Should block updating indicator when current task plan is already distributed")
+    void shouldBlockUpdatingIndicatorWhenCurrentTaskPlanDistributed() {
+        StrategyApplicationService service = createService();
+
+        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
+        ownerOrg.setId(41L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(61L);
+        Indicator indicator = Indicator.create("既有指标", ownerOrg, targetOrg, "定量");
+        indicator.setId(401L);
+        indicator.setTaskId(904L);
+        StrategicTask task = createTask(904L, 7003L, targetOrg, ownerOrg);
+        Plan plan = createPlan(7003L, PlanStatus.DISTRIBUTED);
+
+        when(indicatorRepository.findById(401L)).thenReturn(Optional.of(indicator));
+        when(taskRepository.findById(904L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(7003L)).thenReturn(Optional.of(plan));
+
+        DistributedPlanMutationBlockedException exception = assertThrows(
+                DistributedPlanMutationBlockedException.class,
+                () -> service.updateIndicator(
+                        401L,
+                        "更新指标",
+                        BigDecimal.valueOf(30),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null
+                )
+        );
+
+        assertEquals("当前任务已下发，不能重复导入或下发", exception.getMessage());
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Should block deleting indicator when task plan is already distributed")
+    void shouldBlockDeletingIndicatorWhenTaskPlanDistributed() {
+        StrategyApplicationService service = createService();
+
+        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
+        ownerOrg.setId(41L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(61L);
+        Indicator indicator = Indicator.create("待清空指标", ownerOrg, targetOrg, "定量");
+        indicator.setId(402L);
+        indicator.setTaskId(905L);
+        StrategicTask task = createTask(905L, 7004L, targetOrg, ownerOrg);
+        Plan plan = createPlan(7004L, PlanStatus.DISTRIBUTED);
+
+        when(indicatorRepository.findById(402L)).thenReturn(Optional.of(indicator));
+        when(taskRepository.findById(905L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(7004L)).thenReturn(Optional.of(plan));
+
+        DistributedPlanMutationBlockedException exception = assertThrows(
+                DistributedPlanMutationBlockedException.class,
+                () -> service.deleteIndicator(402L)
+        );
+
+        assertEquals("当前任务已下发，不能重复导入或下发", exception.getMessage());
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    private StrategyApplicationService createService() {
+        return new StrategyApplicationService(
+                eventPublisher,
+                eventStore,
+                indicatorRepository,
+                taskRepository,
+                planRepository,
+                basicTaskWeightValidationService
+        );
+    }
+
+    private StrategicTask createTask(Long taskId, Long planId, SysOrg org, SysOrg createdByOrg) {
+        StrategicTask task = StrategicTask.create(
+                "既有任务",
+                TaskType.BASIC,
+                planId,
+                2026L,
+                org,
+                createdByOrg
+        );
+        task.setId(taskId);
+        return task;
+    }
+
+    private Plan createPlan(Long planId, PlanStatus status) {
+        Plan plan = Plan.create(2026L, 61L, 41L, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(planId);
+        plan.setStatus(status.value());
+        return plan;
     }
 }
