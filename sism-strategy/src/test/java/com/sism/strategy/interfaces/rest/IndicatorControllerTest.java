@@ -4,6 +4,7 @@ import com.sism.common.ApiResponse;
 import com.sism.common.PageResult;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.organization.domain.OrganizationRepository;
+import com.sism.strategy.application.BatchIndicatorDistributionApplicationService;
 import com.sism.strategy.application.DistributedPlanMutationBlockedException;
 import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
@@ -45,6 +46,7 @@ import static org.mockito.Mockito.when;
 class IndicatorControllerTest {
 
     private StrategyApplicationService strategyApplicationService;
+    private BatchIndicatorDistributionApplicationService batchIndicatorDistributionApplicationService;
     private MilestoneApplicationService milestoneApplicationService;
     private OrganizationRepository organizationRepository;
     private JpaTaskRepositoryInternal jpaTaskRepository;
@@ -55,6 +57,7 @@ class IndicatorControllerTest {
     @BeforeEach
     void setUp() {
         strategyApplicationService = mock(StrategyApplicationService.class);
+        batchIndicatorDistributionApplicationService = mock(BatchIndicatorDistributionApplicationService.class);
         milestoneApplicationService = mock(MilestoneApplicationService.class);
         organizationRepository = mock(OrganizationRepository.class);
         jpaTaskRepository = mock(JpaTaskRepositoryInternal.class);
@@ -187,6 +190,7 @@ class IndicatorControllerTest {
         try {
             Constructor<IndicatorController> constructor = IndicatorController.class.getDeclaredConstructor(
                     StrategyApplicationService.class,
+                    BatchIndicatorDistributionApplicationService.class,
                     MilestoneApplicationService.class,
                     OrganizationRepository.class,
                     JpaTaskRepositoryInternal.class,
@@ -197,6 +201,7 @@ class IndicatorControllerTest {
             Object userNotificationService = null;
             return constructor.newInstance(
                     strategyApplicationService,
+                    batchIndicatorDistributionApplicationService,
                     milestoneApplicationService,
                     organizationRepository,
                     jpaTaskRepository,

@@ -7,6 +7,7 @@ import com.sism.common.PageResult;
 import com.sism.strategy.domain.indicator.IndicatorStatus;
 import com.sism.organization.domain.SysOrg;
 import com.sism.organization.domain.OrganizationRepository;
+import com.sism.strategy.application.BatchIndicatorDistributionApplicationService;
 import com.sism.strategy.application.DistributedPlanMutationBlockedException;
 import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
@@ -73,6 +74,7 @@ public class IndicatorController {
     }
 
     private final StrategyApplicationService strategyApplicationService;
+    private final BatchIndicatorDistributionApplicationService batchIndicatorDistributionApplicationService;
     private final MilestoneApplicationService milestoneApplicationService;
     private final OrganizationRepository organizationRepository;
     private final JpaTaskRepositoryInternal jpaTaskRepository;
@@ -464,73 +466,60 @@ public class IndicatorController {
     @Operation(summary = "批量分发指标(分发页面专用)")
     public ResponseEntity<ApiResponse<BatchDistributeIndicatorsResponse>> batchDistributeIndicators(
             @RequestBody @Valid BatchDistributeIndicatorsRequest request) {
-        List<BatchDistributeIndicatorsResponse.ItemResult> items = request.getIndicators().stream()
-                .map(item -> {
-                    Indicator distributed;
-
-                    if (item.getIndicatorId() != null) {
-                        SysOrg targetOrg = organizationRepository.findById(item.getTargetOrgId())
-                                .orElseThrow(() -> new IllegalArgumentException(
-                                        "Target organization not found: " + item.getTargetOrgId()));
-                        distributed = strategyApplicationService.distributeIndicator(
-                                item.getIndicatorId(),
-                                targetOrg,
-                                item.getCustomDesc()
-                        );
-                    } else {
-                        if (item.getOwnerOrgId() == null) {
-                            throw new IllegalArgumentException("责任组织不能为空");
-                        }
-                        if (item.getTaskId() == null) {
-                            throw new IllegalArgumentException("任务ID不能为空");
-                        }
-
-                        String indicatorDesc = firstNonBlank(item.getIndicatorDesc(), item.getCustomDesc());
-                        String indicatorType = requireIndicatorType(
-                                item.getType(),
-                                item.getType1(),
-                                item.getIndicatorType()
-                        );
-                        if (indicatorDesc == null || indicatorDesc.isBlank()) {
-                            throw new IllegalArgumentException("指标描述不能为空");
-                        }
-
-                        SysOrg ownerOrg = organizationRepository.findById(item.getOwnerOrgId())
-                                .orElseThrow(() -> new IllegalArgumentException(
-                                        "责任组织未找到: " + item.getOwnerOrgId()));
-                        SysOrg targetOrg = organizationRepository.findById(item.getTargetOrgId())
-                                .orElseThrow(() -> new IllegalArgumentException(
-                                        "目标组织未找到: " + item.getTargetOrgId()));
-
-                        Indicator created = strategyApplicationService.createIndicator(
-                                indicatorDesc,
-                                ownerOrg,
-                                targetOrg,
-                                item.getTaskId(),
-                                item.getParentIndicatorId(),
-                                indicatorType,
-                                item.getWeightPercent(),
-                                item.getSortOrder(),
-                                item.getRemark(),
-                                item.getProgress()
-                        );
-                        distributed = strategyApplicationService.distributeIndicator(
-                                created.getId(),
-                                targetOrg,
-                                item.getCustomDesc()
-                        );
-                    }
-
-                    return new BatchDistributeIndicatorsResponse.ItemResult(
-                            item.getClientRequestId(),
-                            distributed.getId()
-                    );
-                })
+        List<BatchIndicatorDistributionApplicationService.ItemCommand> commands = request.getIndicators().stream()
+                .map(this::toBatchDistributionCommand)
                 .toList();
+        List<BatchDistributeIndicatorsResponse.ItemResult> items =
+                batchIndicatorDistributionApplicationService.distribute(commands).stream()
+                        .map(item -> new BatchDistributeIndicatorsResponse.ItemResult(
+                                item.clientRequestId(),
+                                item.indicatorId()
+                        ))
+                        .toList();
 
         return ResponseEntity.ok(ApiResponse.success(
                 new BatchDistributeIndicatorsResponse(items.size(), items)
         ));
+    }
+
+    private BatchIndicatorDistributionApplicationService.ItemCommand toBatchDistributionCommand(
+            BatchDistributeIndicatorsRequest.Item item) {
+        if (item.getIndicatorId() == null && item.getOwnerOrgId() == null) {
+            throw new IllegalArgumentException("责任组织不能为空");
+        }
+        if (item.getIndicatorId() == null && item.getTaskId() == null) {
+            throw new IllegalArgumentException("任务ID不能为空");
+        }
+
+        String indicatorDesc = null;
+        String indicatorType = null;
+        if (item.getIndicatorId() == null) {
+            indicatorDesc = firstNonBlank(item.getIndicatorDesc(), item.getCustomDesc());
+            indicatorType = requireIndicatorType(
+                    item.getType(),
+                    item.getType1(),
+                    item.getIndicatorType()
+            );
+            if (indicatorDesc == null || indicatorDesc.isBlank()) {
+                throw new IllegalArgumentException("指标描述不能为空");
+            }
+        }
+
+        return new BatchIndicatorDistributionApplicationService.ItemCommand(
+                item.getClientRequestId(),
+                item.getIndicatorId(),
+                indicatorDesc,
+                indicatorType,
+                item.getTaskId(),
+                item.getParentIndicatorId(),
+                item.getOwnerOrgId(),
+                item.getTargetOrgId(),
+                item.getWeightPercent(),
+                item.getSortOrder(),
+                item.getRemark(),
+                item.getProgress(),
+                item.getCustomDesc()
+        );
     }
 
     @GetMapping("/search")

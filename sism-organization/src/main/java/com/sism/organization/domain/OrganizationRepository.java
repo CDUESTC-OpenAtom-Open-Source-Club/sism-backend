@@ -19,9 +19,7 @@ public interface OrganizationRepository {
      */
     Optional<SysOrg> findById(Long id);
 
-    default List<SysOrg> findAllByIds(List<Long> ids) {
-        return List.of();
-    }
+    List<SysOrg> findAllByIds(List<Long> ids);
 
     /**
      * 查询所有组织
