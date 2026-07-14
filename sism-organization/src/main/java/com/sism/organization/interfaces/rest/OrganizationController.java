@@ -33,9 +33,9 @@ import java.util.List;
 public class OrganizationController {
 
     private static final String ORG_READ_ACCESS =
-            "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')";
+            "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT', 'SYSTEM_ADMIN')";
     private static final String ORG_WRITE_ACCESS =
-            "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')";
+            "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT', 'SYSTEM_ADMIN')";
 
     private final OrganizationApplicationService organizationApplicationService;
     private final OrgMapper orgMapper;

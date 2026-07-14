@@ -7,10 +7,12 @@ import com.sism.shared.infrastructure.event.EventStore;
 import com.sism.strategy.domain.indicator.IndicatorStatus;
 import com.sism.strategy.domain.indicator.Indicator;
 import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.plan.PlanStatus;
 import com.sism.strategy.domain.repository.IndicatorRepository;
 import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.task.domain.task.StrategicTask;
+import com.sism.task.domain.task.TaskType;
 import com.sism.task.domain.repository.TaskRepository;
 import org.hibernate.Hibernate;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -58,16 +61,51 @@ public class StrategyApplicationService {
             Integer sortOrder,
             String remark,
             Integer progress) {
-        ensurePlanNotDistributedForTask(taskId);
+        return createIndicator(
+                indicatorDesc,
+                ownerOrg,
+                targetOrg,
+                taskId,
+                parentIndicatorId,
+                indicatorType,
+                weightPercent,
+                sortOrder,
+                remark,
+                progress,
+                null
+        );
+    }
+
+    @Transactional
+    public Indicator createIndicator(
+            String indicatorDesc,
+            SysOrg ownerOrg,
+            SysOrg targetOrg,
+            Long taskId,
+            Long parentIndicatorId,
+            String indicatorType,
+            BigDecimal weightPercent,
+            Integer sortOrder,
+            String remark,
+            Integer progress,
+            Long cycleId) {
+        Indicator parent = null;
+        Long resolvedTaskId = taskId;
+
+        if (parentIndicatorId != null) {
+            parent = indicatorRepository.findById(parentIndicatorId)
+                    .orElseThrow(() -> new IllegalArgumentException("Parent indicator not found: " + parentIndicatorId));
+            resolvedTaskId = resolveTaskIdForChildIndicator(taskId, cycleId, parent, ownerOrg, targetOrg);
+        } else {
+            ensurePlanNotDistributedForTask(taskId);
+        }
 
         Indicator indicator = Indicator.create(indicatorDesc, ownerOrg, targetOrg, indicatorType);
 
-        if (taskId != null) {
-            indicator.setTaskId(taskId);
+        if (resolvedTaskId != null) {
+            indicator.setTaskId(resolvedTaskId);
         }
-        if (parentIndicatorId != null) {
-            Indicator parent = indicatorRepository.findById(parentIndicatorId)
-                    .orElseThrow(() -> new IllegalArgumentException("Parent indicator not found: " + parentIndicatorId));
+        if (parent != null) {
             indicator.setParent(parent);
         }
         if (weightPercent != null) {
@@ -359,6 +397,97 @@ public class StrategyApplicationService {
         publishAndSaveEvents(indicator);
     }
 
+    private Long resolveTaskIdForChildIndicator(
+            Long requestedTaskId,
+            Long requestedCycleId,
+            Indicator parent,
+            SysOrg ownerOrg,
+            SysOrg targetOrg) {
+        StrategicTask requestedTask = null;
+        Plan requestedPlan = null;
+
+        if (requestedTaskId != null) {
+            requestedTask = taskRepository.findById(requestedTaskId)
+                    .orElseThrow(() -> new IllegalArgumentException("Task not found: " + requestedTaskId));
+            Long requestedPlanId = requestedTask.getPlanId();
+            requestedPlan = planRepository.findById(requestedPlanId)
+                    .orElseThrow(() -> new IllegalArgumentException("Plan not found: " + requestedPlanId));
+
+            if (PlanStatus.fromRaw(requestedPlan.getStatus()) != PlanStatus.DISTRIBUTED) {
+                return requestedTaskId;
+            }
+        }
+
+        StrategicTask parentTask = null;
+        if (parent != null && parent.getTaskId() != null) {
+            parentTask = taskRepository.findById(parent.getTaskId()).orElse(null);
+        }
+
+        Long cycleId = firstNonNull(
+                requestedCycleId,
+                requestedTask != null ? requestedTask.getCycleId() : null,
+                parentTask != null ? parentTask.getCycleId() : null
+        );
+        if (cycleId == null) {
+            throw new IllegalArgumentException("周期ID不能为空");
+        }
+        if (ownerOrg == null || ownerOrg.getId() == null) {
+            throw new IllegalArgumentException("责任组织不能为空");
+        }
+        if (targetOrg == null || targetOrg.getId() == null) {
+            throw new IllegalArgumentException("目标组织不能为空");
+        }
+
+        Plan downstreamPlan = findOrCreatePlan(
+                cycleId,
+                PlanLevel.FUNC_TO_COLLEGE,
+                ownerOrg.getId(),
+                targetOrg.getId()
+        );
+        if (PlanStatus.fromRaw(downstreamPlan.getStatus()) == PlanStatus.DISTRIBUTED) {
+            throw new DistributedPlanMutationBlockedException(DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE);
+        }
+
+        String taskName = firstNonBlank(
+                parentTask != null ? parentTask.getName() : null,
+                requestedTask != null ? requestedTask.getName() : null,
+                "学院子指标"
+        );
+        TaskType taskType = parentTask != null && parentTask.getTaskType() != null
+                ? parentTask.getTaskType()
+                : requestedTask != null && requestedTask.getTaskType() != null
+                    ? requestedTask.getTaskType()
+                    : TaskType.DEVELOPMENT;
+
+        return findOrCreateTask(downstreamPlan, cycleId, taskName, taskType, targetOrg, ownerOrg).getId();
+    }
+
+    private Plan findOrCreatePlan(Long cycleId, PlanLevel planLevel, Long createdByOrgId, Long targetOrgId) {
+        return planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                        cycleId,
+                        planLevel,
+                        createdByOrgId,
+                        targetOrgId
+                )
+                .orElseGet(() -> planRepository.save(Plan.create(cycleId, targetOrgId, createdByOrgId, planLevel)));
+    }
+
+    private StrategicTask findOrCreateTask(
+            Plan plan,
+            Long cycleId,
+            String taskName,
+            TaskType taskType,
+            SysOrg targetOrg,
+            SysOrg createdByOrg) {
+        return taskRepository.findByPlanIdAndCycleId(plan.getId(), cycleId).stream()
+                .filter(task -> normalizeKey(task.getName()).equals(normalizeKey(taskName)))
+                .filter(task -> task.getTaskType() == taskType)
+                .findFirst()
+                .orElseGet(() -> taskRepository.save(
+                        StrategicTask.create(taskName, taskType, plan.getId(), cycleId, targetOrg, createdByOrg)
+                ));
+    }
+
     private void ensurePlanNotDistributedForTask(Long taskId) {
         if (taskId == null) {
             return;
@@ -371,6 +500,28 @@ public class StrategyApplicationService {
         if (PlanStatus.fromRaw(plan.getStatus()) == PlanStatus.DISTRIBUTED) {
             throw new DistributedPlanMutationBlockedException(DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE);
         }
+    }
+
+    private Long firstNonNull(Long... values) {
+        for (Long value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
+    private String normalizeKey(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
 
     @Transactional

@@ -78,6 +78,11 @@ public interface AlertRepository {
 
     Page<Alert> findByIndicatorIdInAndStatusIn(Collection<Long> indicatorIds, Collection<AlertStatus> statuses, Pageable pageable);
 
+    List<Alert> findByIndicatorIdInAndStatusInOrderByUpdatedAtDesc(
+            Collection<Long> indicatorIds,
+            Collection<AlertStatus> statuses
+    );
+
     List<Alert> findBySeverityAndStatusNot(AlertSeverity severity, AlertStatus status);
 
     default List<Alert> findUnresolvedBySeverity(String severity) {

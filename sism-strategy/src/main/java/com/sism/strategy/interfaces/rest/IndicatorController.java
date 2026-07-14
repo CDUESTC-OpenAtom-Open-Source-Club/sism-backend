@@ -258,7 +258,8 @@ public class IndicatorController {
                     request.getWeightPercent(),
                     request.getSortOrder(),
                     request.getRemark(),
-                    request.getProgress()
+                    request.getProgress(),
+                    request.getCycleId()
             );
             return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(created)));
         } catch (DistributedPlanMutationBlockedException ex) {
