@@ -5,6 +5,7 @@ import com.sism.alert.application.AlertApplicationService;
 import com.sism.alert.domain.Alert;
 import com.sism.alert.interfaces.dto.AlertResponse;
 import com.sism.alert.interfaces.dto.AlertRequest;
+import com.sism.alert.interfaces.dto.ManualAlertLevelRequest;
 import com.sism.alert.interfaces.dto.AlertStatsDTO;
 import com.sism.alert.interfaces.dto.ResolveAlertRequest;
 import com.sism.common.ApiResponse;
@@ -36,6 +37,7 @@ public class AlertController {
 
     private static final int DEFAULT_PAGE = 0;
     private static final int MAX_SIZE = 100;
+    private static final Long STRATEGIC_DEPT_ORG_ID = 35L;
 
     private final AlertApplicationService alertApplicationService;
     private final AlertAccessService alertAccessService;
@@ -233,7 +235,55 @@ public class AlertController {
         return ResponseEntity.ok(ApiResponse.success(alerts.stream().map(AlertResponse::fromEntity).toList()));
     }
 
+    @GetMapping("/manual-levels")
+    @Operation(summary = "批量获取指标手动预警等级", description = "按指标ID查询战略任务管理手动设置的当前预警等级")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<Map<Long, String>>> getManualAlertLevels(
+            @RequestParam("indicatorIds") List<Long> indicatorIds,
+            Authentication authentication
+    ) {
+        for (Long indicatorId : indicatorIds) {
+            alertAccessService.ensureIndicatorAccess(indicatorId, authentication);
+        }
+        return ResponseEntity.ok(ApiResponse.success(alertApplicationService.getCurrentManualAlertLevels(indicatorIds)));
+    }
+
     // ==================== Update ====================
+
+    @PutMapping("/indicator/{indicatorId}/manual-level")
+    @Operation(summary = "设置指标手动预警等级", description = "战略发展部在战略任务管理表格中手动设置或取消预警等级")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<AlertResponse>> setManualAlertLevel(
+            @PathVariable Long indicatorId,
+            @Valid @RequestBody ManualAlertLevelRequest request,
+            Authentication authentication
+    ) {
+        ensureManualAlertWriteAccess(authentication);
+        alertAccessService.ensureIndicatorAccess(indicatorId, authentication);
+        Long handledBy = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                alertApplicationService.setManualAlertLevel(indicatorId, request.getSeverity(), handledBy)
+                        .map(AlertResponse::fromEntity)
+                        .orElse(null)
+        ));
+    }
+
+    private void ensureManualAlertWriteAccess(Authentication authentication) {
+        if (authentication == null) {
+            throw new AuthorizationException("当前请求缺少认证信息");
+        }
+        boolean vicePresident = authentication.getAuthorities().stream()
+                .map(authority -> authority.getAuthority())
+                .anyMatch("ROLE_VICE_PRESIDENT"::equals);
+        if (vicePresident) {
+            return;
+        }
+        if (authentication.getPrincipal() instanceof CurrentUser currentUser
+                && STRATEGIC_DEPT_ORG_ID.equals(currentUser.getOrgId())) {
+            return;
+        }
+        throw new AuthorizationException("仅战略发展部可调整预警等级");
+    }
 
     @PostMapping("/{id}/resolve")
     @Operation(summary = "解决预警", description = "确认并解决预警")

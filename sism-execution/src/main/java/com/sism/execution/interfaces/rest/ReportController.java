@@ -35,9 +35,9 @@ import java.util.stream.Collectors;
 public class ReportController {
 
     private static final String REPORT_WRITE_ACCESS =
-            "hasAnyRole('REPORTER','APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')";
+            "hasAnyRole('REPORTER','APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')";
     private static final String REPORT_APPROVAL_ACCESS =
-            "hasAnyRole('APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')";
+            "hasAnyRole('APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')";
 
     private final ReportApplicationService reportApplicationService;
 
@@ -307,7 +307,7 @@ public class ReportController {
 
     @GetMapping("/plan/{planId}")
     @Operation(summary = "根据计划ID查询报告", description = "获取关联到指定计划的所有报告")
-    @PreAuthorize("hasAnyRole('REPORTER','APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')")
+    @PreAuthorize(REPORT_WRITE_ACCESS)
     public ResponseEntity<ApiResponse<List<PlanReportSimpleResponse>>> getReportsByPlanId(
             @Parameter(description = "计划ID") @PathVariable Long planId,
             @AuthenticationPrincipal CurrentUser currentUser) {
@@ -391,6 +391,7 @@ public class ReportController {
         return currentUser.getAuthorities().stream()
                 .map(authority -> authority.getAuthority())
                 .anyMatch(authority -> "ROLE_ADMIN".equals(authority)
+                        || "ROLE_SYSTEM_ADMIN".equals(authority)
                         || "ROLE_VICE_PRESIDENT".equals(authority)
                         || "ROLE_STRATEGY_DEPT_HEAD".equals(authority));
     }

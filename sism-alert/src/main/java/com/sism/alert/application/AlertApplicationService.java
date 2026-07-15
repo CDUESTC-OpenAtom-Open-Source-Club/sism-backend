@@ -10,10 +10,12 @@ import com.sism.shared.infrastructure.event.DomainEventPublisher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,8 +29,16 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class AlertApplicationService {
 
+    private static final String MANUAL_ALERT_MARKER = "STRATEGIC_TASK_MANUAL";
+    private static final String MANUAL_ALERT_DETAIL_JSON =
+            "{\"source\":\"STRATEGIC_TASK_MANUAL\",\"message\":\"战略任务管理手动预警\"}";
+    private static final String MANUAL_RULE_NAME = "战略任务管理手动预警";
+    private static final String MANUAL_WINDOW_NAME = "战略任务管理手动预警窗口";
+    private static final List<AlertStatus> OPEN_STATUSES = List.of(AlertStatus.OPEN, AlertStatus.IN_PROGRESS);
+
     private final AlertRepository alertRepository;
     private final DomainEventPublisher eventPublisher;
+    private final JdbcTemplate jdbcTemplate;
 
     // ==================== Create ====================
 
@@ -102,6 +112,19 @@ public class AlertApplicationService {
         return alertRepository.findByStatusIn(List.of(AlertStatus.OPEN, AlertStatus.IN_PROGRESS));
     }
 
+    public Map<Long, String> getCurrentManualAlertLevels(List<Long> indicatorIds) {
+        if (indicatorIds == null || indicatorIds.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<Long, String> levels = new LinkedHashMap<>();
+        alertRepository.findByIndicatorIdInAndStatusInOrderByUpdatedAtDesc(indicatorIds, OPEN_STATUSES).stream()
+                .filter(this::isManualStrategicTaskAlert)
+                .filter(alert -> alert.getIndicatorId() != null && alert.getSeverity() != null)
+                .forEach(alert -> levels.putIfAbsent(alert.getIndicatorId(), alert.getSeverity().name()));
+        return levels;
+    }
+
     public Page<Alert> getAllAlerts(Pageable pageable) {
         return alertRepository.findAll(pageable);
     }
@@ -140,6 +163,46 @@ public class AlertApplicationService {
         Alert saved = alertRepository.save(alert);
         publishAndClearEvents(saved);
         return saved;
+    }
+
+    @Transactional
+    public Optional<Alert> setManualAlertLevel(Long indicatorId, String severity, Long handledBy) {
+        if (indicatorId == null || indicatorId <= 0) {
+            throw new IllegalArgumentException("Indicator ID is required");
+        }
+
+        AlertSeverity normalizedSeverity = AlertSeverity.normalize(severity);
+        List<Alert> currentManualAlerts = alertRepository
+                .findByIndicatorIdInAndStatusInOrderByUpdatedAtDesc(List.of(indicatorId), OPEN_STATUSES).stream()
+                .filter(this::isManualStrategicTaskAlert)
+                .toList();
+
+        for (Alert alert : currentManualAlerts) {
+            alert.resolve(handledBy, "战略任务管理手动调整预警等级");
+            Alert savedResolvedAlert = alertRepository.save(alert);
+            publishAndClearEvents(savedResolvedAlert);
+        }
+
+        if (normalizedSeverity == null) {
+            return Optional.empty();
+        }
+
+        Alert alert = new Alert();
+        alert.setIndicatorId(indicatorId);
+        alert.setRuleId(resolveManualAlertRuleId(normalizedSeverity));
+        alert.setWindowId(resolveManualAlertWindowId());
+        alert.setSeverity(normalizedSeverity);
+        alert.setActualPercent(BigDecimal.ZERO);
+        alert.setExpectedPercent(BigDecimal.ZERO);
+        alert.setGapPercent(BigDecimal.ZERO);
+        alert.setDetailJson(MANUAL_ALERT_DETAIL_JSON);
+        alert.setStatus(AlertStatus.OPEN);
+        alert.validate();
+
+        Alert saved = alertRepository.save(alert);
+        saved.recordCreated();
+        publishAndClearEvents(saved);
+        return Optional.of(saved);
     }
 
     @Transactional
@@ -191,6 +254,100 @@ public class AlertApplicationService {
             }
         }
         return countBySeverity;
+    }
+
+    private boolean isManualStrategicTaskAlert(Alert alert) {
+        return alert != null
+                && alert.getDetailJson() != null
+                && alert.getDetailJson().contains(MANUAL_ALERT_MARKER);
+    }
+
+    private Long resolveManualAlertWindowId() {
+        List<Long> existing = jdbcTemplate.query(
+                """
+                SELECT window_id
+                FROM public.alert_window
+                WHERE name = ?
+                ORDER BY window_id
+                LIMIT 1
+                """,
+                (rs, rowNum) -> rs.getLong("window_id"),
+                MANUAL_WINDOW_NAME
+        );
+        if (!existing.isEmpty()) {
+            return existing.get(0);
+        }
+
+        Long cycleId = resolveLatestCycleId();
+        LocalDate cutoffDate = LocalDate.of(LocalDate.now().getYear(), 12, 31);
+        return jdbcTemplate.queryForObject(
+                """
+                INSERT INTO public.alert_window (
+                    created_at, updated_at, cutoff_date, is_default, name, cycle_id
+                )
+                VALUES (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, false, ?, ?)
+                RETURNING window_id
+                """,
+                Long.class,
+                cutoffDate,
+                MANUAL_WINDOW_NAME,
+                cycleId
+        );
+    }
+
+    private Long resolveManualAlertRuleId(AlertSeverity severity) {
+        List<Long> existing = jdbcTemplate.query(
+                """
+                SELECT rule_id
+                FROM public.alert_rule
+                WHERE name = ? AND severity = ?
+                ORDER BY rule_id
+                LIMIT 1
+                """,
+                (rs, rowNum) -> rs.getLong("rule_id"),
+                MANUAL_RULE_NAME,
+                severity.name()
+        );
+        if (!existing.isEmpty()) {
+            return existing.get(0);
+        }
+
+        Long cycleId = resolveLatestCycleId();
+        BigDecimal threshold = switch (severity) {
+            case CRITICAL -> BigDecimal.valueOf(30);
+            case WARNING -> BigDecimal.valueOf(20);
+            case INFO -> BigDecimal.valueOf(10);
+        };
+        return jdbcTemplate.queryForObject(
+                """
+                INSERT INTO public.alert_rule (
+                    created_at, updated_at, gap_threshold, is_enabled, name, severity, cycle_id
+                )
+                VALUES (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, true, ?, ?, ?)
+                RETURNING rule_id
+                """,
+                Long.class,
+                threshold,
+                MANUAL_RULE_NAME,
+                severity.name(),
+                cycleId
+        );
+    }
+
+    private Long resolveLatestCycleId() {
+        List<Long> ids = jdbcTemplate.query(
+                """
+                SELECT id
+                FROM public.cycle
+                ORDER BY year DESC, id DESC
+                LIMIT 1
+                """,
+                (rs, rowNum) -> rs.getLong("id")
+        );
+        if (ids.isEmpty()) {
+            throw new IllegalStateException("No assessment cycle found for manual alert setup");
+        }
+        return ids.get(0);
     }
 
     private void publishAndClearEvents(Alert alert) {

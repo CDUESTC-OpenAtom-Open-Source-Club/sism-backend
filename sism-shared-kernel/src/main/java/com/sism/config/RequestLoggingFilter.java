@@ -14,6 +14,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Filter to add request context to MDC for comprehensive logging.
@@ -34,6 +35,8 @@ import java.util.UUID;
 public class RequestLoggingFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RequestLoggingFilter.class);
+    private static final Pattern SENSITIVE_QUERY_PARAM_PATTERN =
+            Pattern.compile("(?i)(^|&)(token|access_token|refresh_token|password|secret)=([^&]*)");
     
     // Header names
     private static final String REQUEST_ID_HEADER = "X-Request-ID";
@@ -140,9 +143,13 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         String uri = request.getRequestURI();
         String queryString = request.getQueryString();
         if (queryString != null && !queryString.isBlank()) {
-            return uri + "?" + queryString;
+            return uri + "?" + maskSensitiveQueryParams(queryString);
         }
         return uri;
+    }
+
+    private String maskSensitiveQueryParams(String queryString) {
+        return SENSITIVE_QUERY_PARAM_PATTERN.matcher(queryString).replaceAll("$1$2=***");
     }
     
     /**

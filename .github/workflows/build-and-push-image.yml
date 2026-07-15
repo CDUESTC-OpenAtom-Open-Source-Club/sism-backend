@@ -245,6 +245,20 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           chmod 644 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host ${SERVER_HOST}
+            User ${SERVER_USER}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            ConnectionAttempts 5
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 4
+            ControlMaster auto
+            ControlPath ~/.ssh/control-%C
+            ControlPersist 10m
+          EOF
+          chmod 600 ~/.ssh/config
 
       - name: Normalize image names
         id: image

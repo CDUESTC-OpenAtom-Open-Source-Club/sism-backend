@@ -95,6 +95,12 @@ public interface JpaAlertRepository extends JpaRepository<Alert, Long>, AlertRep
     Page<Alert> findByIndicatorIdInAndStatusIn(Collection<Long> indicatorIds, Collection<AlertStatus> statuses, Pageable pageable);
 
     @Override
+    List<Alert> findByIndicatorIdInAndStatusInOrderByUpdatedAtDesc(
+            Collection<Long> indicatorIds,
+            Collection<AlertStatus> statuses
+    );
+
+    @Override
     List<Alert> findBySeverityAndStatusNot(AlertSeverity severity, AlertStatus status);
 
     @Override

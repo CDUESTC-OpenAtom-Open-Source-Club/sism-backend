@@ -21,6 +21,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -165,6 +166,68 @@ class StrategyApplicationServiceTest {
 
         assertEquals("当前任务已下发，不能重复导入或下发", exception.getMessage());
         verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Should create child indicator in downstream draft plan when parent task plan is distributed")
+    void shouldCreateChildIndicatorInDownstreamDraftPlanWhenParentTaskPlanDistributed() {
+        StrategyApplicationService service = createService();
+
+        SysOrg ownerOrg = SysOrg.create("党委学工部", OrgType.functional);
+        ownerOrg.setId(41L);
+        SysOrg functionalOrg = SysOrg.create("党委学工部", OrgType.functional);
+        functionalOrg.setId(41L);
+        SysOrg collegeOrg = SysOrg.create("马克思主义学院", OrgType.academic);
+        collegeOrg.setId(61L);
+
+        StrategicTask parentTask = createTask(903L, 7002L, functionalOrg, ownerOrg);
+        Plan distributedParentPlan = createPlan(7002L, PlanStatus.DISTRIBUTED);
+        Indicator parentIndicator = Indicator.create("推进心理健康教育与危机干预机制建设", ownerOrg, functionalOrg, "定性");
+        parentIndicator.setId(501L);
+        parentIndicator.setTaskId(903L);
+
+        when(indicatorRepository.findById(501L)).thenReturn(Optional.of(parentIndicator));
+        when(taskRepository.findById(903L)).thenReturn(Optional.of(parentTask));
+        when(planRepository.findById(7002L)).thenReturn(Optional.of(distributedParentPlan));
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L,
+                PlanLevel.FUNC_TO_COLLEGE,
+                41L,
+                61L
+        )).thenReturn(Optional.empty());
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
+            Plan saved = invocation.getArgument(0);
+            saved.setId(8001L);
+            return saved;
+        });
+        when(taskRepository.findByPlanIdAndCycleId(8001L, 2026L)).thenReturn(List.of());
+        when(taskRepository.save(any(StrategicTask.class))).thenAnswer(invocation -> {
+            StrategicTask saved = invocation.getArgument(0);
+            saved.setId(9901L);
+            return saved;
+        });
+        when(indicatorRepository.save(any(Indicator.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.createIndicator(
+                "完成心理健康教育方案制定",
+                ownerOrg,
+                collegeOrg,
+                903L,
+                501L,
+                "定性",
+                BigDecimal.valueOf(45),
+                0,
+                "下发至学院",
+                0
+        );
+
+        ArgumentCaptor<Indicator> indicatorCaptor = ArgumentCaptor.forClass(Indicator.class);
+        verify(indicatorRepository).save(indicatorCaptor.capture());
+        assertEquals(9901L, indicatorCaptor.getValue().getTaskId());
+        assertEquals(501L, indicatorCaptor.getValue().getParentIndicator().getId());
+        verify(planRepository).save(any(Plan.class));
+        verify(taskRepository).save(any(StrategicTask.class));
     }
 
     @Test
