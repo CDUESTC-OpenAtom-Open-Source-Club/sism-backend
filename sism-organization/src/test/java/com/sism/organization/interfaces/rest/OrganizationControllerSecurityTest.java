@@ -19,20 +19,23 @@ class OrganizationControllerSecurityTest {
     @Test
     @DisplayName("Should protect organization endpoints with PreAuthorize")
     void shouldProtectOrganizationEndpointsWithPreAuthorize() throws Exception {
-        assertRole("createOrganization", "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("getAllOrganizations", "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("getAllOrganizationsPage", "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("getAllOrganizationsPageAlias", "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("getAllDepartments", "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("getOrganizationById", "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("getOrganizationTree", "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("getUsersByOrganizationId", "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("activateOrganization", "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("deactivateOrganization", "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("renameOrganization", "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("changeOrganizationType", "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("updateSortOrder", "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
-        assertRole("updateParentOrganization", "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT')");
+        String writeAccess = "hasAnyRole('STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT', 'SYSTEM_ADMIN')";
+        String readAccess = "hasAnyRole('REPORTER', 'APPROVER', 'STRATEGY_DEPT_HEAD', 'VICE_PRESIDENT', 'SYSTEM_ADMIN')";
+
+        assertRole("createOrganization", writeAccess);
+        assertRole("getAllOrganizations", readAccess);
+        assertRole("getAllOrganizationsPage", readAccess);
+        assertRole("getAllOrganizationsPageAlias", readAccess);
+        assertRole("getAllDepartments", readAccess);
+        assertRole("getOrganizationById", readAccess);
+        assertRole("getOrganizationTree", readAccess);
+        assertRole("getUsersByOrganizationId", readAccess);
+        assertRole("activateOrganization", writeAccess);
+        assertRole("deactivateOrganization", writeAccess);
+        assertRole("renameOrganization", writeAccess);
+        assertRole("changeOrganizationType", writeAccess);
+        assertRole("updateSortOrder", writeAccess);
+        assertRole("updateParentOrganization", writeAccess);
 
         assertMappingParams("getAllOrganizationsPage", "pageNum", "pageSize");
         assertMappingParams("getAllOrganizationsPageAlias", "page", "size");
