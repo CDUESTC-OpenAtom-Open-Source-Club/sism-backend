@@ -161,11 +161,18 @@ jobs:
           done
           docker save "${IMAGE}:${GITHUB_SHA}" "${IMAGE}:main" | gzip -1 > backend-image.tar.gz
 
-      - name: Upload backend image artifact
+      - name: Upload backend deployment artifact
         uses: actions/upload-artifact@v4
         with:
-          name: backend-image-${{ github.sha }}
-          path: backend-image.tar.gz
+          name: backend-deployment-${{ github.sha }}
+          path: |
+            backend-image.tar.gz
+            deploy/compose/docker-compose.yml
+            deploy/compose/docker-compose.external-db.yml
+            deploy/compose/nginx/frontend.conf
+            database/seeds
+            database/scripts/bootstrap-local-seed-support.sql
+            database/scripts/validate-clean-seeds.sql
           retention-days: 1
           compression-level: 0
 
@@ -185,9 +192,6 @@ jobs:
       name: ${{ github.event.inputs.target_env || 'production' }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Resolve deployment metadata
         id: meta
         run: |
@@ -272,32 +276,34 @@ jobs:
           echo "frontend=ghcr.io/${OWNER}/strategic-task-management:${{ steps.meta.outputs.frontend_tag }}" >> "$GITHUB_OUTPUT"
           echo "backend=ghcr.io/${OWNER}/sism-backend:${{ steps.meta.outputs.backend_ref }}" >> "$GITHUB_OUTPUT"
 
-      - name: Download backend image artifact
+      - name: Download backend deployment artifact
         if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
         uses: actions/download-artifact@v4
         with:
-          name: backend-image-${{ github.sha }}
-          path: ${{ runner.temp }}/backend-image-${{ github.run_id }}
+          name: backend-deployment-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
 
       - name: Load backend image on server runner
         if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
         env:
           BACKEND_IMAGE: ${{ steps.image.outputs.backend }}
-          ARTIFACT_DIR: ${{ runner.temp }}/backend-image-${{ github.run_id }}
+          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
         run: |
           set -euo pipefail
           gzip -dc "${ARTIFACT_DIR}/backend-image.tar.gz" | sudo docker load
           sudo docker image inspect "${BACKEND_IMAGE}" >/dev/null
-          rm -rf "${ARTIFACT_DIR}"
 
       - name: Upload compose stack
+        if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
           sudo mkdir -p "${REMOTE_DIR}/nginx"
-          sudo install -m 0644 deploy/compose/docker-compose.yml "${REMOTE_DIR}/docker-compose.yml"
-          sudo install -m 0644 deploy/compose/docker-compose.external-db.yml "${REMOTE_DIR}/docker-compose.external-db.yml"
-          sudo install -m 0644 deploy/compose/nginx/frontend.conf "${REMOTE_DIR}/nginx/frontend.conf"
+          sudo install -m 0644 "${ARTIFACT_DIR}/deploy/compose/docker-compose.yml" "${REMOTE_DIR}/docker-compose.yml"
+          sudo install -m 0644 "${ARTIFACT_DIR}/deploy/compose/docker-compose.external-db.yml" "${REMOTE_DIR}/docker-compose.external-db.yml"
+          sudo install -m 0644 "${ARTIFACT_DIR}/deploy/compose/nginx/frontend.conf" "${REMOTE_DIR}/nginx/frontend.conf"
 
       - name: Bootstrap runtime env file
         env:
@@ -546,21 +552,24 @@ jobs:
           SCRIPT
 
       - name: Upload clean seed bundle
+        if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
           BUNDLE_DIR="$(mktemp -d)"
           mkdir -p "${BUNDLE_DIR}/seeds" "${BUNDLE_DIR}/scripts"
-          cp -R database/seeds/. "${BUNDLE_DIR}/seeds/"
-          cp database/scripts/bootstrap-local-seed-support.sql "${BUNDLE_DIR}/scripts/"
-          cp database/scripts/validate-clean-seeds.sql "${BUNDLE_DIR}/scripts/"
+          cp -R "${ARTIFACT_DIR}/database/seeds/." "${BUNDLE_DIR}/seeds/"
+          cp "${ARTIFACT_DIR}/database/scripts/bootstrap-local-seed-support.sql" "${BUNDLE_DIR}/scripts/"
+          cp "${ARTIFACT_DIR}/database/scripts/validate-clean-seeds.sql" "${BUNDLE_DIR}/scripts/"
           tar -C "${BUNDLE_DIR}" -czf /tmp/sism-seed-bundle.tgz .
           sudo mkdir -p "${REMOTE_DIR}/seed-bundle"
           sudo tar -xzf /tmp/sism-seed-bundle.tgz -C "${REMOTE_DIR}/seed-bundle"
           rm -rf "${BUNDLE_DIR}" /tmp/sism-seed-bundle.tgz
 
       - name: Load clean seeds when database is empty
-        if: ${{ steps.meta.outputs.db_mode != 'external' }}
+        if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' && steps.meta.outputs.db_mode != 'external' }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
@@ -685,6 +694,12 @@ jobs:
               exit 1
             fi
           fi
+
+      - name: Remove downloaded deployment artifact
+        if: ${{ always() && steps.meta.outputs.deploy_mode != 'frontend-only' }}
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
+        run: rm -rf "${ARTIFACT_DIR}"
 
       - name: Mark deployment success
         if: ${{ success() }}
