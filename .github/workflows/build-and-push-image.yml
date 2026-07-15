@@ -259,6 +259,19 @@ jobs:
             ControlPersist 10m
           EOF
           chmod 600 ~/.ssh/config
+          SSH_READY=false
+          for attempt in $(seq 1 10); do
+            if ssh -o ControlMaster=yes -o ControlPersist=10m -MNf "${SERVER_USER}@${SERVER_HOST}"; then
+              SSH_READY=true
+              break
+            fi
+            echo "SSH master connection attempt ${attempt} failed; retrying..." >&2
+            sleep $((attempt * 2))
+          done
+          if [[ "${SSH_READY}" != "true" ]]; then
+            echo "Unable to establish SSH master connection after 10 attempts." >&2
+            exit 1
+          fi
 
       - name: Normalize image names
         id: image
