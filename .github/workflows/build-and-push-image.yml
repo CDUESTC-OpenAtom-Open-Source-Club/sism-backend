@@ -151,7 +151,7 @@ jobs:
     needs:
       - qa
       - build-and-push
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     environment:
       name: ${{ github.event.inputs.target_env || 'production' }}
 
@@ -247,6 +247,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
           cat > ~/.ssh/config <<EOF
           Host ${SERVER_HOST}
+            HostName 127.0.0.1
             User ${SERVER_USER}
             IdentityFile ~/.ssh/id_ed25519
             IdentitiesOnly yes
