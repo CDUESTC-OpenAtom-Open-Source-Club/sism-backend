@@ -229,22 +229,12 @@ jobs:
           BACKEND_REF: ${{ steps.meta.outputs.backend_ref }}
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
 
-      - name: Configure SSH
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      - name: Verify self-hosted runner
         run: |
           set -euo pipefail
-          : "${SERVER_HOST:?Missing SERVER_HOST secret}"
-          : "${SERVER_USER:?Missing SERVER_USER secret}"
-          : "${SERVER_SSH_KEY:?Missing SERVER_SSH_KEY secret}"
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          chmod 644 ~/.ssh/known_hosts
+          [[ "${RUNNER_ENVIRONMENT}" == "self-hosted" ]]
+          sudo -n true
+          sudo docker info >/dev/null
 
       - name: Normalize image names
         id: image
@@ -254,21 +244,17 @@ jobs:
           echo "backend=ghcr.io/${OWNER}/sism-backend:${{ steps.meta.outputs.backend_ref }}" >> "$GITHUB_OUTPUT"
 
       - name: Upload compose stack
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
-          ssh "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '${REMOTE_DIR}/nginx'"
-          scp deploy/compose/docker-compose.yml "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/docker-compose.yml"
-          scp deploy/compose/docker-compose.external-db.yml "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/docker-compose.external-db.yml"
-          scp deploy/compose/nginx/frontend.conf "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/nginx/frontend.conf"
+          sudo mkdir -p "${REMOTE_DIR}/nginx"
+          sudo install -m 0644 deploy/compose/docker-compose.yml "${REMOTE_DIR}/docker-compose.yml"
+          sudo install -m 0644 deploy/compose/docker-compose.external-db.yml "${REMOTE_DIR}/docker-compose.external-db.yml"
+          sudo install -m 0644 deploy/compose/nginx/frontend.conf "${REMOTE_DIR}/nginx/frontend.conf"
 
       - name: Bootstrap runtime env file
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           FRONTEND_IMAGE: ${{ steps.image.outputs.frontend }}
@@ -327,6 +313,11 @@ jobs:
           fi
           if [[ "${DEPLOY_MODE}" != "frontend-only" ]]; then
             upsert_env BACKEND_IMAGE "${BACKEND_IMAGE}"
+          else
+            RUNNING_BACKEND_IMAGE="$(docker inspect production-backend-1 --format '{{.Config.Image}}' 2>/dev/null || true)"
+            if [[ -n "${RUNNING_BACKEND_IMAGE}" ]]; then
+              upsert_env BACKEND_IMAGE "${RUNNING_BACKEND_IMAGE}"
+            fi
           fi
           grep -q '^SPRING_FLYWAY_ENABLED=' "${ENV_FILE}" || upsert_env SPRING_FLYWAY_ENABLED true
           grep -q '^AUTO_LOAD_CLEAN_SEEDS=' "${ENV_FILE}" || upsert_env AUTO_LOAD_CLEAN_SEEDS true
@@ -340,18 +331,22 @@ jobs:
           grep -q '^ALLOWED_ORIGINS=' "${ENV_FILE}" || upsert_env ALLOWED_ORIGINS "http://${SERVER_HOST}"
           SCRIPT
           chmod +x /tmp/bootstrap-runtime-env.sh
-          scp /tmp/bootstrap-runtime-env.sh "${SERVER_USER}@${SERVER_HOST}:/tmp/bootstrap-runtime-env.sh"
-          ssh "${SERVER_USER}@${SERVER_HOST}" \
-            "SERVER_HOST='${SERVER_HOST}' TARGET_ENV='${TARGET_ENV}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' BACKEND_IMAGE='${BACKEND_IMAGE}' DEPLOY_MODE='${DEPLOY_MODE}' DB_MODE='${DB_MODE}' bash /tmp/bootstrap-runtime-env.sh && rm -f /tmp/bootstrap-runtime-env.sh"
+          sudo env \
+            SERVER_HOST="${SERVER_HOST}" \
+            TARGET_ENV="${TARGET_ENV}" \
+            FRONTEND_IMAGE="${FRONTEND_IMAGE}" \
+            BACKEND_IMAGE="${BACKEND_IMAGE}" \
+            DEPLOY_MODE="${DEPLOY_MODE}" \
+            DB_MODE="${DB_MODE}" \
+            bash /tmp/bootstrap-runtime-env.sh
+          rm -f /tmp/bootstrap-runtime-env.sh
           if [[ -n "${GHCR_USERNAME:-}" && -n "${GHCR_TOKEN:-}" ]]; then
-            ssh "${SERVER_USER}@${SERVER_HOST}" "docker login ghcr.io -u '${GHCR_USERNAME}' -p '${GHCR_TOKEN}'"
+            printf '%s' "${GHCR_TOKEN}" | sudo docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
           fi
 
       - name: Deploy stack on server
         id: deploy_stack
         env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
           DB_MODE: ${{ steps.meta.outputs.db_mode }}
         run: |
@@ -486,27 +481,24 @@ jobs:
           }
           SCRIPT
           chmod +x /tmp/run-remote-deploy.sh
-          scp /tmp/run-remote-deploy.sh "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/run-remote-deploy.sh"
-          ssh "${SERVER_USER}@${SERVER_HOST}" "
-            set -e
-            cd '${REMOTE_DIR}'
-            for pid in \$(pgrep -f \"run-remote-deploy.sh ${REMOTE_DIR}\" || true); do
-              if [ \"\$pid\" != \"\$\$\" ]; then kill \"\$pid\" || true; fi
-            done
-            for pid in \$(pgrep -f 'docker pull ghcr.io/.*/sism-backend' || true); do
-              if [ \"\$pid\" != \"\$\$\" ]; then kill \"\$pid\" || true; fi
-            done
-            for pid in \$(pgrep -f 'docker pull ghcr.io/.*/strategic-task-management' || true); do
-              if [ \"\$pid\" != \"\$\$\" ]; then kill \"\$pid\" || true; fi
-            done
-            setsid bash ./run-remote-deploy.sh '${REMOTE_DIR}' '${DEPLOY_MODE}' '${DB_MODE}' </dev/null >/dev/null 2>&1 &
-            exit 0
-          "
+          sudo install -m 0755 /tmp/run-remote-deploy.sh "${REMOTE_DIR}/run-remote-deploy.sh"
+          rm -f /tmp/run-remote-deploy.sh
+          sudo env REMOTE_DIR="${REMOTE_DIR}" DEPLOY_MODE="${DEPLOY_MODE}" DB_MODE="${DB_MODE}" bash <<'SCRIPT'
+          set -euo pipefail
+          cd "${REMOTE_DIR}"
+          for pid in $(pgrep -f "run-remote-deploy.sh ${REMOTE_DIR}" || true); do
+            if [[ "${pid}" != "$$" ]]; then kill "${pid}" || true; fi
+          done
+          for pid in $(pgrep -f 'docker pull ghcr.io/.*/sism-backend' || true); do
+            if [[ "${pid}" != "$$" ]]; then kill "${pid}" || true; fi
+          done
+          for pid in $(pgrep -f 'docker pull ghcr.io/.*/strategic-task-management' || true); do
+            if [[ "${pid}" != "$$" ]]; then kill "${pid}" || true; fi
+          done
+          RUNNER_TRACKING_ID= setsid bash ./run-remote-deploy.sh "${REMOTE_DIR}" "${DEPLOY_MODE}" "${DB_MODE}" </dev/null >/dev/null 2>&1 &
+          SCRIPT
 
       - name: Upload clean seed bundle
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
@@ -516,18 +508,16 @@ jobs:
           cp database/scripts/bootstrap-local-seed-support.sql "${BUNDLE_DIR}/scripts/"
           cp database/scripts/validate-clean-seeds.sql "${BUNDLE_DIR}/scripts/"
           tar -C "${BUNDLE_DIR}" -czf /tmp/sism-seed-bundle.tgz .
-          scp /tmp/sism-seed-bundle.tgz "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/sism-seed-bundle.tgz"
-          ssh "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '${REMOTE_DIR}/seed-bundle' && tar -xzf '${REMOTE_DIR}/sism-seed-bundle.tgz' -C '${REMOTE_DIR}/seed-bundle' && rm -f '${REMOTE_DIR}/sism-seed-bundle.tgz'"
+          sudo mkdir -p "${REMOTE_DIR}/seed-bundle"
+          sudo tar -xzf /tmp/sism-seed-bundle.tgz -C "${REMOTE_DIR}/seed-bundle"
+          rm -rf "${BUNDLE_DIR}" /tmp/sism-seed-bundle.tgz
 
       - name: Load clean seeds when database is empty
         if: ${{ steps.meta.outputs.db_mode != 'external' }}
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
-          ssh "${SERVER_USER}@${SERVER_HOST}" "REMOTE_DIR='${REMOTE_DIR}' bash -s" <<'SCRIPT'
+          sudo env REMOTE_DIR="${REMOTE_DIR}" bash <<'SCRIPT'
           set -euo pipefail
           cd "${REMOTE_DIR}"
 
@@ -578,8 +568,6 @@ jobs:
 
       - name: Verify stack health
         env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
           DB_MODE: ${{ steps.meta.outputs.db_mode }}
         run: |
@@ -591,60 +579,64 @@ jobs:
           fi
           DEPLOY_COMPLETED=false
           for i in $(seq 1 360); do
-            STATUS_RAW="$(ssh "${SERVER_USER}@${SERVER_HOST}" "test -f '${REMOTE_DIR}/deploy-status.env' && cat '${REMOTE_DIR}/deploy-status.env' || true")"
+            if sudo test -f "${REMOTE_DIR}/deploy-status.env"; then
+              STATUS_RAW="$(sudo cat "${REMOTE_DIR}/deploy-status.env")"
+            else
+              STATUS_RAW=""
+            fi
             if printf '%s\n' "$STATUS_RAW" | grep -q '^DEPLOY_STATE=success$'; then
               DEPLOY_COMPLETED=true
               break
             fi
             if printf '%s\n' "$STATUS_RAW" | grep -q '^DEPLOY_STATE=failure$'; then
               echo "$STATUS_RAW"
-              ssh "${SERVER_USER}@${SERVER_HOST}" "tail -200 '${REMOTE_DIR}/deploy-run.log' || true"
+              sudo tail -200 "${REMOTE_DIR}/deploy-run.log" || true
               exit 1
             fi
             sleep 5
           done
           if [[ "${DEPLOY_COMPLETED}" != "true" ]]; then
             echo "Deployment did not reach DEPLOY_STATE=success within polling window." >&2
-            ssh "${SERVER_USER}@${SERVER_HOST}" "cat '${REMOTE_DIR}/deploy-status.env' 2>/dev/null || true" >&2
-            ssh "${SERVER_USER}@${SERVER_HOST}" "tail -200 '${REMOTE_DIR}/deploy-run.log' || true" >&2
+            sudo cat "${REMOTE_DIR}/deploy-status.env" 2>/dev/null || true
+            sudo tail -200 "${REMOTE_DIR}/deploy-run.log" || true
             exit 1
           fi
-          STATUS_RAW="$(ssh "${SERVER_USER}@${SERVER_HOST}" "cat '${REMOTE_DIR}/deploy-status.env'")"
+          STATUS_RAW="$(sudo cat "${REMOTE_DIR}/deploy-status.env")"
           echo "$STATUS_RAW"
-          ssh "${SERVER_USER}@${SERVER_HOST}" "cd '${REMOTE_DIR}' && docker compose -f '${COMPOSE_FILE}' ps"
+          sudo bash -c "cd '${REMOTE_DIR}' && docker compose -f '${COMPOSE_FILE}' ps"
           if [[ "${DEPLOY_MODE}" != "frontend-only" ]]; then
-            ssh "${SERVER_USER}@${SERVER_HOST}" '
-              set -euo pipefail
-              cd "'"${REMOTE_DIR}"'"
-              BACKEND_PORT="$(awk -F= "/^BACKEND_PORT=/{print \$2}" .env | tail -n 1)"
-              BACKEND_PORT="${BACKEND_PORT:-8080}"
-              for i in $(seq 1 24); do
-                if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/v1/actuator/health" | grep -q "\"status\":\"UP\""; then
-                  exit 0
-                fi
-                sleep 5
-              done
+            BACKEND_PORT="$(sudo awk -F= '/^BACKEND_PORT=/{print $2}' "${REMOTE_DIR}/.env" | tail -n 1)"
+            BACKEND_PORT="${BACKEND_PORT:-8080}"
+            BACKEND_READY=false
+            for i in $(seq 1 24); do
+              if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/v1/actuator/health" | grep -q '"status":"UP"'; then
+                BACKEND_READY=true
+                break
+              fi
+              sleep 5
+            done
+            if [[ "${BACKEND_READY}" != "true" ]]; then
               echo "Backend health check did not become UP in time" >&2
-              docker ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
+              sudo docker ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
               exit 1
-            '
+            fi
           fi
           if [[ "${DEPLOY_MODE}" != "backend-only" ]]; then
-            ssh "${SERVER_USER}@${SERVER_HOST}" '
-              set -euo pipefail
-              cd "'"${REMOTE_DIR}"'"
-              FRONTEND_PORT="$(awk -F= "/^FRONTEND_PORT=/{print \$2}" .env | tail -n 1)"
-              FRONTEND_PORT="${FRONTEND_PORT:-80}"
-              for i in $(seq 1 12); do
-                if curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/" >/dev/null; then
-                  exit 0
-                fi
-                sleep 5
-              done
+            FRONTEND_PORT="$(sudo awk -F= '/^FRONTEND_PORT=/{print $2}' "${REMOTE_DIR}/.env" | tail -n 1)"
+            FRONTEND_PORT="${FRONTEND_PORT:-80}"
+            FRONTEND_READY=false
+            for i in $(seq 1 12); do
+              if curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/" >/dev/null; then
+                FRONTEND_READY=true
+                break
+              fi
+              sleep 5
+            done
+            if [[ "${FRONTEND_READY}" != "true" ]]; then
               echo "Frontend health check did not become ready in time" >&2
-              docker ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
+              sudo docker ps --format "table {{.Names}}\t{{.Status}}" >&2 || true
               exit 1
-            '
+            fi
           fi
 
       - name: Mark deployment success
