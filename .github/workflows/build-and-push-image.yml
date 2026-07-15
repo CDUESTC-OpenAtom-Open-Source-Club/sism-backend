@@ -486,7 +486,7 @@ jobs:
             set_stage "compose-up"
             case "${DEPLOY_MODE}" in
               frontend-only)
-                docker compose -f "${COMPOSE_FILE}" up -d --force-recreate frontend
+                docker compose -f "${COMPOSE_FILE}" up -d --force-recreate --no-deps frontend
                 ;;
               backend-only)
                 docker compose -f "${COMPOSE_FILE}" up -d --force-recreate backend
