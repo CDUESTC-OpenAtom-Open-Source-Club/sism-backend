@@ -255,24 +255,8 @@ jobs:
             ConnectTimeout 15
             ServerAliveInterval 15
             ServerAliveCountMax 4
-            ControlMaster auto
-            ControlPath ~/.ssh/control-%C
-            ControlPersist 10m
           EOF
           chmod 600 ~/.ssh/config
-          SSH_READY=false
-          for attempt in $(seq 1 10); do
-            if ssh -o ControlMaster=yes -o ControlPersist=10m -MNf "${SERVER_USER}@${SERVER_HOST}"; then
-              SSH_READY=true
-              break
-            fi
-            echo "SSH master connection attempt ${attempt} failed; retrying..." >&2
-            sleep $((attempt * 2))
-          done
-          if [[ "${SSH_READY}" != "true" ]]; then
-            echo "Unable to establish SSH master connection after 10 attempts." >&2
-            exit 1
-          fi
 
       - name: Normalize image names
         id: image
@@ -368,9 +352,10 @@ jobs:
           grep -q '^ALLOWED_ORIGINS=' "${ENV_FILE}" || upsert_env ALLOWED_ORIGINS "http://${SERVER_HOST}"
           SCRIPT
           chmod +x /tmp/bootstrap-runtime-env.sh
-          scp /tmp/bootstrap-runtime-env.sh "${SERVER_USER}@${SERVER_HOST}:/tmp/bootstrap-runtime-env.sh"
+          REMOTE_BOOTSTRAP_SCRIPT="/tmp/bootstrap-runtime-env-${GITHUB_RUN_ID}.sh"
+          scp /tmp/bootstrap-runtime-env.sh "${SERVER_USER}@${SERVER_HOST}:${REMOTE_BOOTSTRAP_SCRIPT}"
           ssh "${SERVER_USER}@${SERVER_HOST}" \
-            "SERVER_HOST='${SERVER_HOST}' TARGET_ENV='${TARGET_ENV}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' BACKEND_IMAGE='${BACKEND_IMAGE}' DEPLOY_MODE='${DEPLOY_MODE}' DB_MODE='${DB_MODE}' bash /tmp/bootstrap-runtime-env.sh && rm -f /tmp/bootstrap-runtime-env.sh"
+            "SERVER_HOST='${SERVER_HOST}' TARGET_ENV='${TARGET_ENV}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' BACKEND_IMAGE='${BACKEND_IMAGE}' DEPLOY_MODE='${DEPLOY_MODE}' DB_MODE='${DB_MODE}' bash '${REMOTE_BOOTSTRAP_SCRIPT}' && rm -f '${REMOTE_BOOTSTRAP_SCRIPT}'"
           if [[ -n "${GHCR_USERNAME:-}" && -n "${GHCR_TOKEN:-}" ]]; then
             ssh "${SERVER_USER}@${SERVER_HOST}" "docker login ghcr.io -u '${GHCR_USERNAME}' -p '${GHCR_TOKEN}'"
           fi
