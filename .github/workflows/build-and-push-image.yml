@@ -375,7 +375,7 @@ jobs:
           echo "deploy_start_utc=${START_TS}" >> "$GITHUB_OUTPUT"
           cat > /tmp/run-remote-deploy.sh <<'SCRIPT'
           #!/usr/bin/env bash
-          set -euo pipefail
+          set -Eeuo pipefail
           REMOTE_DIR="$1"
           DEPLOY_MODE="$2"
           DB_MODE="$3"
@@ -419,7 +419,7 @@ jobs:
             for attempt in $(seq 1 "${PULL_MAX_ATTEMPTS}"); do
               echo "[deploy] pulling ${image}, attempt ${attempt}" >> "${LOG_FILE}" 2>&1
               set_stage "pull:${image}:attempt-${attempt}"
-              if timeout "${PULL_TIMEOUT_SECONDS}" ctr pull "${image}"; then
+              if timeout "${PULL_TIMEOUT_SECONDS}" docker pull "${image}"; then
                 return 0
               fi
               echo "[deploy] pull failed for ${image}, attempt ${attempt}" >> "${LOG_FILE}" 2>&1
@@ -431,7 +431,21 @@ jobs:
             echo "DEPLOY_START_UTC=${START_TS}"
             echo "FRONTEND_PULL_START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } > "${STATUS_FILE}"
-          {
+          record_failure() {
+            local exit_code="$1"
+            local fail_ts
+            trap - ERR
+            set +e
+            fail_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            {
+              echo "DEPLOY_STATE=failure"
+              echo "DEPLOY_END_UTC=${fail_ts}"
+            } >> "${STATUS_FILE}"
+            echo "[deploy] failure ${fail_ts} (exit ${exit_code})" >> "${LOG_FILE}" 2>&1
+            exit "${exit_code}"
+          }
+          trap 'record_failure $?' ERR
+          exec >> "${LOG_FILE}" 2>&1
             echo "[deploy] start ${START_TS}"
             cd "${REMOTE_DIR}"
             COMPOSE_FILE="docker-compose.yml"
@@ -489,15 +503,7 @@ jobs:
               echo "DEPLOY_END_UTC=${STACK_UP_END}"
             } >> "${STATUS_FILE}"
             echo "[deploy] success ${STACK_UP_END}"
-          } >> "${LOG_FILE}" 2>&1 || {
-            FAIL_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            {
-              echo "DEPLOY_STATE=failure"
-              echo "DEPLOY_END_UTC=${FAIL_TS}"
-            } >> "${STATUS_FILE}"
-            echo "[deploy] failure ${FAIL_TS}" >> "${LOG_FILE}" 2>&1
-            exit 1
-          }
+          trap - ERR
           SCRIPT
           chmod +x /tmp/run-remote-deploy.sh
           scp /tmp/run-remote-deploy.sh "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/run-remote-deploy.sh"
