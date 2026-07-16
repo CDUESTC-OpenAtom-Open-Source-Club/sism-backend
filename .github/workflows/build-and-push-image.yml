@@ -471,6 +471,7 @@ jobs:
           REMOTE_DIR="$1"
           DEPLOY_MODE="$2"
           DB_MODE="$3"
+          DEPLOY_RUN_TOKEN="$4"
           LOG_FILE="${REMOTE_DIR}/deploy-run.log"
           STATUS_FILE="${REMOTE_DIR}/deploy-status.env"
           LOCK_FILE="${REMOTE_DIR}/deploy.lock"
@@ -521,6 +522,7 @@ jobs:
           }
           {
             echo "DEPLOY_START_UTC=${START_TS}"
+            echo "DEPLOY_RUN_TOKEN=${DEPLOY_RUN_TOKEN}"
             echo "FRONTEND_PULL_START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } > "${STATUS_FILE}"
           {
@@ -594,7 +596,12 @@ jobs:
           chmod +x /tmp/run-remote-deploy.sh
           sudo install -m 0755 /tmp/run-remote-deploy.sh "${REMOTE_DIR}/run-remote-deploy.sh"
           rm -f /tmp/run-remote-deploy.sh
-          sudo env REMOTE_DIR="${REMOTE_DIR}" DEPLOY_MODE="${DEPLOY_MODE}" DB_MODE="${DB_MODE}" bash <<'SCRIPT'
+          sudo env \
+            REMOTE_DIR="${REMOTE_DIR}" \
+            DEPLOY_MODE="${DEPLOY_MODE}" \
+            DB_MODE="${DB_MODE}" \
+            DEPLOY_RUN_TOKEN="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            bash <<'SCRIPT'
           set -euo pipefail
           cd "${REMOTE_DIR}"
           for pid in $(pgrep -f "run-remote-deploy.sh ${REMOTE_DIR}" || true); do
@@ -606,7 +613,12 @@ jobs:
           for pid in $(pgrep -f 'docker pull ghcr.io/.*/strategic-task-management' || true); do
             if [[ "${pid}" != "$$" ]]; then kill "${pid}" || true; fi
           done
-          RUNNER_TRACKING_ID= setsid bash ./run-remote-deploy.sh "${REMOTE_DIR}" "${DEPLOY_MODE}" "${DB_MODE}" </dev/null >/dev/null 2>&1 &
+          RUNNER_TRACKING_ID= setsid bash ./run-remote-deploy.sh \
+            "${REMOTE_DIR}" \
+            "${DEPLOY_MODE}" \
+            "${DB_MODE}" \
+            "${DEPLOY_RUN_TOKEN}" \
+            </dev/null >/dev/null 2>&1 &
           SCRIPT
 
       - name: Upload clean seed bundle
@@ -628,12 +640,37 @@ jobs:
 
       - name: Load clean seeds when database is empty
         if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' && steps.meta.outputs.db_mode != 'external' }}
+        env:
+          DEPLOY_RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
-          sudo env REMOTE_DIR="${REMOTE_DIR}" bash <<'SCRIPT'
+          sudo env REMOTE_DIR="${REMOTE_DIR}" DEPLOY_RUN_TOKEN="${DEPLOY_RUN_TOKEN}" bash <<'SCRIPT'
           set -euo pipefail
           cd "${REMOTE_DIR}"
+
+          DEPLOY_COMPLETED=false
+          for _ in $(seq 1 900); do
+            STATUS_RAW="$(cat deploy-status.env 2>/dev/null || true)"
+            if printf '%s\n' "${STATUS_RAW}" | grep -Fqx "DEPLOY_RUN_TOKEN=${DEPLOY_RUN_TOKEN}"; then
+              if printf '%s\n' "${STATUS_RAW}" | grep -q '^DEPLOY_STATE=failure$'; then
+                printf '%s\n' "${STATUS_RAW}" >&2
+                tail -200 deploy-run.log >&2 || true
+                exit 1
+              fi
+              if printf '%s\n' "${STATUS_RAW}" | grep -q '^DEPLOY_STATE=success$'; then
+                DEPLOY_COMPLETED=true
+                break
+              fi
+            fi
+            sleep 2
+          done
+          if [[ "${DEPLOY_COMPLETED}" != "true" ]]; then
+            echo "Current deployment did not complete before seed validation" >&2
+            cat deploy-status.env >&2 2>/dev/null || true
+            tail -200 deploy-run.log >&2 || true
+            exit 1
+          fi
 
           POSTGRES_CONTAINER=""
           for _ in $(seq 1 60); do
@@ -715,6 +752,7 @@ jobs:
         env:
           DEPLOY_MODE: ${{ steps.meta.outputs.deploy_mode }}
           DB_MODE: ${{ steps.meta.outputs.db_mode }}
+          DEPLOY_RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
@@ -729,14 +767,16 @@ jobs:
             else
               STATUS_RAW=""
             fi
-            if printf '%s\n' "$STATUS_RAW" | grep -q '^DEPLOY_STATE=success$'; then
-              DEPLOY_COMPLETED=true
-              break
-            fi
-            if printf '%s\n' "$STATUS_RAW" | grep -q '^DEPLOY_STATE=failure$'; then
-              echo "$STATUS_RAW"
-              sudo tail -200 "${REMOTE_DIR}/deploy-run.log" || true
-              exit 1
+            if printf '%s\n' "$STATUS_RAW" | grep -Fqx "DEPLOY_RUN_TOKEN=${DEPLOY_RUN_TOKEN}"; then
+              if printf '%s\n' "$STATUS_RAW" | grep -q '^DEPLOY_STATE=success$'; then
+                DEPLOY_COMPLETED=true
+                break
+              fi
+              if printf '%s\n' "$STATUS_RAW" | grep -q '^DEPLOY_STATE=failure$'; then
+                echo "$STATUS_RAW"
+                sudo tail -200 "${REMOTE_DIR}/deploy-run.log" || true
+                exit 1
+              fi
             fi
             sleep 5
           done
