@@ -50,7 +50,7 @@ jobs:
   qa:
     name: QA
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.deploy_mode != 'frontend-only' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -101,11 +101,41 @@ jobs:
           print(f"Validated {len(versions)} Flyway migration filenames.")
           PY
 
+  prepare-deployment:
+    name: Prepare Deployment Bundle
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate deployment assets
+        run: |
+          bash -n scripts/deployment/validate-docker-host.sh
+          bash -n scripts/deployment/validate-compose-config.sh
+          scripts/deployment/validate-compose-config.sh
+
+      - name: Upload deployment bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-stack-${{ github.sha }}
+          path: |
+            deploy/compose/docker-compose.yml
+            deploy/compose/docker-compose.external-db.yml
+            deploy/compose/nginx/frontend.conf
+            database/seeds
+            database/scripts/bootstrap-local-seed-support.sql
+            database/scripts/validate-clean-seeds.sql
+            scripts/deployment/validate-docker-host.sh
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+
   build-and-push:
     name: Build and Push
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.deploy_mode != 'frontend-only' }}
     needs: qa
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     outputs:
       backend_image: ${{ steps.image.outputs.image }}
@@ -161,20 +191,14 @@ jobs:
           done
           docker save "${IMAGE}:${GITHUB_SHA}" "${IMAGE}:main" | gzip -1 > backend-image.tar.gz
 
-      - name: Upload backend deployment artifact
+      - name: Upload backend image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: backend-deployment-${{ github.sha }}
-          path: |
-            backend-image.tar.gz
-            deploy/compose/docker-compose.yml
-            deploy/compose/docker-compose.external-db.yml
-            deploy/compose/nginx/frontend.conf
-            database/seeds
-            database/scripts/bootstrap-local-seed-support.sql
-            database/scripts/validate-clean-seeds.sql
+          name: backend-image-${{ github.sha }}
+          path: backend-image.tar.gz
           retention-days: 1
           compression-level: 0
+          overwrite: true
 
   deploy:
     name: Deploy Stack
@@ -186,8 +210,9 @@ jobs:
       }}
     needs:
       - qa
+      - prepare-deployment
       - build-and-push
-    runs-on: [self-hosted, Linux, X64, backend]
+    runs-on: [self-hosted, Linux, X64, backend, production]
     environment:
       name: ${{ github.event.inputs.target_env || 'production' }}
 
@@ -206,11 +231,15 @@ jobs:
             FRONTEND_TAG="main"
             DB_MODE="internal"
           fi
-          echo "target_env=${TARGET_ENV}" >> "$GITHUB_OUTPUT"
-          echo "deploy_mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
-          echo "frontend_tag=${FRONTEND_TAG}" >> "$GITHUB_OUTPUT"
-          echo "backend_ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "db_mode=${DB_MODE}" >> "$GITHUB_OUTPUT"
+          [[ "${TARGET_ENV}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]
+          [[ "${FRONTEND_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]
+          {
+            echo "target_env=${TARGET_ENV}"
+            echo "deploy_mode=${DEPLOY_MODE}"
+            echo "frontend_tag=${FRONTEND_TAG}"
+            echo "backend_ref=${GITHUB_SHA}"
+            echo "db_mode=${DB_MODE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create deployment record
         id: create_deployment
@@ -276,27 +305,41 @@ jobs:
           echo "frontend=ghcr.io/${OWNER}/strategic-task-management:${{ steps.meta.outputs.frontend_tag }}" >> "$GITHUB_OUTPUT"
           echo "backend=ghcr.io/${OWNER}/sism-backend:${{ steps.meta.outputs.backend_ref }}" >> "$GITHUB_OUTPUT"
 
-      - name: Download backend deployment artifact
+      - name: Download deployment bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-stack-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-stack-${{ github.run_id }}
+
+      - name: Validate deployment host
+        env:
+          STACK_ARTIFACT_DIR: ${{ runner.temp }}/backend-stack-${{ github.run_id }}
+          TARGET_DIR: /opt/sism-stack/${{ steps.meta.outputs.target_env }}
+        run: |
+          set -euo pipefail
+          bash "${STACK_ARTIFACT_DIR}/scripts/deployment/validate-docker-host.sh" "${TARGET_DIR}"
+
+      - name: Download backend image artifact
         if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
         uses: actions/download-artifact@v4
         with:
-          name: backend-deployment-${{ github.sha }}
-          path: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
+          name: backend-image-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-image-${{ github.run_id }}
 
       - name: Load backend image on server runner
         if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
         env:
           BACKEND_IMAGE: ${{ steps.image.outputs.backend }}
-          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
+          ARTIFACT_DIR: ${{ runner.temp }}/backend-image-${{ github.run_id }}
         run: |
           set -euo pipefail
+          gzip -t "${ARTIFACT_DIR}/backend-image.tar.gz"
           gzip -dc "${ARTIFACT_DIR}/backend-image.tar.gz" | sudo docker load
           sudo docker image inspect "${BACKEND_IMAGE}" >/dev/null
 
       - name: Upload compose stack
-        if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
         env:
-          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
+          ARTIFACT_DIR: ${{ runner.temp }}/backend-stack-${{ github.run_id }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
@@ -324,6 +367,11 @@ jobs:
           ENV_FILE="${REMOTE_DIR}/.env"
           mkdir -p "${REMOTE_DIR}/nginx"
           generate_secret() { openssl rand -hex "$1"; }
+          if [[ "${SERVER_HOST}" =~ ^https?:// ]]; then
+            PUBLIC_ORIGIN="${SERVER_HOST}"
+          else
+            PUBLIC_ORIGIN="https://${SERVER_HOST}"
+          fi
           upsert_env() {
             local key="$1"
             local value="$2"
@@ -341,6 +389,7 @@ jobs:
           }
           if [[ ! -f "${ENV_FILE}" ]]; then
             {
+              printf 'COMPOSE_PROJECT_NAME=%s\n' "${TARGET_ENV}"
               printf 'DB_MODE=%s\n' "${DB_MODE}"
               printf 'POSTGRES_DB=%s\n' 'sism_prod'
               printf 'POSTGRES_USER=%s\n' 'sism_prod_user'
@@ -351,15 +400,16 @@ jobs:
               printf 'DB_USERNAME=%s\n' 'sism_prod_user'
               printf 'DB_PASSWORD=%s\n' "$(generate_secret 24)"
               printf 'JWT_SECRET=%s\n' "$(generate_secret 64)"
-              printf 'ALLOWED_ORIGINS=%s\n' "http://${SERVER_HOST}"
+              printf 'ALLOWED_ORIGINS=%s\n' "${PUBLIC_ORIGIN}"
               printf 'FRONTEND_IMAGE=%s\n' "${FRONTEND_IMAGE}"
               printf 'BACKEND_IMAGE=%s\n' "${BACKEND_IMAGE}"
               printf 'AUTO_LOAD_CLEAN_SEEDS=%s\n' 'true'
               printf 'SPRING_FLYWAY_ENABLED=%s\n' 'true'
-              printf 'BACKEND_PORT=%s\n' '8080'
-              printf 'FRONTEND_PORT=%s\n' '80'
+              printf 'BACKEND_PORT=%s\n' '18080'
+              printf 'FRONTEND_PORT=%s\n' '18081'
             } > "${ENV_FILE}"
           fi
+          upsert_env COMPOSE_PROJECT_NAME "${TARGET_ENV}"
           upsert_env DB_MODE "${DB_MODE}"
           if [[ "${DEPLOY_MODE}" != "backend-only" ]]; then
             upsert_env FRONTEND_IMAGE "${FRONTEND_IMAGE}"
@@ -367,21 +417,29 @@ jobs:
           if [[ "${DEPLOY_MODE}" != "frontend-only" ]]; then
             upsert_env BACKEND_IMAGE "${BACKEND_IMAGE}"
           else
-            RUNNING_BACKEND_IMAGE="$(docker inspect production-backend-1 --format '{{.Config.Image}}' 2>/dev/null || true)"
+            COMPOSE_FILE="docker-compose.yml"
+            if [[ "${DB_MODE}" == "external" ]]; then
+              COMPOSE_FILE="docker-compose.external-db.yml"
+            fi
+            RUNNING_BACKEND_ID="$(cd "${REMOTE_DIR}" && docker compose -f "${COMPOSE_FILE}" ps -q backend 2>/dev/null || true)"
+            RUNNING_BACKEND_IMAGE=""
+            if [[ -n "${RUNNING_BACKEND_ID}" ]]; then
+              RUNNING_BACKEND_IMAGE="$(docker inspect "${RUNNING_BACKEND_ID}" --format '{{.Config.Image}}' 2>/dev/null || true)"
+            fi
             if [[ -n "${RUNNING_BACKEND_IMAGE}" ]]; then
               upsert_env BACKEND_IMAGE "${RUNNING_BACKEND_IMAGE}"
             fi
           fi
           grep -q '^SPRING_FLYWAY_ENABLED=' "${ENV_FILE}" || upsert_env SPRING_FLYWAY_ENABLED true
           grep -q '^AUTO_LOAD_CLEAN_SEEDS=' "${ENV_FILE}" || upsert_env AUTO_LOAD_CLEAN_SEEDS true
-          grep -q '^BACKEND_PORT=' "${ENV_FILE}" || upsert_env BACKEND_PORT 8080
-          grep -q '^FRONTEND_PORT=' "${ENV_FILE}" || upsert_env FRONTEND_PORT 80
+          grep -q '^BACKEND_PORT=' "${ENV_FILE}" || upsert_env BACKEND_PORT 18080
+          grep -q '^FRONTEND_PORT=' "${ENV_FILE}" || upsert_env FRONTEND_PORT 18081
           grep -q '^DB_HOST=' "${ENV_FILE}" || upsert_env DB_HOST 127.0.0.1
           grep -q '^DB_PORT=' "${ENV_FILE}" || upsert_env DB_PORT 5432
           grep -q '^DB_URL=' "${ENV_FILE}" || upsert_env DB_URL 'jdbc:postgresql://127.0.0.1:5432/sism_prod?stringtype=unspecified'
           grep -q '^DB_USERNAME=' "${ENV_FILE}" || upsert_env DB_USERNAME sism_prod_user
           grep -q '^DB_PASSWORD=' "${ENV_FILE}" || upsert_env DB_PASSWORD "$(generate_secret 24)"
-          grep -q '^ALLOWED_ORIGINS=' "${ENV_FILE}" || upsert_env ALLOWED_ORIGINS "http://${SERVER_HOST}"
+          grep -q '^ALLOWED_ORIGINS=' "${ENV_FILE}" || upsert_env ALLOWED_ORIGINS "${PUBLIC_ORIGIN}"
           SCRIPT
           chmod +x /tmp/bootstrap-runtime-env.sh
           sudo env \
@@ -554,7 +612,7 @@ jobs:
       - name: Upload clean seed bundle
         if: ${{ steps.meta.outputs.deploy_mode != 'frontend-only' }}
         env:
-          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
+          ARTIFACT_DIR: ${{ runner.temp }}/backend-stack-${{ github.run_id }}
         run: |
           set -euo pipefail
           REMOTE_DIR="/opt/sism-stack/${{ steps.meta.outputs.target_env }}"
@@ -577,6 +635,21 @@ jobs:
           set -euo pipefail
           cd "${REMOTE_DIR}"
 
+          POSTGRES_CONTAINER=""
+          for _ in $(seq 1 60); do
+            POSTGRES_CONTAINER="$(docker compose -f docker-compose.yml ps -q postgres 2>/dev/null || true)"
+            if [[ -n "${POSTGRES_CONTAINER}" ]] && \
+              [[ "$(docker inspect "${POSTGRES_CONTAINER}" --format '{{.State.Health.Status}}' 2>/dev/null || true)" == "healthy" ]]; then
+              break
+            fi
+            POSTGRES_CONTAINER=""
+            sleep 2
+          done
+          if [[ -z "${POSTGRES_CONTAINER}" ]]; then
+            echo "PostgreSQL Compose service did not become healthy within 120 seconds" >&2
+            exit 1
+          fi
+
           AUTO_LOAD_CLEAN_SEEDS="$(awk -F= '/^AUTO_LOAD_CLEAN_SEEDS=/{print $2}' .env | tail -n 1)"
           POSTGRES_DB="$(awk -F= '/^POSTGRES_DB=/{print $2}' .env | tail -n 1)"
           POSTGRES_USER="$(awk -F= '/^POSTGRES_USER=/{print $2}' .env | tail -n 1)"
@@ -586,14 +659,30 @@ jobs:
             exit 0
           fi
 
+          SCHEMA_READY=false
+          for _ in $(seq 1 60); do
+            if [[ "$(docker exec "${POSTGRES_CONTAINER}" psql \
+              -U "${POSTGRES_USER}" \
+              -d "${POSTGRES_DB}" \
+              -tAc "SELECT to_regclass('public.sys_user') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')" == "t" ]]; then
+              SCHEMA_READY=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${SCHEMA_READY}" != "true" ]]; then
+            echo "Flyway schema did not become ready within 120 seconds" >&2
+            exit 1
+          fi
+
           USER_COUNT="$(
-            docker exec production-postgres-1 psql \
+            docker exec "${POSTGRES_CONTAINER}" psql \
               -U "${POSTGRES_USER}" \
               -d "${POSTGRES_DB}" \
               -tAc "SELECT COUNT(*) FROM public.sys_user;" | tr -d '[:space:]'
           )"
           ORG_COUNT="$(
-            docker exec production-postgres-1 psql \
+            docker exec "${POSTGRES_CONTAINER}" psql \
               -U "${POSTGRES_USER}" \
               -d "${POSTGRES_DB}" \
               -tAc "SELECT COUNT(*) FROM public.sys_org;" | tr -d '[:space:]'
@@ -605,18 +694,18 @@ jobs:
           fi
 
           echo "Database is empty. Loading clean seed baseline."
-          docker exec production-postgres-1 rm -rf /tmp/sism-seed-bundle || true
-          docker cp "${REMOTE_DIR}/seed-bundle" production-postgres-1:/tmp/sism-seed-bundle
+          docker exec "${POSTGRES_CONTAINER}" rm -rf /tmp/sism-seed-bundle || true
+          docker cp "${REMOTE_DIR}/seed-bundle" "${POSTGRES_CONTAINER}:/tmp/sism-seed-bundle"
 
-          docker exec production-postgres-1 psql \
+          docker exec "${POSTGRES_CONTAINER}" psql \
             -U "${POSTGRES_USER}" \
             -d "${POSTGRES_DB}" \
             -f /tmp/sism-seed-bundle/scripts/bootstrap-local-seed-support.sql
 
-          docker exec production-postgres-1 sh -lc \
+          docker exec "${POSTGRES_CONTAINER}" sh -lc \
             "cd /tmp/sism-seed-bundle/seeds && psql -U '${POSTGRES_USER}' -d '${POSTGRES_DB}' -f reset-and-load-clean-seeds.sql"
 
-          docker exec production-postgres-1 psql \
+          docker exec "${POSTGRES_CONTAINER}" psql \
             -U "${POSTGRES_USER}" \
             -d "${POSTGRES_DB}" \
             -f /tmp/sism-seed-bundle/scripts/validate-clean-seeds.sql
@@ -634,7 +723,7 @@ jobs:
             COMPOSE_FILE="docker-compose.external-db.yml"
           fi
           DEPLOY_COMPLETED=false
-          for i in $(seq 1 360); do
+          for _ in $(seq 1 360); do
             if sudo test -f "${REMOTE_DIR}/deploy-status.env"; then
               STATUS_RAW="$(sudo cat "${REMOTE_DIR}/deploy-status.env")"
             else
@@ -662,9 +751,9 @@ jobs:
           sudo bash -c "cd '${REMOTE_DIR}' && docker compose -f '${COMPOSE_FILE}' ps"
           if [[ "${DEPLOY_MODE}" != "frontend-only" ]]; then
             BACKEND_PORT="$(sudo awk -F= '/^BACKEND_PORT=/{print $2}' "${REMOTE_DIR}/.env" | tail -n 1)"
-            BACKEND_PORT="${BACKEND_PORT:-8080}"
+            BACKEND_PORT="${BACKEND_PORT:-18080}"
             BACKEND_READY=false
-            for i in $(seq 1 24); do
+            for _ in $(seq 1 24); do
               if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/v1/actuator/health" | grep -q '"status":"UP"'; then
                 BACKEND_READY=true
                 break
@@ -679,9 +768,9 @@ jobs:
           fi
           if [[ "${DEPLOY_MODE}" != "backend-only" ]]; then
             FRONTEND_PORT="$(sudo awk -F= '/^FRONTEND_PORT=/{print $2}' "${REMOTE_DIR}/.env" | tail -n 1)"
-            FRONTEND_PORT="${FRONTEND_PORT:-80}"
+            FRONTEND_PORT="${FRONTEND_PORT:-18081}"
             FRONTEND_READY=false
-            for i in $(seq 1 12); do
+            for _ in $(seq 1 12); do
               if curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/" >/dev/null; then
                 FRONTEND_READY=true
                 break
@@ -695,11 +784,12 @@ jobs:
             fi
           fi
 
-      - name: Remove downloaded deployment artifact
-        if: ${{ always() && steps.meta.outputs.deploy_mode != 'frontend-only' }}
+      - name: Remove downloaded deployment artifacts
+        if: ${{ always() }}
         env:
-          ARTIFACT_DIR: ${{ runner.temp }}/backend-deployment-${{ github.run_id }}
-        run: rm -rf "${ARTIFACT_DIR}"
+          STACK_ARTIFACT_DIR: ${{ runner.temp }}/backend-stack-${{ github.run_id }}
+          IMAGE_ARTIFACT_DIR: ${{ runner.temp }}/backend-image-${{ github.run_id }}
+        run: rm -rf "${STACK_ARTIFACT_DIR}" "${IMAGE_ARTIFACT_DIR}"
 
       - name: Mark deployment success
         if: ${{ success() }}
@@ -712,7 +802,9 @@ jobs:
               deployment_id: Number(process.env.DEPLOYMENT_ID),
               state: 'success',
               environment: process.env.TARGET_ENV,
-              environment_url: `http://${process.env.SERVER_HOST}/`,
+              environment_url: /^https?:\/\//.test(process.env.SERVER_HOST)
+                ? `${process.env.SERVER_HOST.replace(/\/$/, '')}/`
+                : `https://${process.env.SERVER_HOST}/`,
               log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               description: `Deployment succeeded with frontend:${process.env.FRONTEND_TAG}`,
             });

@@ -1,0 +1,106 @@
+name: Deployment Portability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actionlint.yaml'
+      - '.github/workflows/build-and-push-image.yml'
+      - '.github/workflows/deployment-portability.yml'
+      - 'deploy/compose/**'
+      - 'scripts/deployment/bootstrap-docker-host.sh'
+      - 'scripts/deployment/validate-compose-config.sh'
+      - 'scripts/deployment/validate-docker-host.sh'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/actionlint.yaml'
+      - '.github/workflows/build-and-push-image.yml'
+      - '.github/workflows/deployment-portability.yml'
+      - 'deploy/compose/**'
+      - 'scripts/deployment/bootstrap-docker-host.sh'
+      - 'scripts/deployment/validate-compose-config.sh'
+      - 'scripts/deployment/validate-docker-host.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-host-contract:
+    name: Ubuntu 24.04 Host Contract
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shell validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Validate deployment scripts
+        run: |
+          bash -n scripts/deployment/bootstrap-docker-host.sh
+          bash -n scripts/deployment/validate-compose-config.sh
+          bash -n scripts/deployment/validate-docker-host.sh
+          shellcheck \
+            scripts/deployment/bootstrap-docker-host.sh \
+            scripts/deployment/validate-compose-config.sh \
+            scripts/deployment/validate-docker-host.sh
+
+      - name: Validate GitHub Actions workflows
+        run: |
+          curl -fsSL \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            | tar -xz -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint"
+
+      - name: Verify Ubuntu 24.04 deployment prerequisites
+        run: scripts/deployment/validate-docker-host.sh /opt/sism-stack/portability-test
+
+      - name: Validate Docker Compose files
+        run: scripts/deployment/validate-compose-config.sh
+
+  package-probe-image:
+    name: Package Probe Image
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Create portable Docker image artifact
+        run: |
+          set -euo pipefail
+          docker pull alpine:3.20
+          docker tag alpine:3.20 "sism-deployment-probe:${GITHUB_SHA}"
+          docker save "sism-deployment-probe:${GITHUB_SHA}" | gzip -1 > deployment-probe.tar.gz
+          gzip -t deployment-probe.tar.gz
+
+      - name: Upload probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-probe.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  load-probe-image:
+    name: Load Probe Image on Ubuntu 24.04
+    needs: package-probe-image
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download probe artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deployment-probe
+
+      - name: Load and run transferred image
+        run: |
+          set -euo pipefail
+          gzip -t "${RUNNER_TEMP}/deployment-probe/deployment-probe.tar.gz"
+          gzip -dc "${RUNNER_TEMP}/deployment-probe/deployment-probe.tar.gz" | docker load
+          docker image inspect "sism-deployment-probe:${GITHUB_SHA}" >/dev/null
+          docker run --rm "sism-deployment-probe:${GITHUB_SHA}" \
+            sh -c 'printf "ARTIFACT_ROUNDTRIP_OK\\n"'
