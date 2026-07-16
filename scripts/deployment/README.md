@@ -8,6 +8,25 @@
 - `bootstrap-docker-host.sh`
 - `validate-docker-host.sh`
 - `validate-compose-config.sh`
+- `download-offline-release.sh`
+- `upload-offline-release.sh`
+- `install-offline-release.sh`
+
+正常推送 `main` 时，GitHub Actions 默认只生成保留 7 天的镜像 artifact，
+不会连接服务器。只有在手动运行工作流并显式选择
+`delivery_target=test-server` 时，才允许使用测试服务器的自托管 Runner。
+
+离线发布流程：
+
+```bash
+./scripts/deployment/download-offline-release.sh --output "$HOME/Downloads/sism-releases"
+./scripts/deployment/upload-offline-release.sh \
+  --archive "$HOME/Downloads/sism-releases/sism-offline-<版本>.tar.gz" \
+  --remote root@目标服务器
+```
+
+目标服务器只需要 Docker、Compose、SSH 和已经迁移好的生产 `.env`，不需要
+访问 GitHub 或 GHCR。完整说明见 `docs/部署运维/SISM-离线人工发布手册.md`。
 
 ## 当前保留
 
