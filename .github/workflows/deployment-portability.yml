@@ -9,6 +9,9 @@ on:
       - '.github/workflows/deployment-portability.yml'
       - 'deploy/compose/**'
       - 'scripts/deployment/bootstrap-docker-host.sh'
+      - 'scripts/deployment/download-offline-release.sh'
+      - 'scripts/deployment/install-offline-release.sh'
+      - 'scripts/deployment/upload-offline-release.sh'
       - 'scripts/deployment/validate-compose-config.sh'
       - 'scripts/deployment/validate-docker-host.sh'
   pull_request:
@@ -19,6 +22,9 @@ on:
       - '.github/workflows/deployment-portability.yml'
       - 'deploy/compose/**'
       - 'scripts/deployment/bootstrap-docker-host.sh'
+      - 'scripts/deployment/download-offline-release.sh'
+      - 'scripts/deployment/install-offline-release.sh'
+      - 'scripts/deployment/upload-offline-release.sh'
       - 'scripts/deployment/validate-compose-config.sh'
       - 'scripts/deployment/validate-docker-host.sh'
   workflow_dispatch:
@@ -43,10 +49,16 @@ jobs:
       - name: Validate deployment scripts
         run: |
           bash -n scripts/deployment/bootstrap-docker-host.sh
+          bash -n scripts/deployment/download-offline-release.sh
+          bash -n scripts/deployment/install-offline-release.sh
+          bash -n scripts/deployment/upload-offline-release.sh
           bash -n scripts/deployment/validate-compose-config.sh
           bash -n scripts/deployment/validate-docker-host.sh
           shellcheck \
             scripts/deployment/bootstrap-docker-host.sh \
+            scripts/deployment/download-offline-release.sh \
+            scripts/deployment/install-offline-release.sh \
+            scripts/deployment/upload-offline-release.sh \
             scripts/deployment/validate-compose-config.sh \
             scripts/deployment/validate-docker-host.sh
 
