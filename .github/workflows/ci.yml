@@ -16,7 +16,7 @@ env:
 jobs:
   build-and-test:
     name: Build and Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Checkout code
@@ -57,7 +57,7 @@ jobs:
 
   validate-migrations:
     name: Validate Flyway Migrations
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-and-test
 
     steps:
@@ -105,7 +105,7 @@ jobs:
 
   code-quality:
     name: Code Quality Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-and-test
     
     steps:

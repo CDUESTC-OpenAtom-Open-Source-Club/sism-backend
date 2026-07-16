@@ -2,6 +2,13 @@
 
 本目录只保留**当前仍建议长期使用**的后端部署与运维脚本。
 
+当前 Docker Compose / GitHub Actions 生产换机流程见：
+
+- `docs/Ubuntu-24.04-生产换机部署手册.md`
+- `bootstrap-docker-host.sh`
+- `validate-docker-host.sh`
+- `validate-compose-config.sh`
+
 ## 当前保留
 
 ### `deploy.sh`

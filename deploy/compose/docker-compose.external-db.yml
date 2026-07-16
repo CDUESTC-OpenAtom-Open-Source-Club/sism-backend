@@ -20,7 +20,7 @@ services:
       DB_HIKARI_MAX_POOL_SIZE: ${DB_HIKARI_MAX_POOL_SIZE:-2}
       DB_HIKARI_MIN_IDLE: ${DB_HIKARI_MIN_IDLE:-1}
     ports:
-      - "${BACKEND_PORT}:8080"
+      - "127.0.0.1:${BACKEND_PORT}:8080"
     volumes:
       - backend_uploads:/root/.sism/uploads
       - backend_exports:/app/exports
@@ -38,7 +38,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT}:80"
+      - "127.0.0.1:${FRONTEND_PORT}:80"
     volumes:
       - ./nginx/frontend.conf:/etc/nginx/conf.d/default.conf:ro
     healthcheck:
