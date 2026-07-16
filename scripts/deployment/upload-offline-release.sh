@@ -130,7 +130,7 @@ set -euo pipefail
 REMOTE_ROOT="$1"
 RELEASE_NAME="$2"
 TARGET_DIR="$3"
-REMOTE_ENV="$4"
+REMOTE_ENV="${4:-}"
 COMMAND=(bash "${REMOTE_ROOT}/${RELEASE_NAME}/scripts/install-offline-release.sh" --target "${TARGET_DIR}")
 if [[ -n "${REMOTE_ENV}" ]]; then
   COMMAND+=(--env-file "${REMOTE_ENV}")
