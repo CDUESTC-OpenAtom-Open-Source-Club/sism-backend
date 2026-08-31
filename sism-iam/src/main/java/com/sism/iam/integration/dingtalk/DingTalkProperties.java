@@ -33,9 +33,10 @@ public class DingTalkProperties {
     private String corpId = "";
 
     /**
-     * 机器人编码，用于发送自定义审批卡片；企业内部应用默认与应用 AppKey 相同。
+     * 待办卡片类型 ID（configs/types 接口返回的 id）。配置后待办以自定义
+     * 双按钮卡片渲染：原生「完成待办」+ 自定义「查看详情」跳转按钮。
      */
-    private String robotCode = "";
+    private String todoCardTypeKey = "";
 
     private String oapiBaseUrl = "https://oapi.dingtalk.com";
 
@@ -47,15 +48,5 @@ public class DingTalkProperties {
         return enabled
                 && appKey != null && !appKey.isBlank()
                 && appSecret != null && !appSecret.isBlank();
-    }
-
-    /**
-     * 机器人编码缺省回落到 AppKey（企业内部应用机器人编码与 AppKey 一致）。
-     */
-    public String resolveRobotCode() {
-        if (robotCode != null && !robotCode.isBlank()) {
-            return robotCode;
-        }
-        return appKey;
     }
 }
