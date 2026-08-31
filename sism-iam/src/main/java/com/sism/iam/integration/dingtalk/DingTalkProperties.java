@@ -32,6 +32,11 @@ public class DingTalkProperties {
      */
     private String corpId = "";
 
+    /**
+     * 机器人编码，用于发送自定义审批卡片；企业内部应用默认与应用 AppKey 相同。
+     */
+    private String robotCode = "";
+
     private String oapiBaseUrl = "https://oapi.dingtalk.com";
 
     private String apiBaseUrl = "https://api.dingtalk.com";
@@ -42,5 +47,15 @@ public class DingTalkProperties {
         return enabled
                 && appKey != null && !appKey.isBlank()
                 && appSecret != null && !appSecret.isBlank();
+    }
+
+    /**
+     * 机器人编码缺省回落到 AppKey（企业内部应用机器人编码与 AppKey 一致）。
+     */
+    public String resolveRobotCode() {
+        if (robotCode != null && !robotCode.isBlank()) {
+            return robotCode;
+        }
+        return appKey;
     }
 }
