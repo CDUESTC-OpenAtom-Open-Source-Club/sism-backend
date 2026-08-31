@@ -5,6 +5,7 @@ import com.sism.iam.application.dto.LoginRequest;
 import com.sism.iam.application.dto.LoginResponse;
 import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.user.UserRepository;
+import com.sism.iam.integration.dingtalk.DingTalkUserBindingService;
 import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.SysOrg;
 import com.sism.organization.domain.OrganizationRepository;
@@ -46,6 +47,9 @@ class AuthServiceTest {
     @Mock
     private OrganizationRepository organizationRepository;
 
+    @Mock
+    private DingTalkUserBindingService dingTalkUserBindingService;
+
     private AuthService authService;
 
     @BeforeEach
@@ -55,7 +59,8 @@ class AuthServiceTest {
                 jwtTokenService,
                 passwordEncoder,
                 loginAttemptService,
-                organizationRepository
+                organizationRepository,
+                dingTalkUserBindingService
         );
     }
 

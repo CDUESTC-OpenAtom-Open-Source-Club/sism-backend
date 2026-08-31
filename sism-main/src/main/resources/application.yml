@@ -108,6 +108,12 @@ app:
   security:
     public-docs-enabled: ${PUBLIC_DOCS_ENABLED:${SWAGGER_ENABLED:false}}
     public-actuator-enabled: ${PUBLIC_ACTUATOR_ENABLED:false}
+  dingtalk:
+    enabled: ${DINGTALK_ENABLED:false}
+    app-key: ${DINGTALK_APP_KEY:}
+    app-secret: ${DINGTALK_APP_SECRET:}
+    corp-id: ${DINGTALK_CORP_ID:}
+    h5-base-url: ${DINGTALK_H5_BASE_URL:}
 
 # JWT Configuration
 jwt:

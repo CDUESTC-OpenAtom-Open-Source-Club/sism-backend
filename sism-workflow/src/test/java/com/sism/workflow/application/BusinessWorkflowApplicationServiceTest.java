@@ -1,5 +1,6 @@
 package com.sism.workflow.application;
 
+import com.sism.shared.domain.integration.DingTalkTodoProvider;
 import com.sism.shared.domain.notification.NotificationProvider;
 import com.sism.shared.domain.user.UserProvider;
 import com.sism.workflow.application.definition.WorkflowDefinitionQueryService;
@@ -68,6 +69,9 @@ class BusinessWorkflowApplicationServiceTest {
 
     @Mock
     private NotificationProvider notificationProvider;
+
+    @Mock
+    private DingTalkTodoProvider dingTalkTodoProvider;
 
     @InjectMocks
     private BusinessWorkflowApplicationService businessWorkflowApplicationService;
