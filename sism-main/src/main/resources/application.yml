@@ -114,7 +114,7 @@ app:
     app-secret: ${DINGTALK_APP_SECRET:}
     corp-id: ${DINGTALK_CORP_ID:}
     h5-base-url: ${DINGTALK_H5_BASE_URL:}
-    robot-code: ${DINGTALK_ROBOT_CODE:${DINGTALK_APP_KEY:}}
+    todo-card-type-key: ${DINGTALK_TODO_CARD_TYPE_KEY:}
 
 # JWT Configuration
 jwt:

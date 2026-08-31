@@ -118,6 +118,25 @@ public class DingTalkClient {
             String sourceId,
             int priority
     ) {
+        return createTodoTask(unionId, subject, description, detailUrl,
+                executorUnionIds, sourceId, priority, null, null);
+    }
+
+    /**
+     * 创建待办任务；传入 cardTypeKey 时待办以自定义卡片样式渲染
+     * （原生完成按钮 + actionList 跳转按钮），cardData 提供内容区字段值。
+     */
+    public String createTodoTask(
+            String unionId,
+            String subject,
+            String description,
+            String detailUrl,
+            List<String> executorUnionIds,
+            String sourceId,
+            int priority,
+            String cardTypeKey,
+            Map<String, String> cardData
+    ) {
         Map<String, Object> payload = new HashMap<>();
         payload.put("subject", subject);
         payload.put("content", description == null ? "" : description);
@@ -129,6 +148,12 @@ public class DingTalkClient {
         payload.put("executorIds", executorUnionIds);
         payload.put("sourceId", sourceId);
         payload.put("priorities", priority);
+        if (cardTypeKey != null && !cardTypeKey.isBlank()) {
+            payload.put("cardTypeKey", cardTypeKey);
+        }
+        if (cardData != null && !cardData.isEmpty()) {
+            payload.put("cardData", cardData);
+        }
         JsonNode body = modernJson(
                 HttpRequest.newBuilder()
                         .uri(URI.create(properties.getApiBaseUrl() + "/v1.0/todo/users/"
@@ -156,60 +181,6 @@ public class DingTalkClient {
         return body.path("result").asBoolean(false);
     }
 
-    /**
-     * 以应用机器人身份向单个用户发送自定义审批卡片（ActionCard，单个跳转按钮）。
-     * 返回 processQueryKey 供后续撤回；已实测：卡片点击按钮在内置浏览器打开 H5。
-     */
-    public String sendApprovalCard(
-            String dingTalkUserId,
-            String title,
-            String markdown,
-            String buttonTitle,
-            String detailUrl
-    ) {
-        Map<String, Object> msgParam = Map.of(
-                "title", title,
-                "text", markdown,
-                "singleTitle", buttonTitle,
-                "singleURL", detailUrl
-        );
-        Map<String, Object> payload = Map.of(
-                "robotCode", properties.resolveRobotCode(),
-                "userIds", List.of(dingTalkUserId),
-                "msgKey", "sampleActionCard",
-                "msgParam", serializeMsgParam(msgParam)
-        );
-        JsonNode body = modernJson(
-                HttpRequest.newBuilder()
-                        .uri(URI.create(properties.getApiBaseUrl() + "/v1.0/robot/oToMessages/batchSend"))
-                        .header("Content-Type", "application/json")
-                        .POST(jsonBody(payload))
-                        .build(),
-                "card-send");
-        return requiredText(body, "processQueryKey", "card-send");
-    }
-
-    /**
-     * 批量撤回机器人卡片（processQueryKey 发送后 24 小时内有效）。
-     */
-    public boolean recallCards(List<String> processQueryKeys) {
-        if (processQueryKeys == null || processQueryKeys.isEmpty()) {
-            return true;
-        }
-        JsonNode body = modernJson(
-                HttpRequest.newBuilder()
-                        .uri(URI.create(properties.getApiBaseUrl() + "/v1.0/robot/otoMessages/batchRecall"))
-                        .header("Content-Type", "application/json")
-                        .POST(jsonBody(Map.of(
-                                "robotCode", properties.resolveRobotCode(),
-                                "processQueryKeys", processQueryKeys)))
-                        .build(),
-                "card-recall");
-        return body.path("successResult").isArray()
-                && body.path("failedResult").isObject()
-                && body.path("failedResult").isEmpty();
-    }
-
     private JsonNode legacyPost(String path, Map<String, Object> payload, String operation) {
         JsonNode body = readJson(exchange(HttpRequest.newBuilder()
                 .uri(URI.create(properties.getOapiBaseUrl() + path
@@ -219,14 +190,6 @@ public class DingTalkClient {
                 .build()));
         assertLegacyOk(body, operation);
         return body.path("result").isMissingNode() ? null : body.path("result");
-    }
-
-    private static String serializeMsgParam(Map<String, Object> msgParam) {
-        try {
-            return MAPPER.writeValueAsString(msgParam);
-        } catch (IOException ex) {
-            throw new IllegalArgumentException("Failed to serialize DingTalk card msgParam", ex);
-        }
     }
 
     private JsonNode modernJson(HttpRequest request, String operation) {

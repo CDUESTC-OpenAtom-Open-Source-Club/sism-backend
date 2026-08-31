@@ -13,22 +13,24 @@ import org.springframework.transaction.annotation.Transactional;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
- * Mirrors SISM approval todos into DingTalk as custom robot cards (ActionCard
- * with a jump button to the H5 approval page). Native todo center entries are
- * intentionally not used: their complete-button behavior cannot be customized.
- * Every operation is fail-safe: DingTalk outages must never break the core
- * approval flow.
+ * Mirrors SISM approval todos into the DingTalk todo center. When a
+ * todo-card-type key is configured, todos render as custom dual-button cards
+ * (native complete button + a jump button to the H5 approval page); completion
+ * is synced back through the executor status API. Every operation is fail-safe:
+ * DingTalk outages must never break the core approval flow.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class DingTalkTodoService implements DingTalkTodoProvider {
 
-    private static final int RECALL_BATCH_SIZE = 20;
+    private static final int PRIORITY_HIGH = 30;
 
     private final DingTalkClient dingTalkClient;
     private final DingTalkProperties properties;
@@ -76,76 +78,75 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         }
         DingTalkUserBinding binding = bindingService.ensureBinding(todo.sysUserId()).orElse(null);
         if (binding == null) {
-            log.debug("Skip DingTalk card: user {} has no dingtalk binding and phone lookup failed",
+            log.debug("Skip DingTalk todo: user {} has no dingtalk binding and phone lookup failed",
                     todo.sysUserId());
             return;
         }
-        if (binding.getDingTalkUserId() == null || binding.getDingTalkUserId().isBlank()) {
-            log.warn("Skip DingTalk card: binding {} has no dingtalk user id", binding.getId());
-            return;
+        if (binding.getDingTalkUnionId() == null || binding.getDingTalkUnionId().isBlank()) {
+            refreshUnionId(binding);
+            if (binding.getDingTalkUnionId() == null) {
+                log.warn("Skip DingTalk todo: binding {} has no unionId", binding.getId());
+                return;
+            }
         }
         if (properties.getH5BaseUrl() == null || properties.getH5BaseUrl().isBlank()) {
-            log.warn("Skip DingTalk card: app.dingtalk.h5-base-url is not configured");
+            log.warn("Skip DingTalk todo: app.dingtalk.h5-base-url is not configured");
             return;
         }
 
-        String sourceId = buildSourceId(todo.approvalInstanceId(), todo.stepInstanceId());
+        String sourceId = buildSourceId(entityTypeNormalizedSafe(todo), todo.entityId(),
+                todo.approvalInstanceId(), todo.stepInstanceId());
         Optional<DingTalkTodoTask> existing = todoTaskRepository
                 .findBySourceIdAndSysUserIdAndStatus(sourceId, todo.sysUserId(), DingTalkTodoTask.STATUS_PENDING);
         if (existing.isPresent()) {
-            log.debug("Skip duplicate DingTalk card: sourceId={} user={}", sourceId, todo.sysUserId());
+            log.debug("Skip duplicate DingTalk todo: sourceId={} user={}", sourceId, todo.sysUserId());
             return;
         }
 
         String entityType = todo.entityTypeNormalized();
         String detailUrl = buildDetailUrl(entityType, todo.entityId(), todo.approvalInstanceId(),
                 todo.departmentName());
-        String businessName = resolveBusinessName(todo);
-        String title = "【待审批】" + businessName;
-        String markdown = buildCardMarkdown(businessName, todo);
-        if (binding.getDingTalkUnionId() == null || binding.getDingTalkUnionId().isBlank()) {
-            refreshUnionId(binding);
-        }
+        String subject = "【待审批】" + resolveBusinessName(todo);
+        String description = todo.stepName() == null ? "请进入系统处理审批" : "当前环节：" + todo.stepName();
 
-        String processQueryKey = dingTalkClient.sendApprovalCard(
-                binding.getDingTalkUserId(),
-                title,
-                markdown,
-                "点击查看审批详情",
-                detailUrl);
+        String taskId = dingTalkClient.createTodoTask(
+                binding.getDingTalkUnionId(),
+                subject,
+                description,
+                detailUrl,
+                List.of(binding.getDingTalkUnionId()),
+                sourceId,
+                PRIORITY_HIGH,
+                properties.getTodoCardTypeKey(),
+                buildCardData(todo));
 
         DingTalkTodoTask record = new DingTalkTodoTask();
         record.setApprovalInstanceId(todo.approvalInstanceId());
         record.setStepInstanceId(todo.stepInstanceId());
         record.setSysUserId(todo.sysUserId());
         record.setDingTalkUnionId(binding.getDingTalkUnionId());
-        record.setDingTalkTaskId(processQueryKey);
+        record.setDingTalkTaskId(taskId);
         record.setSourceId(sourceId);
         record.setDetailUrl(detailUrl);
         record.setStatus(DingTalkTodoTask.STATUS_PENDING);
         todoTaskRepository.save(record);
-        log.info("Pushed DingTalk approval card {} for instance {} user {}",
-                processQueryKey, todo.approvalInstanceId(), todo.sysUserId());
+        log.info("Pushed DingTalk todo {} for instance {} user {}",
+                taskId, todo.approvalInstanceId(), todo.sysUserId());
     }
 
     private void completeInternal(List<DingTalkTodoTask> pending) {
-        for (int from = 0; from < pending.size(); from += RECALL_BATCH_SIZE) {
-            List<DingTalkTodoTask> batch = pending.subList(from,
-                    Math.min(from + RECALL_BATCH_SIZE, pending.size()));
-            List<String> keys = batch.stream()
-                    .map(DingTalkTodoTask::getDingTalkTaskId)
-                    .filter(id -> id != null && !id.isBlank())
-                    .toList();
-            boolean recalled = false;
+        for (DingTalkTodoTask task : pending) {
+            boolean remoteDone = false;
             try {
-                recalled = dingTalkClient.recallCards(keys);
+                remoteDone = dingTalkClient.completeTodoTask(
+                        task.getDingTalkUnionId(),
+                        task.getDingTalkTaskId(),
+                        List.of(task.getDingTalkUnionId()));
             } catch (Exception ex) {
-                log.warn("Failed to recall DingTalk cards {}: {}", keys.size(), ex.getMessage());
+                log.warn("Failed to complete DingTalk todo {} remotely: {}",
+                        task.getDingTalkTaskId(), ex.getMessage());
             }
-            if (!recalled) {
-                log.warn("DingTalk card recall reported failures for {} cards", keys.size());
-            }
-            for (DingTalkTodoTask task : batch) {
+            if (remoteDone) {
                 task.setStatus(DingTalkTodoTask.STATUS_COMPLETED);
                 task.setCompletedAt(LocalDateTime.now());
                 task.setUpdatedAt(LocalDateTime.now());
@@ -154,19 +155,24 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         }
     }
 
-    private String buildCardMarkdown(String businessName, ApprovalTodoPush todo) {
-        StringBuilder md = new StringBuilder("### 【待审批】").append(businessName);
+    /**
+     * 卡片类型内容区字段值（fieldKey 与卡片类型配置 contentFieldList 对应）。
+     */
+    private Map<String, String> buildCardData(ApprovalTodoPush todo) {
+        if (properties.getTodoCardTypeKey() == null || properties.getTodoCardTypeKey().isBlank()) {
+            return null;
+        }
+        Map<String, String> data = new HashMap<>();
         if (todo.submitterName() != null && !todo.submitterName().isBlank()) {
-            md.append("\n\n**提交人**：").append(todo.submitterName().trim());
+            data.put("submitter", todo.submitterName().trim());
         }
         if (todo.departmentName() != null && !todo.departmentName().isBlank()) {
-            md.append("\n\n**部门**：").append(todo.departmentName().trim());
+            data.put("department", todo.departmentName().trim());
         }
         if (todo.stepName() != null && !todo.stepName().isBlank()) {
-            md.append("\n\n**当前环节**：").append(todo.stepName().trim());
+            data.put("step", todo.stepName().trim());
         }
-        md.append("\n\n请点击下方按钮打开审批页面");
-        return md.toString();
+        return data;
     }
 
     private void refreshUnionId(DingTalkUserBinding binding) {
@@ -197,9 +203,22 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         return url.toString();
     }
 
-    private String buildSourceId(Long approvalInstanceId, Long stepInstanceId) {
-        return "sism-approval-" + approvalInstanceId
+    /**
+     * sourceId 同时承载跳转所需的业务标识（卡片按钮 URL 模板只回传 sourceId）：
+     * sism-approval-{entityType}-{entityId}-{instanceId}[-{stepId}]
+     */
+    private String buildSourceId(String entityType, Long entityId, Long approvalInstanceId,
+                                  Long stepInstanceId) {
+        String type = entityType == null || entityType.isBlank() ? "UNKNOWN" : entityType;
+        return "sism-approval-" + type
+                + (entityId == null ? "-0" : "-" + entityId)
+                + "-" + approvalInstanceId
                 + (stepInstanceId == null ? "" : "-" + stepInstanceId);
+    }
+
+    private String entityTypeNormalizedSafe(ApprovalTodoPush todo) {
+        String normalized = todo.entityTypeNormalized();
+        return normalized == null || normalized.isBlank() ? "UNKNOWN" : normalized;
     }
 
     private String resolveBusinessName(ApprovalTodoPush todo) {
