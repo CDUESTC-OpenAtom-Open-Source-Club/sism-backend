@@ -14,6 +14,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -117,14 +118,17 @@ public class DingTalkClient {
             String sourceId,
             int priority
     ) {
-        Map<String, Object> payload = Map.of(
-                "subject", subject,
-                "description", description == null ? "" : description,
-                "detailUrl", detailUrl == null ? "" : detailUrl,
-                "executorIds", executorUnionIds,
-                "sourceId", sourceId,
-                "priority", priority
-        );
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("subject", subject);
+        payload.put("content", description == null ? "" : description);
+        // 钉钉 v1.0 待办的跳转链接必须是对象结构；纯字符串会被静默丢弃，待办将无法点击跳转
+        payload.put("detailUrl", Map.of(
+                "appUrl", detailUrl == null ? "" : detailUrl,
+                "pcUri", detailUrl == null ? "" : detailUrl
+        ));
+        payload.put("executorIds", executorUnionIds);
+        payload.put("sourceId", sourceId);
+        payload.put("priorities", priority);
         JsonNode body = modernJson(
                 HttpRequest.newBuilder()
                         .uri(URI.create(properties.getApiBaseUrl() + "/v1.0/todo/users/"
