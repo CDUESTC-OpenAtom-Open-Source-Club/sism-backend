@@ -1,5 +1,6 @@
 package com.sism.workflow.application;
 
+import com.sism.shared.domain.integration.DingTalkTodoProvider;
 import com.sism.shared.domain.notification.NotificationProvider;
 import com.sism.shared.domain.user.UserProvider;
 import com.sism.workflow.application.definition.WorkflowDefinitionQueryService;
@@ -50,6 +51,7 @@ public class BusinessWorkflowApplicationService {
     private final ApproverResolver approverResolver;
     private final UserProvider userProvider;
     private final NotificationProvider notificationProvider;
+    private final DingTalkTodoProvider dingTalkTodoProvider;
 
     // ==================== 工作流启动 ====================
 
@@ -244,6 +246,7 @@ public class BusinessWorkflowApplicationService {
                 true,
                 resolvedComment
         );
+        syncDingTalkTodosOnApproval(approved, currentStep, detailBeforeApproval);
 
         return workflowReadModelMapper.toInstanceResponse(approved);
     }
@@ -294,6 +297,7 @@ public class BusinessWorkflowApplicationService {
                 false,
                 resolvedReason
         );
+        dingTalkTodoProvider.completeInstanceTodos(rejected.getId());
 
         return workflowReadModelMapper.toInstanceResponse(rejected);
     }
@@ -309,8 +313,16 @@ public class BusinessWorkflowApplicationService {
                 taskId, userId, request.getTargetUserId());
 
         AuditInstance targetInstance = resolveAuditInstanceForTask(taskId);
+        AuditStepInstance pendingStep = targetInstance.resolveCurrentPendingStep().orElse(null);
+        WorkflowInstanceDetailResponse detailSnapshot =
+                workflowReadModelService.getInstanceDetail(String.valueOf(targetInstance.getId()));
         AuditInstance instance = workflowApplicationService.transferAuditInstance(
                 targetInstance.getId(), request.getTargetUserId());
+
+        if (pendingStep != null) {
+            dingTalkTodoProvider.completeStepTodos(instance.getId(), pendingStep.getId());
+            pushDingTalkTodoToUser(instance, pendingStep, detailSnapshot, request.getTargetUserId());
+        }
 
         return workflowReadModelMapper.toInstanceResponse(instance);
     }
@@ -363,6 +375,7 @@ public class BusinessWorkflowApplicationService {
         }
 
         workflowApplicationService.cancelAuditInstance(instance);
+        dingTalkTodoProvider.completeInstanceTodos(instance.getId());
     }
 
     // ==================== 流程定义管理 ====================
@@ -487,6 +500,79 @@ public class BusinessWorkflowApplicationService {
                 approved,
                 comment
         );
+    }
+
+    // ==================== 钉钉待办联动 ====================
+
+    /**
+     * 审批通过后的钉钉待办联动：终态时清空整个实例的待办，
+     * 中间环节推进时先完成当前环节待办，再给下一环节审批人推送新待办。
+     */
+    private void syncDingTalkTodosOnApproval(
+            AuditInstance approved,
+            AuditStepInstance approvedStep,
+            WorkflowInstanceDetailResponse detailSnapshot
+    ) {
+        try {
+            dingTalkTodoProvider.completeStepTodos(approved.getId(), approvedStep.getId());
+            if (AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus())) {
+                dingTalkTodoProvider.completeInstanceTodos(approved.getId());
+                return;
+            }
+            approved.resolveCurrentPendingStep().ifPresent(nextStep ->
+                    pushDingTalkTodos(approved, nextStep, detailSnapshot));
+        } catch (Exception ex) {
+            log.warn("Failed to sync DingTalk todos for instance {}: {}",
+                    approved.getId(), ex.getMessage());
+        }
+    }
+
+    /**
+     * 给指定环节的全部候选审批人推送钉钉待办（填补既有系统在中间环节推进时不通知下一审批人的缺口）。
+     */
+    private void pushDingTalkTodos(
+            AuditInstance instance,
+            AuditStepInstance stepInstance,
+            WorkflowInstanceDetailResponse detailSnapshot
+    ) {
+        try {
+            AuditStepDef stepDef = resolveStepDefinition(instance, stepInstance);
+            approverResolver.resolveCandidates(stepDef, instance.getRequesterOrgId())
+                    .forEach(candidate -> pushDingTalkTodoToUser(
+                            instance, stepInstance, detailSnapshot, candidate.getUserId()));
+        } catch (Exception ex) {
+            log.warn("Failed to push DingTalk todos for instance {} step {}: {}",
+                    instance.getId(), stepInstance.getId(), ex.getMessage());
+        }
+    }
+
+    private void pushDingTalkTodoToUser(
+            AuditInstance instance,
+            AuditStepInstance stepInstance,
+            WorkflowInstanceDetailResponse detailSnapshot,
+            Long sysUserId
+    ) {
+        try {
+            AuditStepDef stepDef = resolveStepDefinition(instance, stepInstance);
+            String businessName = firstNonBlank(
+                    detailSnapshot == null ? null : detailSnapshot.getPlanName(),
+                    instance.getEntityId() == null ? null : "业务对象#" + instance.getEntityId()
+            );
+            dingTalkTodoProvider.pushApprovalTodo(new DingTalkTodoProvider.ApprovalTodoPush(
+                    sysUserId,
+                    instance.getId(),
+                    stepInstance.getId(),
+                    instance.getEntityType(),
+                    instance.getEntityId(),
+                    businessName,
+                    stepDef == null ? null : stepDef.getStepName(),
+                    approverResolver.resolveApproverName(instance.getRequesterId()),
+                    detailSnapshot == null ? null : detailSnapshot.getSourceOrgName()
+            ));
+        } catch (Exception ex) {
+            log.warn("Failed to push DingTalk todo to user {} for instance {}: {}",
+                    sysUserId, instance.getId(), ex.getMessage());
+        }
     }
 
     private String firstNonBlank(String... candidates) {

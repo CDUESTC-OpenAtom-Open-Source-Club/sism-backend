@@ -7,6 +7,7 @@ import com.sism.execution.domain.report.event.PlanReportApprovedEvent;
 import com.sism.execution.domain.report.event.PlanReportRejectedEvent;
 import com.sism.execution.domain.report.event.PlanReportSubmittedEvent;
 import com.sism.iam.application.service.UserNotificationService;
+import com.sism.shared.domain.integration.DingTalkTodoProvider;
 import com.sism.workflow.application.BusinessWorkflowApplicationService;
 import com.sism.workflow.application.WorkflowApplicationService;
 import com.sism.workflow.application.WorkflowTerminalStatusSyncService;
@@ -50,6 +51,7 @@ public class ReportWorkflowEventListener {
     private final WorkflowReadModelService workflowReadModelService;
     private final ApproverResolver approverResolver;
     private final UserNotificationService userNotificationService;
+    private final DingTalkTodoProvider dingTalkTodoProvider;
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -249,22 +251,45 @@ public class ReportWorkflowEventListener {
             String submitterName = approverResolver.resolveApproverName(event.getSubmitterId());
             String businessName = resolveReportBusinessName(report, event);
 
-            approverResolver.resolveCandidates(nextApprovalStep, event.getReportOrgId()).forEach(candidate ->
-                    userNotificationService.createSubmissionNotification(
-                            candidate.getUserId(),
-                            event.getSubmitterId(),
-                            event.getReportOrgId(),
-                            instanceId,
-                            PLAN_REPORT_ENTITY_TYPE,
-                            event.getReportId(),
-                            businessName,
-                            nextApprovalStep.getStepName(),
-                            submitterName
-                    )
-            );
+            Long stepInstanceId = parseStepInstanceId(detail == null ? null : detail.getCurrentTaskId());
+            approverResolver.resolveCandidates(nextApprovalStep, event.getReportOrgId()).forEach(candidate -> {
+                userNotificationService.createSubmissionNotification(
+                        candidate.getUserId(),
+                        event.getSubmitterId(),
+                        event.getReportOrgId(),
+                        instanceId,
+                        PLAN_REPORT_ENTITY_TYPE,
+                        event.getReportId(),
+                        businessName,
+                        nextApprovalStep.getStepName(),
+                        submitterName
+                );
+                dingTalkTodoProvider.pushApprovalTodo(new DingTalkTodoProvider.ApprovalTodoPush(
+                        candidate.getUserId(),
+                        instanceId,
+                        stepInstanceId,
+                        PLAN_REPORT_ENTITY_TYPE,
+                        event.getReportId(),
+                        businessName,
+                        nextApprovalStep.getStepName(),
+                        submitterName,
+                        detail == null ? null : detail.getSourceOrgName()
+                ));
+            });
         } catch (Exception ex) {
             log.warn("Failed to notify report approvers for reportId={}, workflowCode={}: {}",
                     event.getReportId(), workflowCode, ex.getMessage(), ex);
+        }
+    }
+
+    private Long parseStepInstanceId(String currentTaskId) {
+        if (currentTaskId == null || currentTaskId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(currentTaskId.trim());
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 

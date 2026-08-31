@@ -6,6 +6,8 @@ import com.sism.iam.application.dto.LoginResponse;
 import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.user.UserRepository;
 import com.sism.iam.domain.user.UsernamePolicy;
+import com.sism.iam.integration.dingtalk.DingTalkUserBindingService;
+import com.sism.iam.integration.dingtalk.domain.DingTalkUserBinding;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.shared.domain.exception.AuthenticationException;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +31,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final LoginAttemptService loginAttemptService;
     private final OrganizationRepository organizationRepository;
+    private final DingTalkUserBindingService dingTalkUserBindingService;
 
     /**
      * 用户登录
@@ -62,6 +65,39 @@ public class AuthService {
 
         List<String> roleCodes = userRepository.findRoleCodesByUserId(user.getId());
 
+        String accessToken = jwtTokenService.generateToken(user, roleCodes);
+        String refreshToken = jwtTokenService.generateRefreshToken(user, roleCodes);
+        var organization = organizationRepository.findById(user.getOrgId()).orElse(null);
+
+        return LoginResponse.fromUser(
+                user,
+                roleCodes,
+                organization != null ? organization.getName() : null,
+                organization != null ? organization.getType().name() : null,
+                accessToken,
+                refreshToken,
+                jwtTokenService.getExpirationSeconds()
+        );
+    }
+
+    /**
+     * 钉钉免登：免登码换取钉钉用户，按手机号自动绑定既有账号并签发本系统令牌。
+     * 方案A：不自动注册，未匹配到账号时直接拒绝。
+     */
+    @Transactional
+    public LoginResponse loginByDingTalk(String authCode) {
+        if (authCode == null || authCode.isBlank()) {
+            throw new IllegalArgumentException("免登码不能为空");
+        }
+
+        DingTalkUserBinding binding = dingTalkUserBindingService.resolveByAuthCode(authCode);
+
+        User user = userRepository.findById(binding.getSysUserId())
+                .filter(User::getIsActive)
+                .orElseThrow(() -> new AuthenticationException(
+                        "DINGTALK_UNBOUND", "尚未开通本系统账号，请联系系统管理员开通"));
+
+        List<String> roleCodes = userRepository.findRoleCodesByUserId(user.getId());
         String accessToken = jwtTokenService.generateToken(user, roleCodes);
         String refreshToken = jwtTokenService.generateRefreshToken(user, roleCodes);
         var organization = organizationRepository.findById(user.getOrgId()).orElse(null);

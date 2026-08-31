@@ -133,7 +133,9 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/auth/login", "/api/v1/auth/register",
                                  "/api/v1/auth/validate", "/api/v1/auth/logout",
                                  "/api/v1/auth/refresh", "/api/v1/auth/health",
-                                 "/api/v1/auth/password-reset/**").permitAll()
+                                 "/api/v1/auth/password-reset/**",
+                                 "/api/v1/auth/dingtalk/login",
+                                 "/api/v1/auth/dingtalk/status").permitAll()
                 .requestMatchers("/api/v1/announcements/public", "/api/v1/announcements/public/**").permitAll()
                 // Public endpoints - Health check
                 .requestMatchers("/api/v1/actuator/health", "/health", "/error").permitAll()

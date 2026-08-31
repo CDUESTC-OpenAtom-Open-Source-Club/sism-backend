@@ -1,6 +1,7 @@
 package com.sism.strategy.infrastructure.event;
 
 import com.sism.iam.application.service.UserNotificationService;
+import com.sism.shared.domain.integration.DingTalkTodoProvider;
 import com.sism.workflow.application.definition.WorkflowDefinitionQueryService;
 import com.sism.workflow.application.query.WorkflowReadModelService;
 import com.sism.workflow.application.support.ApproverResolver;
@@ -37,6 +38,7 @@ public class PlanWorkflowEventListener {
     private final WorkflowReadModelService workflowReadModelService;
     private final ApproverResolver approverResolver;
     private final UserNotificationService userNotificationService;
+    private final DingTalkTodoProvider dingTalkTodoProvider;
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async
@@ -125,22 +127,45 @@ public class PlanWorkflowEventListener {
                             ? detail.getPlanName().trim()
                             : "Plan " + event.getPlanId();
 
-            approverResolver.resolveCandidates(nextApprovalStep, event.getSubmitterOrgId()).forEach(candidate ->
-                    userNotificationService.createSubmissionNotification(
-                            candidate.getUserId(),
-                            event.getSubmitterId(),
-                            event.getSubmitterOrgId(),
-                            instanceId,
-                            PLAN_ENTITY_TYPE,
-                            event.getPlanId(),
-                            businessName,
-                            nextApprovalStep.getStepName(),
-                            submitterName
-                    )
-            );
+            Long stepInstanceId = parseStepInstanceId(detail == null ? null : detail.getCurrentTaskId());
+            approverResolver.resolveCandidates(nextApprovalStep, event.getSubmitterOrgId()).forEach(candidate -> {
+                userNotificationService.createSubmissionNotification(
+                        candidate.getUserId(),
+                        event.getSubmitterId(),
+                        event.getSubmitterOrgId(),
+                        instanceId,
+                        PLAN_ENTITY_TYPE,
+                        event.getPlanId(),
+                        businessName,
+                        nextApprovalStep.getStepName(),
+                        submitterName
+                );
+                dingTalkTodoProvider.pushApprovalTodo(new DingTalkTodoProvider.ApprovalTodoPush(
+                        candidate.getUserId(),
+                        instanceId,
+                        stepInstanceId,
+                        PLAN_ENTITY_TYPE,
+                        event.getPlanId(),
+                        businessName,
+                        nextApprovalStep.getStepName(),
+                        submitterName,
+                        detail == null ? null : detail.getSourceOrgName()
+                ));
+            });
         } catch (Exception ex) {
             log.warn("Failed to notify plan approvers for planId={}, workflowCode={}: {}",
                     event.getPlanId(), workflowCode, ex.getMessage(), ex);
+        }
+    }
+
+    private Long parseStepInstanceId(String currentTaskId) {
+        if (currentTaskId == null || currentTaskId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(currentTaskId.trim());
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 
