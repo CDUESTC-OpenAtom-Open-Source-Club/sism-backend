@@ -200,6 +200,8 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         if (departmentName != null && !departmentName.isBlank()) {
             url.append("&approvalDepartment=").append(urlencode(departmentName.trim()));
         }
+        // 钉钉容器对卡片链接默认半屏打开，官方参数强制全屏
+        url.append("&dd_full_screen=true");
         return url.toString();
     }
 
