@@ -103,10 +103,10 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
             return;
         }
 
-        // 链路设计：待办 → 工作台容器（应用身份，保证全屏）→ 消息中心页，
-        // 用户在消息列表自行打开审批条目。点卡片本体与点「查看详情」按钮
-        // 走完全相同的 h5_app_open 链路。
-        String workbenchUrl = buildWorkbenchAppLink("/messages");
+        // 链路设计：待办 → 工作台容器（应用身份，保证全屏）→ 消息中心页并带
+        // sourceId，前端据此自动打开对应审批消息的盒子；点卡片本体与点
+        // 「查看详情」按钮走完全相同的 h5_app_open 链路。
+        String workbenchUrl = buildWorkbenchAppLink("/messages?sourceId=" + sourceId);
         String subject = "【待审批】" + resolveBusinessName(todo);
         String description = todo.stepName() == null ? "请进入系统处理审批" : "当前环节：" + todo.stepName();
 
@@ -189,12 +189,12 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
      * 保留免登上下文）。appId 为 AgentId；应用首页须为根地址（已随 1.0.2 发布），
      * path 只用简单路径（无查询参数），避免钉钉端拼装差异。
      */
-    private String buildWorkbenchAppLink(String simplePath) {
+    private String buildWorkbenchAppLink(String appPath) {
         return "https://applink.dingtalk.com/page/h5_app_open"
                 + "?appId=" + urlencode(properties.resolveAppLinkAppId())
                 + "&appType=2"
                 + "&corpId=" + urlencode(properties.getCorpId())
-                + "&path=" + urlencode(simplePath)
+                + "&path=" + urlencode(appPath)
                 + "&target=fullScreen"
                 + "&targetDesktop=workbench";
     }
