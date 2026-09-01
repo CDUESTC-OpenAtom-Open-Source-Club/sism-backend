@@ -114,6 +114,7 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
                 subject,
                 description,
                 detailUrl,
+                buildPcAppLink(detailUrl),
                 List.of(binding.getDingTalkUnionId()),
                 sourceId,
                 PRIORITY_HIGH,
@@ -228,6 +229,15 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
             return todo.businessName().trim();
         }
         return todo.entityId() == null ? "审批事项" : "业务对象#" + todo.entityId();
+    }
+
+    /**
+     * PC 桌面端 AppLink：targetDesktop=workbench 使页面占满钉钉主窗口（非侧边栏半屏），
+     * 移动端忽略该参数不受影响。
+     */
+    private String buildPcAppLink(String targetUrl) {
+        return "dingtalk://dingtalkclient/page/link?url="
+                + urlencode(targetUrl) + "&targetDesktop=workbench";
     }
 
     private static String urlencode(String value) {

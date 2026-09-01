@@ -118,7 +118,7 @@ public class DingTalkClient {
             String sourceId,
             int priority
     ) {
-        return createTodoTask(unionId, subject, description, detailUrl,
+        return createTodoTask(unionId, subject, description, detailUrl, detailUrl,
                 executorUnionIds, sourceId, priority, null, null);
     }
 
@@ -130,7 +130,8 @@ public class DingTalkClient {
             String unionId,
             String subject,
             String description,
-            String detailUrl,
+            String appDetailUrl,
+            String pcDetailUrl,
             List<String> executorUnionIds,
             String sourceId,
             int priority,
@@ -141,9 +142,10 @@ public class DingTalkClient {
         payload.put("subject", subject);
         payload.put("content", description == null ? "" : description);
         // detailUrl 键名是 appUrl/pcUrl；pcUrl 传错（如 pcUri）会被降级为个人待办，卡片类型失效
+        // appUrl 为移动端 https 深链，pcUrl 为 dingtalk:// AppLink（工作台全屏）
         payload.put("detailUrl", Map.of(
-                "appUrl", detailUrl == null ? "" : detailUrl,
-                "pcUrl", detailUrl == null ? "" : detailUrl
+                "appUrl", appDetailUrl == null ? "" : appDetailUrl,
+                "pcUrl", pcDetailUrl == null ? "" : pcDetailUrl
         ));
         payload.put("executorIds", executorUnionIds);
         payload.put("sourceId", sourceId);
