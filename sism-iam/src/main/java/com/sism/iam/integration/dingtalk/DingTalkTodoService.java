@@ -104,9 +104,9 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         }
 
         // 链路设计：待办 → 工作台容器（应用身份，保证全屏）→ 消息中心页，
-        // 用户在消息列表自行打开审批条目。移动端 appUrl 用直链+全屏参数，
-        // PC 端 pcUrl 用 h5_app_open AppLink 以应用身份进工作台打开。
-        String messagesUrl = properties.getH5BaseUrl() + "/messages?dd_full_screen=true";
+        // 用户在消息列表自行打开审批条目。点卡片本体与点「查看详情」按钮
+        // 走完全相同的 h5_app_open 链路。
+        String workbenchUrl = buildWorkbenchAppLink("/messages");
         String subject = "【待审批】" + resolveBusinessName(todo);
         String description = todo.stepName() == null ? "请进入系统处理审批" : "当前环节：" + todo.stepName();
 
@@ -114,8 +114,8 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
                 binding.getDingTalkUnionId(),
                 subject,
                 description,
-                messagesUrl,
-                buildWorkbenchAppLink("/messages"),
+                workbenchUrl,
+                workbenchUrl,
                 List.of(binding.getDingTalkUnionId()),
                 sourceId,
                 PRIORITY_HIGH,
@@ -129,7 +129,7 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         record.setDingTalkUnionId(binding.getDingTalkUnionId());
         record.setDingTalkTaskId(taskId);
         record.setSourceId(sourceId);
-        record.setDetailUrl(messagesUrl);
+        record.setDetailUrl(workbenchUrl);
         record.setStatus(DingTalkTodoTask.STATUS_PENDING);
         todoTaskRepository.save(record);
         log.info("Pushed DingTalk todo {} for instance {} user {}",
