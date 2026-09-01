@@ -103,9 +103,10 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
             return;
         }
 
-        String entityType = todo.entityTypeNormalized();
-        String detailUrl = buildDetailUrl(entityType, todo.entityId(), todo.approvalInstanceId(),
-                todo.departmentName());
+        // 链路设计：待办 → 工作台容器（应用身份，保证全屏）→ 消息中心页，
+        // 用户在消息列表自行打开审批条目。移动端 appUrl 用直链+全屏参数，
+        // PC 端 pcUrl 用 h5_app_open AppLink 以应用身份进工作台打开。
+        String messagesUrl = properties.getH5BaseUrl() + "/messages?dd_full_screen=true";
         String subject = "【待审批】" + resolveBusinessName(todo);
         String description = todo.stepName() == null ? "请进入系统处理审批" : "当前环节：" + todo.stepName();
 
@@ -113,8 +114,8 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
                 binding.getDingTalkUnionId(),
                 subject,
                 description,
-                detailUrl,
-                buildPcAppLink(detailUrl),
+                messagesUrl,
+                buildWorkbenchAppLink("/messages"),
                 List.of(binding.getDingTalkUnionId()),
                 sourceId,
                 PRIORITY_HIGH,
@@ -128,7 +129,7 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         record.setDingTalkUnionId(binding.getDingTalkUnionId());
         record.setDingTalkTaskId(taskId);
         record.setSourceId(sourceId);
-        record.setDetailUrl(detailUrl);
+        record.setDetailUrl(messagesUrl);
         record.setStatus(DingTalkTodoTask.STATUS_PENDING);
         todoTaskRepository.save(record);
         log.info("Pushed DingTalk todo {} for instance {} user {}",
@@ -154,6 +155,48 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
                 todoTaskRepository.save(task);
             }
         }
+    }
+
+
+    /**
+     * sourceId 同时承载跳转所需的业务标识（卡片按钮 URL 模板只回传 sourceId）：
+     * sism-approval-{entityType}-{entityId}-{instanceId}[-{stepId}]
+     */
+    private String buildSourceId(String entityType, Long entityId, Long approvalInstanceId,
+                                  Long stepInstanceId) {
+        String type = entityType == null || entityType.isBlank() ? "UNKNOWN" : entityType;
+        return "sism-approval-" + type
+                + (entityId == null ? "-0" : "-" + entityId)
+                + "-" + approvalInstanceId
+                + (stepInstanceId == null ? "" : "-" + stepInstanceId);
+    }
+
+    private String entityTypeNormalizedSafe(ApprovalTodoPush todo) {
+        String normalized = todo.entityTypeNormalized();
+        return normalized == null || normalized.isBlank() ? "UNKNOWN" : normalized;
+    }
+
+    private String resolveBusinessName(ApprovalTodoPush todo) {
+        if (todo.businessName() != null && !todo.businessName().isBlank()) {
+            return todo.businessName().trim();
+        }
+        return todo.entityId() == null ? "审批事项" : "业务对象#" + todo.entityId();
+    }
+
+
+    /**
+     * 工作台 AppLink：以应用身份在工作台容器打开指定页面（占满主窗口/全屏，
+     * 保留免登上下文）。appId 为 AgentId；应用首页须为根地址（已随 1.0.2 发布），
+     * path 只用简单路径（无查询参数），避免钉钉端拼装差异。
+     */
+    private String buildWorkbenchAppLink(String simplePath) {
+        return "https://applink.dingtalk.com/page/h5_app_open"
+                + "?appId=" + urlencode(properties.resolveAppLinkAppId())
+                + "&appType=2"
+                + "&corpId=" + urlencode(properties.getCorpId())
+                + "&path=" + urlencode(simplePath)
+                + "&target=fullScreen"
+                + "&targetDesktop=workbench";
     }
 
     /**
@@ -183,69 +226,6 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
             log.warn("Failed to refresh unionId for binding {}: {}",
                     binding.getId(), ex.getMessage());
         }
-    }
-
-    private String buildDetailUrl(String entityType, Long entityId, Long approvalInstanceId,
-                                  String departmentName) {
-        StringBuilder url = new StringBuilder(properties.getH5BaseUrl())
-                .append("/strategic-tasks?tab=approval&openApproval=1");
-        if (entityType != null) {
-            url.append("&approvalEntityType=").append(urlencode(entityType));
-        }
-        if (entityId != null) {
-            url.append("&approvalEntityId=").append(entityId);
-        }
-        if (approvalInstanceId != null) {
-            url.append("&approvalInstanceId=").append(approvalInstanceId);
-        }
-        if (departmentName != null && !departmentName.isBlank()) {
-            url.append("&approvalDepartment=").append(urlencode(departmentName.trim()));
-        }
-        // 钉钉容器对卡片链接默认半屏打开，官方参数强制全屏
-        url.append("&dd_full_screen=true");
-        return url.toString();
-    }
-
-    /**
-     * sourceId 同时承载跳转所需的业务标识（卡片按钮 URL 模板只回传 sourceId）：
-     * sism-approval-{entityType}-{entityId}-{instanceId}[-{stepId}]
-     */
-    private String buildSourceId(String entityType, Long entityId, Long approvalInstanceId,
-                                  Long stepInstanceId) {
-        String type = entityType == null || entityType.isBlank() ? "UNKNOWN" : entityType;
-        return "sism-approval-" + type
-                + (entityId == null ? "-0" : "-" + entityId)
-                + "-" + approvalInstanceId
-                + (stepInstanceId == null ? "" : "-" + stepInstanceId);
-    }
-
-    private String entityTypeNormalizedSafe(ApprovalTodoPush todo) {
-        String normalized = todo.entityTypeNormalized();
-        return normalized == null || normalized.isBlank() ? "UNKNOWN" : normalized;
-    }
-
-    private String resolveBusinessName(ApprovalTodoPush todo) {
-        if (todo.businessName() != null && !todo.businessName().isBlank()) {
-            return todo.businessName().trim();
-        }
-        return todo.entityId() == null ? "审批事项" : "业务对象#" + todo.entityId();
-    }
-
-    /**
-     * PC 桌面端 AppLink：h5_app_open 以应用身份在工作台容器打开（占满主窗口，
-     * 保留免登上下文）；appId 为 AgentId（DINGTALK_AGENT_ID）。
-     * 应用首页须配置为根地址（如 https://host/），path 拼装才不会出现叠加路径。
-     */
-    private String buildPcAppLink(String targetUrl) {
-        String path = targetUrl.replaceFirst("^https?://[^/]+", "");
-        return "https://applink.dingtalk.com/page/h5_app_open"
-                + "?appId=" + urlencode(properties.resolveAppLinkAppId())
-                + "&appType=2"
-                + "&corpId=" + urlencode(properties.getCorpId())
-                + "&path=" + urlencode(path)
-                + "&target=fullScreen"
-                + "&targetDesktop=workbench"
-                + "&fallbackLink=" + urlencode(targetUrl);
     }
 
     private static String urlencode(String value) {
