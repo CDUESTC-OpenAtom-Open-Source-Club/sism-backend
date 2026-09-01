@@ -140,10 +140,10 @@ public class DingTalkClient {
         Map<String, Object> payload = new HashMap<>();
         payload.put("subject", subject);
         payload.put("content", description == null ? "" : description);
-        // 钉钉 v1.0 待办的跳转链接必须是对象结构；纯字符串会被静默丢弃，待办将无法点击跳转
+        // detailUrl 键名是 appUrl/pcUrl；pcUrl 传错（如 pcUri）会被降级为个人待办，卡片类型失效
         payload.put("detailUrl", Map.of(
                 "appUrl", detailUrl == null ? "" : detailUrl,
-                "pcUri", detailUrl == null ? "" : detailUrl
+                "pcUrl", detailUrl == null ? "" : detailUrl
         ));
         payload.put("executorIds", executorUnionIds);
         payload.put("sourceId", sourceId);
