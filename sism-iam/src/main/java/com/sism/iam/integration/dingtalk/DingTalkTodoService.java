@@ -114,7 +114,7 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
                 subject,
                 description,
                 detailUrl,
-                buildPcAppLink(detailUrl),
+                detailUrl,
                 List.of(binding.getDingTalkUnionId()),
                 sourceId,
                 PRIORITY_HIGH,
@@ -229,23 +229,6 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
             return todo.businessName().trim();
         }
         return todo.entityId() == null ? "审批事项" : "业务对象#" + todo.entityId();
-    }
-
-    /**
-     * PC 桌面端 AppLink：h5_app_open 以应用身份打开页面（保留免登上下文），
-     * targetDesktop=workbench 占满钉钉主窗口；appId 必须是真实 AgentId
-     * （appKey 会被拒且不触发 fallback），由 DINGTALK_AGENT_ID 配置提供。
-     */
-    private String buildPcAppLink(String targetUrl) {
-        String path = targetUrl.replaceFirst("^https?://[^/]+", "");
-        return "https://applink.dingtalk.com/page/h5_app_open"
-                + "?appId=" + urlencode(properties.resolveAppLinkAppId())
-                + "&appType=2"
-                + "&corpId=" + urlencode(properties.getCorpId())
-                + "&path=" + urlencode(path)
-                + "&target=fullScreen"
-                + "&targetDesktop=workbench"
-                + "&fallbackLink=" + urlencode(targetUrl);
     }
 
     private static String urlencode(String value) {
