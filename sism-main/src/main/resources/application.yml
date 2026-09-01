@@ -115,6 +115,7 @@ app:
     corp-id: ${DINGTALK_CORP_ID:}
     h5-base-url: ${DINGTALK_H5_BASE_URL:}
     todo-card-type-key: ${DINGTALK_TODO_CARD_TYPE_KEY:}
+    agent-id: ${DINGTALK_AGENT_ID:}
 
 # JWT Configuration
 jwt:

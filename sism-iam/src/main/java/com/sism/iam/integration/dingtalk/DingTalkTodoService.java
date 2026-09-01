@@ -232,12 +232,19 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
     }
 
     /**
-     * PC 桌面端 AppLink：targetDesktop=workbench 使页面占满钉钉主窗口（非侧边栏半屏），
-     * 移动端忽略该参数不受影响。
+     * PC 桌面端 AppLink：以应用身份打开页面（保留免登上下文），
+     * targetDesktop=workbench 占满钉钉主窗口；移动端 target=fullScreen 不受影响。
      */
     private String buildPcAppLink(String targetUrl) {
-        return "dingtalk://dingtalkclient/page/link?url="
-                + urlencode(targetUrl) + "&targetDesktop=workbench";
+        String path = targetUrl.replaceFirst("^https?://[^/]+", "");
+        return "https://applink.dingtalk.com/page/h5_app_open"
+                + "?appId=" + urlencode(properties.resolveAppLinkAppId())
+                + "&appType=2"
+                + "&corpId=" + urlencode(properties.getCorpId())
+                + "&path=" + urlencode(path)
+                + "&target=fullScreen"
+                + "&targetDesktop=workbench"
+                + "&fallbackLink=" + urlencode(targetUrl);
     }
 
     private static String urlencode(String value) {

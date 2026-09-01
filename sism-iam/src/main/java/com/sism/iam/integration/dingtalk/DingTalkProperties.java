@@ -38,6 +38,12 @@ public class DingTalkProperties {
      */
     private String todoCardTypeKey = "";
 
+    /**
+     * 企业内部应用 AgentId（h5_app_open AppLink 的 appId 参数）。
+     * 未配置时回落到 AppKey（部分场景两者一致，不一致时控制台基础信息页可查）。
+     */
+    private String agentId = "";
+
     private String oapiBaseUrl = "https://oapi.dingtalk.com";
 
     private String apiBaseUrl = "https://api.dingtalk.com";
@@ -48,5 +54,15 @@ public class DingTalkProperties {
         return enabled
                 && appKey != null && !appKey.isBlank()
                 && appSecret != null && !appSecret.isBlank();
+    }
+
+    /**
+     * AppLink appId 缺省回落到 AppKey。
+     */
+    public String resolveAppLinkAppId() {
+        if (agentId != null && !agentId.isBlank()) {
+            return agentId;
+        }
+        return appKey;
     }
 }
