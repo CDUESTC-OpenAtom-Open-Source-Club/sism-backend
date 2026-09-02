@@ -106,7 +106,8 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
         // 链路设计：待办 → 工作台容器（应用身份，保证全屏）→ 消息中心页并带
         // sourceId，前端据此自动打开对应审批消息的盒子；点卡片本体与点
         // 「查看详情」按钮走完全相同的 h5_app_open 链路。
-        String workbenchUrl = buildWorkbenchAppLink("/messages?sourceId=" + sourceId);
+        // applink path 不能带查询参数（会 404），sourceId 编入路径段，前端 /mt/:sourceId 重定向
+        String workbenchUrl = buildWorkbenchAppLink("/mt/" + sourceId);
         String subject = "【待审批】" + resolveBusinessName(todo);
         String description = todo.stepName() == null ? "请进入系统处理审批" : "当前环节：" + todo.stepName();
 
