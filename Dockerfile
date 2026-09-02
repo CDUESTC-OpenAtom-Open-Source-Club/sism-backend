@@ -19,7 +19,9 @@ RUN mvn -B -pl sism-main -am dependency:go-offline
 COPY . .
 
 RUN mvn -B -pl sism-main -am package -Dmaven.test.skip=true -Dmaven.javadoc.skip=true
-RUN java -Djarmode=layertools -jar /workspace/sism-main/target/sism-main-1.0.0.jar extract --destination /workspace/layers
+# 版本无关：定位实际产出的可执行 jar（finalName 可能带版本号）
+RUN JAR=$(ls /workspace/sism-main/target/sism-main-*.jar | grep -v '\.original' | head -1) \
+    && java -Djarmode=layertools -jar "$JAR" extract --destination /workspace/layers
 
 FROM eclipse-temurin:17-jre-jammy AS runtime
 
