@@ -14,7 +14,7 @@
 
     <groupId>com.sism</groupId>
     <artifactId>sism-backend</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <packaging>pom</packaging>
     <name>SISM Backend - Parent POM</name>
     <description>Strategic Indicator Management System - DDD Multi-Module Parent</description>
