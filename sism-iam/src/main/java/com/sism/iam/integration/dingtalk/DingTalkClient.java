@@ -109,19 +109,6 @@ public class DingTalkClient {
         return result == null ? null : textOrNull(result.path("userid"));
     }
 
-    public String createTodoTask(
-            String unionId,
-            String subject,
-            String description,
-            String detailUrl,
-            List<String> executorUnionIds,
-            String sourceId,
-            int priority
-    ) {
-        return createTodoTask(unionId, subject, description, detailUrl, detailUrl,
-                executorUnionIds, sourceId, priority, null, null);
-    }
-
     /**
      * 创建待办任务；传入 cardTypeKey 时待办以自定义卡片样式渲染
      * （原生完成按钮 + actionList 跳转按钮），cardData 提供内容区字段值。
@@ -167,8 +154,8 @@ public class DingTalkClient {
         return requiredText(body, "id", "todo-create");
     }
 
-    public boolean completeTodoTask(String unionId, String taskId, List<String> executorUnionIds) {
-        List<Map<String, Object>> statusList = executorUnionIds.stream()
+    public boolean completeTodoTask(String unionId, String taskId) {
+        List<Map<String, Object>> statusList = List.of(unionId).stream()
                 .map(id -> Map.<String, Object>of("id", id, "isDone", true))
                 .toList();
         JsonNode body = modernJson(

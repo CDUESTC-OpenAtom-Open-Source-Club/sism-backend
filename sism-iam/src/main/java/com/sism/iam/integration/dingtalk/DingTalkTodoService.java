@@ -143,8 +143,7 @@ public class DingTalkTodoService implements DingTalkTodoProvider {
             try {
                 remoteDone = dingTalkClient.completeTodoTask(
                         task.getDingTalkUnionId(),
-                        task.getDingTalkTaskId(),
-                        List.of(task.getDingTalkUnionId()));
+                        task.getDingTalkTaskId());
             } catch (Exception ex) {
                 log.warn("Failed to complete DingTalk todo {} remotely: {}",
                         task.getDingTalkTaskId(), ex.getMessage());
