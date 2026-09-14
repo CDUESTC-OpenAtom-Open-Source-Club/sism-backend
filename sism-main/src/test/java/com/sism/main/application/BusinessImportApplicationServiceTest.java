@@ -403,6 +403,8 @@ class BusinessImportApplicationServiceTest {
         childTask.setId(901L);
 
         // 组合身份（填报+审批）用于既有自动审批路径测试；纯填报人被拒场景见 shouldRejectAutoApproveCommitForReporterOnlyUser
+        // 组合身份（填报+分管校领导席位）用于既有自动审批路径测试；
+        // 纯填报人被拒场景见 shouldRejectAutoApproveCommitForReporterOnlyUser
         CurrentUser currentUser = new CurrentUser(
                 8L,
                 "hr_report",
@@ -411,7 +413,7 @@ class BusinessImportApplicationServiceTest {
                 functionalOrg.getId(),
                 List.of(
                         new SimpleGrantedAuthority("ROLE_REPORTER"),
-                        new SimpleGrantedAuthority("ROLE_APPROVER")));
+                        new SimpleGrantedAuthority("ROLE_VICE_PRESIDENT")));
 
         return new Fixture(functionalOrg, college, parentTask, parentIndicator, childTask, currentUser);
     }
