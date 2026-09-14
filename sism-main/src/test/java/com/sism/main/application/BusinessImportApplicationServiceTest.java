@@ -45,6 +45,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -142,13 +143,14 @@ class BusinessImportApplicationServiceTest {
         stubPreviewDependencies(fixture);
         stubCommitDependencies(fixture);
 
+        CurrentUser reporterOnly = reporterOnlyUser(fixture);
         var preview = service.previewDistribution(
                 distributionWorkbook("70-percent-basic-weight-normal-import.xlsx"),
                 2026L,
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
-                fixture.currentUser());
+                reporterOnly);
 
         var result = service.commit(
                 preview.batchId(),
@@ -157,7 +159,7 @@ class BusinessImportApplicationServiceTest {
                         ConflictMode.APPEND,
                         false,
                         "确认导入"),
-                fixture.currentUser());
+                reporterOnly);
 
         assertEquals("COMMITTED", result.status());
         assertEquals(2, result.createdCount());
@@ -165,6 +167,47 @@ class BusinessImportApplicationServiceTest {
         assertEquals("导入成功，未自动发起审批", result.workflow().message());
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(anyLong(), anyLong());
         verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
+    }
+
+    @Test
+    @DisplayName("Should reject auto approval commit for reporter-only user")
+    void shouldRejectAutoApproveCommitForReporterOnlyUser() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("reporter-auto-approve.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        CurrentUser reporterOnly = reporterOnlyUser(fixture);
+        var exception = assertThrows(SecurityException.class, () -> service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(
+                        preview.confirmToken(),
+                        ConflictMode.APPEND,
+                        true,
+                        "导入后自动下发审批"),
+                reporterOnly));
+
+        assertEquals(
+                "填报人账号不能自动发起审批，请取消勾选自动审批后重试，或由部门负责人及以上角色操作",
+                exception.getMessage());
+        verify(transactionTemplate, never()).execute(any());
+        verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
+    }
+
+    private CurrentUser reporterOnlyUser(Fixture fixture) {
+        return new CurrentUser(
+                fixture.currentUser().getId(),
+                "hr_report",
+                "HR Reporter",
+                "hr@example.com",
+                fixture.functionalOrg().getId(),
+                List.of(new SimpleGrantedAuthority("ROLE_REPORTER")));
     }
 
     @Test
@@ -359,13 +402,16 @@ class BusinessImportApplicationServiceTest {
                 functionalOrg);
         childTask.setId(901L);
 
+        // 组合身份（填报+审批）用于既有自动审批路径测试；纯填报人被拒场景见 shouldRejectAutoApproveCommitForReporterOnlyUser
         CurrentUser currentUser = new CurrentUser(
                 8L,
                 "hr_report",
                 "HR Reporter",
                 "hr@example.com",
                 functionalOrg.getId(),
-                List.of(new SimpleGrantedAuthority("ROLE_REPORTER")));
+                List.of(
+                        new SimpleGrantedAuthority("ROLE_REPORTER"),
+                        new SimpleGrantedAuthority("ROLE_APPROVER")));
 
         return new Fixture(functionalOrg, college, parentTask, parentIndicator, childTask, currentUser);
     }

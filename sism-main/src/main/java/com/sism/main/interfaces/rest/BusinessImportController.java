@@ -33,8 +33,8 @@ public class BusinessImportController {
     private final BusinessImportApplicationService businessImportApplicationService;
 
     @PostMapping(value = "/strategic-tasks/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
-    @Operation(summary = "预览战略任务指标导入")
+    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
+    @Operation(summary = "预览战略任务指标导入", description = "填报人可解析预览；自动发起审批仅部门负责人及以上角色可用")
     public ResponseEntity<ApiResponse<ImportPreviewResponse>> previewStrategicTasks(
             @RequestPart("file") MultipartFile file,
             @RequestParam Long cycleId,
@@ -51,8 +51,8 @@ public class BusinessImportController {
     }
 
     @PostMapping("/strategic-tasks/{batchId}/commit")
-    @PreAuthorize("hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
-    @Operation(summary = "确认战略任务指标导入")
+    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
+    @Operation(summary = "确认战略任务指标导入", description = "填报人可确认导入（含覆盖）；自动发起审批仅部门负责人及以上角色可用")
     public ResponseEntity<ApiResponse<ImportCommitResponse>> commitStrategicTasks(
             @PathVariable String batchId,
             @RequestBody ImportCommitRequest request,
