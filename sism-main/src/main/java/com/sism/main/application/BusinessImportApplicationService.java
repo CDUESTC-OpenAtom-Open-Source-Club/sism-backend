@@ -49,6 +49,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -60,6 +61,11 @@ public class BusinessImportApplicationService {
 
     private static final String SYSTEM_ADMIN_USERNAME = "admin";
     private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
+    private static final Set<String> AUTO_APPROVE_ROLE_CODES = Set.of(
+            "ROLE_APPROVER",
+            "ROLE_STRATEGY_DEPT_HEAD",
+            "ROLE_VICE_PRESIDENT",
+            "ROLE_SYSTEM_ADMIN");
     private static final String STRATEGIC_WORKFLOW_CODE = "PLAN_DISPATCH_STRATEGY";
     private static final String DISTRIBUTION_WORKFLOW_CODE = "PLAN_DISPATCH_FUNCDEPT";
 
@@ -141,6 +147,9 @@ public class BusinessImportApplicationService {
         }
 
         boolean autoSubmitAndApprove = Boolean.TRUE.equals(request.autoSubmitAndApprove());
+        if (autoSubmitAndApprove) {
+            ensureCanAutoApprove(currentUser);
+        }
         String workflowCode = context.type() == ImportType.STRATEGIC_TASK
                 ? STRATEGIC_WORKFLOW_CODE
                 : DISTRIBUTION_WORKFLOW_CODE;
@@ -608,6 +617,21 @@ public class BusinessImportApplicationService {
                 && currentUser.getAuthorities() != null
                 && currentUser.getAuthorities().stream()
                 .anyMatch(authority -> SYSTEM_ADMIN_ROLE_CODE.equals(authority.getAuthority()));
+    }
+
+    /**
+     * 填报人可导入数据（含覆盖已有数据），但不能自动发起审批——自动下发审批仅部门负责人及以上角色可用。
+     */
+    private void ensureCanAutoApprove(CurrentUser currentUser) {
+        boolean allowed = currentUser != null
+                && currentUser.getAuthorities() != null
+                && currentUser.getAuthorities().stream()
+                .map(org.springframework.security.core.GrantedAuthority::getAuthority)
+                .anyMatch(AUTO_APPROVE_ROLE_CODES::contains);
+        if (!allowed) {
+            throw new SecurityException(
+                    "填报人账号不能自动发起审批，请取消勾选自动审批后重试，或由部门负责人及以上角色操作");
+        }
     }
 
     private void activateIndicatorIfPlanDistributed(Plan plan, Indicator indicator) {
