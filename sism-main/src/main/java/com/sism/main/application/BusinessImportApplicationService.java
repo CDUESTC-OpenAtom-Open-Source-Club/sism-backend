@@ -61,8 +61,9 @@ public class BusinessImportApplicationService {
 
     private static final String SYSTEM_ADMIN_USERNAME = "admin";
     private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
+    // 仅部门最高领导人可自动发起审批：分管校领导/学院院长席位、战略部负责人、系统管理员；
+    // 填报人(ROLE_REPORTER)与部门审核人(ROLE_APPROVER)均不可越级
     private static final Set<String> AUTO_APPROVE_ROLE_CODES = Set.of(
-            "ROLE_APPROVER",
             "ROLE_STRATEGY_DEPT_HEAD",
             "ROLE_VICE_PRESIDENT",
             "ROLE_SYSTEM_ADMIN");
@@ -620,7 +621,8 @@ public class BusinessImportApplicationService {
     }
 
     /**
-     * 填报人可导入数据（含覆盖已有数据），但不能自动发起审批——自动下发审批仅部门负责人及以上角色可用。
+     * 导入后自动发起审批仅部门最高领导人可用：分管校领导/学院院长席位、战略部负责人、系统管理员。
+     * 填报人与普通部门审核人（ROLE_APPROVER）均不可越级触发自动审批。
      */
     private void ensureCanAutoApprove(CurrentUser currentUser) {
         boolean allowed = currentUser != null
