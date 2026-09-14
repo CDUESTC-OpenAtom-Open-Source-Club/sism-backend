@@ -311,6 +311,25 @@ public class GlobalExceptionHandler {
     /**
      * Handle technical exceptions from DDD layer.
      */
+    /**
+     * Handle security exceptions (e.g. role-gated business actions).
+     * Returns 403 with the specific reason so the frontend can surface it.
+     */
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<ApiResponse<Void>> handleSecurityException(SecurityException e) {
+        String requestId = getOrGenerateRequestId();
+        String requestContext = getRequestContext();
+
+        log.warn("Security rejected: message={}, requestId={}, context=[{}]",
+                e.getMessage(), requestId, requestContext);
+
+        ApiResponse<Void> response = ApiResponse.error(ErrorCodes.INSUFFICIENT_PERMISSION, e.getMessage());
+
+        return ResponseEntity
+                .status(HttpStatus.FORBIDDEN)
+                .body(response);
+    }
+
     @ExceptionHandler(TechnicalException.class)
     public ResponseEntity<ApiResponse<Void>> handleTechnicalException(TechnicalException e) {
         String requestId = getOrGenerateRequestId();
