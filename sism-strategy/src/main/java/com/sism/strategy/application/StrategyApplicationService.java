@@ -25,6 +25,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
@@ -413,7 +414,12 @@ public class StrategyApplicationService {
             requestedPlan = planRepository.findById(requestedPlanId)
                     .orElseThrow(() -> new IllegalArgumentException("Plan not found: " + requestedPlanId));
 
-            if (PlanStatus.fromRaw(requestedPlan.getStatus()) != PlanStatus.DISTRIBUTED) {
+            // 只有请求的 task 已属于本次下发的下游计划（同一 FUNC_TO_COLLEGE 计划）时才直接沿用；
+            // 若它属于上游计划（如战略部下发给职能部门的 STRAT_TO_FUNC 计划），
+            // 必须在下游计划中另建任务行，否则下游计划会因"不存在基础性任务"而无法下发。
+            boolean requestedTaskBelongsToDownstreamPlan = isDownstreamPlanFor(requestedPlan, ownerOrg, targetOrg);
+            if (requestedTaskBelongsToDownstreamPlan
+                    && PlanStatus.fromRaw(requestedPlan.getStatus()) != PlanStatus.DISTRIBUTED) {
                 return requestedTaskId;
             }
         }
@@ -460,6 +466,21 @@ public class StrategyApplicationService {
                     : TaskType.DEVELOPMENT;
 
         return findOrCreateTask(downstreamPlan, cycleId, taskName, taskType, targetOrg, ownerOrg).getId();
+    }
+
+    /**
+     * 判断给定计划是否为本次"职能部门下发学院"的目标下游计划：
+     * 计划级别为 FUNC_TO_COLLEGE，且创建组织=当前职能部门、目标组织=目标学院。
+     */
+    private boolean isDownstreamPlanFor(Plan plan, SysOrg ownerOrg, SysOrg targetOrg) {
+        if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
+            return false;
+        }
+        boolean sameOwner = ownerOrg != null
+                && Objects.equals(plan.getCreatedByOrgId(), ownerOrg.getId());
+        boolean sameTarget = targetOrg != null
+                && Objects.equals(plan.getTargetOrgId(), targetOrg.getId());
+        return sameOwner && sameTarget;
     }
 
     private Plan findOrCreatePlan(Long cycleId, PlanLevel planLevel, Long createdByOrgId, Long targetOrgId) {
