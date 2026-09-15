@@ -236,16 +236,14 @@ public class AlertController {
     }
 
     @GetMapping("/manual-levels")
-    @Operation(summary = "批量获取指标手动预警等级", description = "按指标ID查询战略任务管理手动设置的当前预警等级")
+    @Operation(summary = "批量获取指标手动预警等级", description = "按指标ID查询战略任务管理手动设置的当前预警等级；自动忽略当前用户无权访问的指标")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<Map<Long, String>>> getManualAlertLevels(
             @RequestParam("indicatorIds") List<Long> indicatorIds,
             Authentication authentication
     ) {
-        for (Long indicatorId : indicatorIds) {
-            alertAccessService.ensureIndicatorAccess(indicatorId, authentication);
-        }
-        return ResponseEntity.ok(ApiResponse.success(alertApplicationService.getCurrentManualAlertLevels(indicatorIds)));
+        List<Long> accessibleIds = alertAccessService.filterAccessibleIndicatorIds(indicatorIds, authentication);
+        return ResponseEntity.ok(ApiResponse.success(alertApplicationService.getCurrentManualAlertLevels(accessibleIds)));
     }
 
     // ==================== Update ====================

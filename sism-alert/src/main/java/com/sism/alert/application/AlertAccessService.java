@@ -262,6 +262,28 @@ public class AlertAccessService {
         return alertRepository.findByIndicatorIdInAndStatusIn(accessibleIndicatorIds, unresolvedStatuses, pageable);
     }
 
+    /**
+     * 从给定的指标ID集合中筛出当前用户有权访问的部分。
+     * 批量查询场景不应"全有或全无"：列表中混入无权指标时，只返回有权的部分即可。
+     */
+    public List<Long> filterAccessibleIndicatorIds(List<Long> indicatorIds, Authentication authentication) {
+        if (indicatorIds == null || indicatorIds.isEmpty()) {
+            return List.of();
+        }
+        if (isAdmin(authentication)) {
+            return indicatorIds.stream().filter(id -> id != null && id > 0).distinct().toList();
+        }
+
+        Set<Long> accessibleIndicatorIds = resolveAccessibleIndicatorIds(authentication);
+        if (accessibleIndicatorIds.isEmpty()) {
+            return List.of();
+        }
+        return indicatorIds.stream()
+                .filter(id -> id != null && id > 0 && accessibleIndicatorIds.contains(id))
+                .distinct()
+                .toList();
+    }
+
     private boolean hasIndicatorAccess(Long indicatorId, Authentication authentication) {
         if (isAdmin(authentication)) {
             return true;

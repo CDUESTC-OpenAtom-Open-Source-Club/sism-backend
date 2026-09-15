@@ -109,6 +109,45 @@ class AlertAccessServiceTest {
         verify(alertRepository).findByStatusIn(List.of(AlertStatus.OPEN, AlertStatus.IN_PROGRESS), pageRequest);
     }
 
+    @Test
+    void filterAccessibleIndicatorIdsShouldKeepOnlyAccessibleOnes() {
+        Authentication authentication = authentication(11L, 35L, "ROLE_USER");
+
+        when(indicatorAccessPort.findAccessibleIndicatorIds(35L)).thenReturn(java.util.Set.of(100L, 200L));
+
+        // 混合场景：列表里既有有权指标也有无权指标，应只保留有权的，而不是整体拒绝
+        List<Long> filtered = alertAccessService.filterAccessibleIndicatorIds(
+                List.of(100L, 200L, 300L),
+                authentication
+        );
+
+        assertEquals(List.of(100L, 200L), filtered);
+    }
+
+    @Test
+    void filterAccessibleIndicatorIdsShouldReturnEmptyWhenNothingAccessible() {
+        Authentication authentication = authentication(11L, 35L, "ROLE_USER");
+
+        when(indicatorAccessPort.findAccessibleIndicatorIds(35L)).thenReturn(java.util.Set.of());
+
+        List<Long> filtered = alertAccessService.filterAccessibleIndicatorIds(List.of(100L, 200L), authentication);
+
+        assertEquals(List.of(), filtered);
+    }
+
+    @Test
+    void filterAccessibleIndicatorIdsShouldReturnAllForStrategicAdmin() {
+        // 战略部负责人/分管校领导在预警模块被视为管理员，可见全部指标
+        Authentication authentication = authentication(1L, 35L, "ROLE_STRATEGY_DEPT_HEAD");
+
+        List<Long> filtered = alertAccessService.filterAccessibleIndicatorIds(
+                List.of(100L, 200L, 200L),
+                authentication
+        );
+
+        assertEquals(List.of(100L, 200L), filtered);
+    }
+
     private Authentication authentication(Long userId, Long orgId, String authority) {
         CurrentUser currentUser = new CurrentUser(
                 userId,
