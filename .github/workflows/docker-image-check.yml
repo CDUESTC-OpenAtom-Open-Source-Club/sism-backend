@@ -56,6 +56,7 @@ jobs:
         run: |
           docker run -d --name boot-test --network host \
             -e DB_HOST -e DB_URL -e DB_USERNAME -e DB_PASSWORD -e JWT_SECRET -e ALLOWED_ORIGINS \
+            -e SPRING_FLYWAY_ENABLED \
             sism-backend:ci
           ok=0
           for i in $(seq 1 60); do
