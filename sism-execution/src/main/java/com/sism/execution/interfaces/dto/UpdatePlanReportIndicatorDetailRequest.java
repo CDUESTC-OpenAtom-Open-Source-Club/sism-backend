@@ -21,7 +21,6 @@ public class UpdatePlanReportIndicatorDetailRequest {
 
     private String nextPlan;
 
-    private String milestoneNote;
 
     private List<Long> attachmentIds;
 }

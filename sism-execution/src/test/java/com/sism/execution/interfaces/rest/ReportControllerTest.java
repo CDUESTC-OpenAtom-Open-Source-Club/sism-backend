@@ -90,7 +90,6 @@ class ReportControllerTest {
                 eq(55),
                 eq("issues"),
                 eq("next"),
-                eq("note"),
                 eq(102L)
         )).thenReturn(existing);
 
@@ -102,14 +101,13 @@ class ReportControllerTest {
         request.setProgress(55);
         request.setIssues("issues");
         request.setNextPlan("next");
-        request.setMilestoneNote("note");
         request.setOperatorUserId(999L);
 
         var response = controller.updateReport(2L, request, currentUser);
 
         assertEquals(200, response.getStatusCodeValue());
         verify(reportApplicationService).updateReport(
-                2L, "title", 11L, "content", "summary", 55, "issues", "next", "note", 102L);
+                2L, "title", 11L, "content", "summary", 55, "issues", "next", 102L);
     }
 
     @Test
@@ -246,7 +244,7 @@ class ReportControllerTest {
 
         PlanReport report = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 301L, 106L);
         report.setId(10L);
-        report.setIndicatorDetails(List.of(new PlanReportIndicatorSnapshot(77L, 45, "comment", "note", null)));
+        report.setIndicatorDetails(List.of(new PlanReportIndicatorSnapshot(77L, 45, "comment", null)));
         when(reportApplicationService.findReportById(10L)).thenReturn(Optional.of(report));
 
         var response = controller.getReportById(10L, currentUser);

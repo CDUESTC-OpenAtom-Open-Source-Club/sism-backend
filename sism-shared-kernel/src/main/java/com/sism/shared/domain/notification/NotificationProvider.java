@@ -18,15 +18,6 @@ public interface NotificationProvider {
             LocalDateTime createdAt
     ) {}
 
-    record OverdueNotification(
-            Long notificationId,
-            Long recipientUserId,
-            Long indicatorId,
-            Long milestoneId,
-            String notificationType,
-            LocalDateTime createdAt
-    ) {}
-
     ApprovalResultNotification createApprovalResultNotification(
             Long recipientUserId,
             Long senderUserId,
@@ -38,19 +29,6 @@ public interface NotificationProvider {
             String stepName,
             boolean approved,
             String comment
-    );
-
-    OverdueNotification createOverdueNotification(
-            Long recipientUserId,
-            Long senderUserId,
-            Long senderOrgId,
-            Long indicatorId,
-            String indicatorName,
-            Long milestoneId,
-            String milestoneName,
-            LocalDateTime dueDate,
-            Integer actualProgress,
-            Integer expectedProgress
     );
 
     record AlertNotification(

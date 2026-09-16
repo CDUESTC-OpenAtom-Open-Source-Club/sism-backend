@@ -6,7 +6,6 @@ import com.sism.shared.application.dto.CurrentUser;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.strategy.application.BatchIndicatorDistributionApplicationService;
 import com.sism.strategy.application.DistributedPlanMutationBlockedException;
-import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
 import com.sism.strategy.domain.indicator.IndicatorStatus;
@@ -47,7 +46,6 @@ class IndicatorControllerTest {
 
     private StrategyApplicationService strategyApplicationService;
     private BatchIndicatorDistributionApplicationService batchIndicatorDistributionApplicationService;
-    private MilestoneApplicationService milestoneApplicationService;
     private OrganizationRepository organizationRepository;
     private JpaTaskRepositoryInternal jpaTaskRepository;
     private JdbcTemplate jdbcTemplate;
@@ -58,7 +56,6 @@ class IndicatorControllerTest {
     void setUp() {
         strategyApplicationService = mock(StrategyApplicationService.class);
         batchIndicatorDistributionApplicationService = mock(BatchIndicatorDistributionApplicationService.class);
-        milestoneApplicationService = mock(MilestoneApplicationService.class);
         organizationRepository = mock(OrganizationRepository.class);
         jpaTaskRepository = mock(JpaTaskRepositoryInternal.class);
         jdbcTemplate = mock(JdbcTemplate.class);
@@ -66,7 +63,6 @@ class IndicatorControllerTest {
 
         controller = instantiateController();
 
-        when(milestoneApplicationService.getMilestonesByIndicatorIds(any())).thenReturn(Collections.emptyMap());
         stubJdbcQueries();
     }
 
@@ -85,7 +81,6 @@ class IndicatorControllerTest {
         assertEquals(2026, item.getYear());
         assertEquals(41003L, item.getTaskId());
         verify(strategyApplicationService).getIndicatorsByYear(2026, PageRequest.of(0, 1));
-        verify(milestoneApplicationService).getMilestonesByIndicatorIds(List.of(2004L));
     }
 
     @Test
@@ -191,7 +186,6 @@ class IndicatorControllerTest {
             Constructor<IndicatorController> constructor = IndicatorController.class.getDeclaredConstructor(
                     StrategyApplicationService.class,
                     BatchIndicatorDistributionApplicationService.class,
-                    MilestoneApplicationService.class,
                     OrganizationRepository.class,
                     JpaTaskRepositoryInternal.class,
                     JdbcTemplate.class,
@@ -202,7 +196,6 @@ class IndicatorControllerTest {
             return constructor.newInstance(
                     strategyApplicationService,
                     batchIndicatorDistributionApplicationService,
-                    milestoneApplicationService,
                     organizationRepository,
                     jpaTaskRepository,
                     jdbcTemplate,

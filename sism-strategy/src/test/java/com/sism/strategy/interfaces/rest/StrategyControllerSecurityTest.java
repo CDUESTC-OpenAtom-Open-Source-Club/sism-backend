@@ -30,14 +30,6 @@ class StrategyControllerSecurityTest {
     }
 
     @Test
-    void milestoneControllerMutatingEndpointsShouldRequireRoleChecks() throws Exception {
-        assertPreAuthorize(MilestoneController.class, "createMilestone", com.sism.strategy.interfaces.dto.CreateMilestoneRequest.class);
-        assertPreAuthorize(MilestoneController.class, "updateMilestone", Long.class, com.sism.strategy.interfaces.dto.UpdateMilestoneRequest.class);
-        assertPreAuthorize(MilestoneController.class, "saveMilestones", Long.class, com.sism.strategy.interfaces.dto.BatchSaveMilestonesRequest.class);
-        assertPreAuthorize(MilestoneController.class, "deleteMilestone", Long.class);
-    }
-
-    @Test
     void indicatorControllerMutatingEndpointsShouldRequireRoleChecks() throws Exception {
         assertPreAuthorize(IndicatorController.class, "updateIndicator", Long.class, IndicatorController.UpdateIndicatorRequest.class);
         assertPreAuthorize(IndicatorController.class, "submitForReview", Long.class);

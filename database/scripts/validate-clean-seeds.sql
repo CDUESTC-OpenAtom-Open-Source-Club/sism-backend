@@ -1,7 +1,7 @@
 -- ============================================
 -- SISM Clean Seed Validation
 -- Purpose: validate the current clean-seed workflow chain on the modern schema
--- Scope: sys_org / sys_user / cycle / plan / sys_task / indicator / indicator_milestone
+-- Scope: sys_org / sys_user / cycle / plan / sys_task / indicator
 -- ============================================
 
 \set ON_ERROR_STOP on
@@ -30,8 +30,7 @@ SELECT 'sys_task', COUNT(*) FROM public.sys_task
 UNION ALL
 SELECT 'indicator', COUNT(*) FROM public.indicator
 UNION ALL
-SELECT 'indicator_milestone', COUNT(*) FROM public.indicator_milestone
-UNION ALL
+
 SELECT 'attachment', COUNT(*) FROM public.attachment
 UNION ALL
 SELECT 'alert_event', COUNT(*) FROM public.alert_event
@@ -125,17 +124,7 @@ FROM public.indicator i
 LEFT JOIN public.sys_org o ON o.id = i.target_org_id
 WHERE o.id IS NULL;
 
-\echo ''
-\echo '>>> 4. Milestone linkage checks'
-\echo ''
 
-SELECT
-    m.id,
-    m.indicator_id,
-    '[FAIL] indicator_milestone.indicator_id points to missing indicator' AS issue
-FROM public.indicator_milestone m
-LEFT JOIN public.indicator i ON i.id = m.indicator_id
-WHERE i.id IS NULL;
 
 \echo ''
 \echo '>>> 5. Summary'
@@ -184,10 +173,6 @@ BEGIN
     WHERE o.id IS NULL;
     total_issues := total_issues + issue_count;
 
-    SELECT COUNT(*) INTO issue_count
-    FROM public.indicator_milestone m LEFT JOIN public.indicator i ON i.id = m.indicator_id
-    WHERE i.id IS NULL;
-    total_issues := total_issues + issue_count;
 
     IF total_issues = 0 THEN
         RAISE NOTICE '[PASS] clean seed validation passed with zero issues';

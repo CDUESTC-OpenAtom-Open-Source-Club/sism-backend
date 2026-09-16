@@ -46,13 +46,6 @@ public final class BusinessImportDtos {
     ) {
     }
 
-    public record MilestoneImportValue(
-            String name,
-            LocalDateTime dueAt,
-            Integer targetProgress
-    ) {
-    }
-
     public record NormalizedImportRow(
             String department,
             String college,
@@ -64,8 +57,7 @@ public final class BusinessImportDtos {
             String indicatorType,
             BigDecimal weight,
             String remark,
-            Long parentIndicatorId,
-            List<MilestoneImportValue> milestones
+            Long parentIndicatorId
     ) {
         public Map<String, Object> toMap() {
             return Map.ofEntries(
@@ -79,8 +71,7 @@ public final class BusinessImportDtos {
                     Map.entry("indicatorType", indicatorType == null ? "" : indicatorType),
                     Map.entry("weight", weight == null ? "" : weight),
                     Map.entry("remark", remark == null ? "" : remark),
-                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId),
-                    Map.entry("milestones", milestones == null ? List.of() : milestones)
+                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId)
             );
         }
     }

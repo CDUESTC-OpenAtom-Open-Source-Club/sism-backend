@@ -8,7 +8,6 @@ import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.strategy.application.BasicTaskWeightValidationService;
-import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
 import com.sism.strategy.domain.plan.Plan;
@@ -71,8 +70,6 @@ class BusinessImportApplicationServiceTest {
     @Mock
     private StrategyApplicationService strategyApplicationService;
     @Mock
-    private MilestoneApplicationService milestoneApplicationService;
-    @Mock
     private BasicTaskWeightValidationService basicTaskWeightValidationService;
     @Mock
     private WorkflowApplicationService workflowApplicationService;
@@ -93,7 +90,6 @@ class BusinessImportApplicationServiceTest {
                 taskRepository,
                 indicatorRepository,
                 strategyApplicationService,
-                milestoneApplicationService,
                 basicTaskWeightValidationService,
                 workflowApplicationService,
                 auditInstanceRepository,

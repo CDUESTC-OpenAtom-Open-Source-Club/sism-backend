@@ -1,15 +1,12 @@
 package com.sism.strategy.interfaces.dto;
 
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -45,22 +42,5 @@ public class BatchDistributeIndicatorsRequest {
         private String remark;
         private Integer progress;
         private String customDesc;
-
-        @Valid
-        private List<MilestoneItem> milestones = new ArrayList<>();
-    }
-
-    @Data
-    public static class MilestoneItem {
-        @NotBlank(message = "Milestone name is required")
-        private String milestoneName;
-
-        private String description;
-
-        @JsonDeserialize(using = FlexibleLocalDateTimeDeserializer.class)
-        private LocalDateTime dueDate;
-
-        private Integer targetProgress;
-        private Integer sortOrder;
     }
 }

@@ -14,7 +14,6 @@
 10. `plan-data.sql`
 11. `sys_task-data.sql`
 12. `indicator-data.sql`
-13. `indicator_milestone-data.sql`
 14. `warn_level-data.sql`
 15. `alert_window-data.sql`
 16. `alert_rule-data.sql`

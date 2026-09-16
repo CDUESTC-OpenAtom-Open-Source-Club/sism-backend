@@ -25,7 +25,6 @@ TRUNCATE TABLE
     public.alert_rule,
     public.alert_window,
     public.warn_level,
-    public.indicator_milestone,
     public.indicator,
     public.sys_task,
     public.plan,
@@ -61,7 +60,6 @@ COMMIT;
 \i plan-data.sql
 \i sys_task-data.sql
 \i indicator-data.sql
-\i indicator_milestone-data.sql
 \i warn_level-data.sql
 \i alert_window-data.sql
 \i alert_rule-data.sql
@@ -97,7 +95,6 @@ BEGIN
                 ('public.plan', 'id'),
                 ('public.sys_task', 'task_id'),
                 ('public.indicator', 'id'),
-                ('public.indicator_milestone', 'id'),
                 ('public.warn_level', 'id'),
                 ('public.alert_window', 'window_id'),
                 ('public.alert_rule', 'rule_id'),

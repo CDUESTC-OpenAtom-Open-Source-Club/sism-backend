@@ -10,7 +10,6 @@ import com.sism.main.interfaces.dto.BusinessImportDtos.ImportRowPreview;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportSummary;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportType;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportWorkflowResult;
-import com.sism.main.interfaces.dto.BusinessImportDtos.MilestoneImportValue;
 import com.sism.main.interfaces.dto.BusinessImportDtos.NormalizedImportRow;
 import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.user.UserRepository;
@@ -19,14 +18,12 @@ import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.strategy.application.BasicTaskWeightValidationService;
-import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
 import com.sism.strategy.domain.plan.Plan;
 import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.repository.IndicatorRepository;
 import com.sism.strategy.domain.repository.PlanRepository;
-import com.sism.strategy.interfaces.dto.BatchSaveMilestonesRequest;
 import com.sism.task.domain.repository.TaskRepository;
 import com.sism.task.domain.task.StrategicTask;
 import com.sism.task.domain.task.TaskType;
@@ -77,7 +74,6 @@ public class BusinessImportApplicationService {
     private final TaskRepository taskRepository;
     private final IndicatorRepository indicatorRepository;
     private final StrategyApplicationService strategyApplicationService;
-    private final MilestoneApplicationService milestoneApplicationService;
     private final BasicTaskWeightValidationService basicTaskWeightValidationService;
     private final WorkflowApplicationService workflowApplicationService;
     private final AuditInstanceRepository auditInstanceRepository;
@@ -448,7 +444,6 @@ public class BusinessImportApplicationService {
                         targetOrg);
                 counter.updated++;
             }
-            saveMilestones(indicator.getId(), normalized.milestones());
             activateIndicatorIfPlanDistributed(plan, indicator);
         }
         return counter.toCounters();
@@ -504,7 +499,6 @@ public class BusinessImportApplicationService {
                         targetCollege);
                 counter.updated++;
             }
-            saveMilestones(indicator.getId(), normalized.milestones());
             activateIndicatorIfPlanDistributed(plan, indicator);
         }
         return counter.toCounters();
@@ -713,8 +707,7 @@ public class BusinessImportApplicationService {
                                             indicator.getType(),
                                             indicator.getWeightPercent(),
                                             indicator.getRemark(),
-                                            null,
-                                            List.of()));
+                                            null));
                         },
                         Function.identity(),
                         (left, right) -> left
@@ -750,35 +743,12 @@ public class BusinessImportApplicationService {
                                         indicator.getType(),
                                         indicator.getWeightPercent(),
                                         indicator.getRemark(),
-                                        indicator.getParentIndicatorId(),
-                                        List.of())),
+                                        indicator.getParentIndicatorId())),
                         Function.identity(),
                         (left, right) -> left
                 ));
     }
 
-    private void saveMilestones(Long indicatorId, List<MilestoneImportValue> milestones) {
-        if (indicatorId == null || milestones == null || milestones.isEmpty()) {
-            return;
-        }
-        List<BatchSaveMilestonesRequest.Item> items = new ArrayList<>();
-        for (int index = 0; index < milestones.size(); index++) {
-            MilestoneImportValue source = milestones.get(index);
-            if (isBlank(source.name())) {
-                continue;
-            }
-            BatchSaveMilestonesRequest.Item item = new BatchSaveMilestonesRequest.Item();
-            item.setMilestoneName(source.name());
-            item.setDueDate(source.dueAt());
-            item.setTargetProgress(source.targetProgress());
-            item.setStatus("NOT_STARTED");
-            item.setSortOrder(index + 1);
-            items.add(item);
-        }
-        if (!items.isEmpty()) {
-            milestoneApplicationService.saveMilestones(indicatorId, items);
-        }
-    }
 
     private ImportSummary summarize(List<ImportRowPreview> rows) {
         int createRows = 0;
@@ -854,8 +824,7 @@ public class BusinessImportApplicationService {
                 row.indicatorType(),
                 row.weight(),
                 row.remark(),
-                parentIndicatorId,
-                row.milestones());
+                parentIndicatorId);
     }
 
     private TaskType toTaskType(String value) {

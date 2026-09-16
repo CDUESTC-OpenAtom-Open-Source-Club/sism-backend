@@ -90,7 +90,6 @@ public class ReportController {
                                 request.getProgress(),
                                 request.getIssues(),
                                 request.getNextPlan(),
-                                request.getMilestoneNote(),
                                 requireCurrentUserId(currentUser)
                         );
         return ResponseEntity.ok(ApiResponse.success(PlanReportResponse.fromEntity(report)));
