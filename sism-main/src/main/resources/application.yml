@@ -8,6 +8,11 @@ spring:
   application:
     name: sism-backend
   
+  # Jackson time handling: serialize as ISO-8601 with timezone, display follows Beijing time uniformly
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd'T'HH:mm:ss
+  
   # Database Configuration
   datasource:
     url: ${DB_URL}
