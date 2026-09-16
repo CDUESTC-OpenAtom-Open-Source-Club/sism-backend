@@ -23,7 +23,6 @@ public class DatabaseDataChecker {
             "assessment_cycle",
             "sys_task",
             "indicator",
-            "indicator_milestone",
             "progress_report",
             "adhoc_task",
             "adhoc_task_indicator_map",

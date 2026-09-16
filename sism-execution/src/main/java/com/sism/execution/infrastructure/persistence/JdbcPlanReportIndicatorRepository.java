@@ -21,14 +21,13 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
     private final JdbcTemplate jdbcTemplate;
 
     @Override
-    public Long upsertDraftIndicator(Long reportId, Long indicatorId, Integer progress, String comment, String milestoneNote) {
+    public Long upsertDraftIndicator(Long reportId, Long indicatorId, Integer progress, String comment) {
         return jdbcTemplate.queryForObject(
                 """
-                INSERT INTO public.plan_report_indicator (report_id, indicator_id, progress, milestone_note, comment, created_at)
-                VALUES (?, ?, ?, ?, ?, now())
+                INSERT INTO public.plan_report_indicator (report_id, indicator_id, progress, comment, created_at)
+                VALUES (?, ?, ?, ?, now())
                 ON CONFLICT (report_id, indicator_id) DO UPDATE SET
                     progress = EXCLUDED.progress,
-                    milestone_note = EXCLUDED.milestone_note,
                     comment = EXCLUDED.comment,
                     created_at = now()
                 RETURNING id
@@ -37,7 +36,6 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                 reportId,
                 indicatorId,
                 progress == null ? 0 : progress,
-                milestoneNote,
                 comment
         );
     }
@@ -129,7 +127,6 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                        pri.indicator_id,
                        pri.progress,
                        pri.comment,
-                       pri.milestone_note,
                        a.id AS attachment_id,
                        a.original_name,
                        a.size_bytes,
@@ -158,7 +155,6 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                                         rs.getLong("indicator_id"),
                                         rs.getInt("progress"),
                                         rs.getString("comment"),
-                                        rs.getString("milestone_note"),
                                         attachments
                                 ),
                                 attachments

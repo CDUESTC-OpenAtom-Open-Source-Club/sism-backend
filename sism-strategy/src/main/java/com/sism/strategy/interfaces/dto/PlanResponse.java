@@ -49,9 +49,6 @@ public class PlanResponse {
     @Schema(description = "指标数量")
     private Integer indicatorCount;
 
-    @Schema(description = "里程碑数量")
-    private Integer milestoneCount;
-
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

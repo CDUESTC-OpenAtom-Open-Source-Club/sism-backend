@@ -145,7 +145,7 @@ public class ReportApplicationService {
      */
     @Transactional
     public PlanReport updateReport(Long reportId, String title, Long indicatorId, String content, String summary, Integer progress,
-                                   String issues, String nextPlan, String milestoneNote, Long operatorUserId) {
+                                   String issues, String nextPlan, Long operatorUserId) {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report", reportId));
 
@@ -156,7 +156,7 @@ public class ReportApplicationService {
             report.setTitle(title);
         }
         PlanReport savedReport = planReportRepository.save(report);
-        upsertIndicatorDetail(savedReport.getId(), indicatorId, progress, content, milestoneNote, List.of(), operatorUserId);
+        upsertIndicatorDetail(savedReport.getId(), indicatorId, progress, content, List.of(), operatorUserId);
         return enrichReportMetadata(savedReport);
     }
 
@@ -192,7 +192,6 @@ public class ReportApplicationService {
                     detail.getIndicatorId(),
                     detail.getProgress(),
                     detail.getContent(),
-                    detail.getMilestoneNote(),
                     detail.getAttachmentIds(),
                     operatorUserId
             );
@@ -222,7 +221,7 @@ public class ReportApplicationService {
     @Transactional
     public PlanReport updateReport(Long reportId, String content, String summary, Integer progress,
                                    String issues, String nextPlan) {
-        return updateReport(reportId, null, null, content, summary, progress, issues, nextPlan, null, null);
+        return updateReport(reportId, null, null, content, summary, progress, issues, nextPlan, null);
     }
 
     /**
@@ -736,7 +735,6 @@ public class ReportApplicationService {
                                        Long indicatorId,
                                        Integer progress,
                                        String comment,
-                                       String milestoneNote,
                                        List<Long> attachmentIds,
                                        Long operatorUserId) {
         if (reportId == null || indicatorId == null) {
@@ -748,8 +746,7 @@ public class ReportApplicationService {
                 reportId,
                 indicatorId,
                 progress,
-                comment,
-                milestoneNote
+                comment
         );
         // The draft indicator and its attachments must be kept in sync as a unit.
         planReportIndicatorRepository.attachFiles(

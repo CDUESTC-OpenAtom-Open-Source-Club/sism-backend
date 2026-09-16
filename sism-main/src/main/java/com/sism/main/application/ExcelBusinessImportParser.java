@@ -4,7 +4,6 @@ import com.sism.main.interfaces.dto.BusinessImportDtos.FieldMapping;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportAction;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportRowPreview;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportType;
-import com.sism.main.interfaces.dto.BusinessImportDtos.MilestoneImportValue;
 import com.sism.main.interfaces.dto.BusinessImportDtos.NormalizedImportRow;
 import lombok.RequiredArgsConstructor;
 import org.apache.poi.ss.usermodel.Cell;
@@ -41,8 +40,6 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class ExcelBusinessImportParser {
 
-    private static final Pattern LEADING_INDEX_PATTERN = Pattern.compile("^\\s*\\d+[\\.、)]\\s*");
-    private static final Pattern MILESTONE_PATTERN = Pattern.compile("^(.*?)\\s*[（(]\\s*(.*?)\\s*[，,]\\s*(\\d+(?:\\.\\d+)?)%?\\s*[）)]\\s*$");
 
     private static final Map<String, List<String>> STRATEGIC_ALIASES = Map.ofEntries(
             Map.entry("department", List.of("职能部门", "责任部门", "部门")),
@@ -51,10 +48,6 @@ public class ExcelBusinessImportParser {
             Map.entry("indicatorName", List.of("核心指标", "指标名称", "指标内容")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "指标权重")),
-            Map.entry("milestoneDetail", List.of("里程碑", "里程碑明细", "阶段任务", "阶段安排")),
-            Map.entry("milestoneName", List.of("里程碑名称", "阶段名称")),
-            Map.entry("milestoneDueAt", List.of("截止时间", "完成时间", "节点时间")),
-            Map.entry("milestoneProgress", List.of("目标进度", "阶段进度")),
             Map.entry("remark", List.of("备注", "说明"))
     );
 
@@ -65,10 +58,6 @@ public class ExcelBusinessImportParser {
             Map.entry("indicatorName", List.of("子指标名称", "指标名称", "学院指标")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "子指标权重")),
-            Map.entry("milestoneDetail", List.of("里程碑", "里程碑明细", "阶段任务", "阶段安排")),
-            Map.entry("milestoneName", List.of("里程碑名称", "阶段名称")),
-            Map.entry("milestoneDueAt", List.of("截止时间", "完成时间", "节点时间")),
-            Map.entry("milestoneProgress", List.of("目标进度", "阶段进度")),
             Map.entry("remark", List.of("备注", "说明"))
     );
 
@@ -220,13 +209,6 @@ public class ExcelBusinessImportParser {
         String indicatorType = normalizeIndicatorType(value(source, aliases, "indicatorType"));
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
         String remark = clean(value(source, aliases, "remark"));
-        List<MilestoneImportValue> milestones = parseMilestones(
-                value(source, aliases, "milestoneDetail"),
-                value(source, aliases, "milestoneName"),
-                value(source, aliases, "milestoneDueAt"),
-                value(source, aliases, "milestoneProgress")
-        );
-
         return new NormalizedImportRow(
                 department,
                 college,
@@ -238,8 +220,7 @@ public class ExcelBusinessImportParser {
                 indicatorType,
                 weight,
                 remark,
-                null,
-                milestones
+                null
         );
     }
 
@@ -268,23 +249,6 @@ public class ExcelBusinessImportParser {
                 || row.weight().compareTo(BigDecimal.valueOf(100)) > 0)) {
             errors.add("权重必须在 0 到 100 之间");
         }
-        if (row.milestones() != null) {
-            for (int index = 0; index < row.milestones().size(); index++) {
-                MilestoneImportValue milestone = row.milestones().get(index);
-                if (milestone == null || isBlank(milestone.name())) {
-                    continue;
-                }
-                int displayIndex = index + 1;
-                if (milestone.dueAt() == null) {
-                    errors.add("第 " + displayIndex + " 个里程碑截止时间无法解析");
-                }
-                if (milestone.targetProgress() == null
-                        || milestone.targetProgress() < 0
-                        || milestone.targetProgress() > 100) {
-                    errors.add("第 " + displayIndex + " 个里程碑目标进度必须在 0 到 100 之间");
-                }
-            }
-        }
         return errors;
     }
 
@@ -292,14 +256,6 @@ public class ExcelBusinessImportParser {
         List<String> warnings = new ArrayList<>();
         if (row.weight() == null) {
             warnings.add("权重为空，将按系统默认值处理");
-        }
-        if (row.milestones() == null || row.milestones().isEmpty()) {
-            warnings.add("未识别到里程碑");
-        } else {
-            MilestoneImportValue last = row.milestones().get(row.milestones().size() - 1);
-            if (last.targetProgress() == null || last.targetProgress() != 100) {
-                warnings.add("最后一个里程碑目标进度不是 100%");
-            }
         }
         return warnings;
     }
@@ -409,42 +365,6 @@ public class ExcelBusinessImportParser {
         }
     }
 
-    private List<MilestoneImportValue> parseMilestones(String detail,
-                                                       String milestoneName,
-                                                       String dueAt,
-                                                       String targetProgress) {
-        List<MilestoneImportValue> milestones = new ArrayList<>();
-        String name = clean(milestoneName);
-        if (!name.isBlank()) {
-            milestones.add(new MilestoneImportValue(
-                    name,
-                    parseDateTime(dueAt).orElse(null),
-                    parseProgress(targetProgress).orElse(null)
-            ));
-        }
-        String normalizedDetail = clean(detail);
-        if (normalizedDetail.isBlank()) {
-            return milestones;
-        }
-
-        for (String line : normalizedDetail.split("\\R+")) {
-            String item = LEADING_INDEX_PATTERN.matcher(clean(line)).replaceFirst("");
-            if (item.isBlank()) {
-                continue;
-            }
-            Matcher matcher = MILESTONE_PATTERN.matcher(item);
-            if (matcher.matches()) {
-                milestones.add(new MilestoneImportValue(
-                        clean(matcher.group(1)),
-                        parseDateTime(matcher.group(2)).orElse(null),
-                        parseProgress(matcher.group(3)).orElse(null)
-                ));
-            } else {
-                milestones.add(new MilestoneImportValue(item, null, null));
-            }
-        }
-        return milestones;
-    }
 
     private Optional<Integer> parseProgress(String raw) {
         String value = clean(raw).replace("%", "").replace("％", "");

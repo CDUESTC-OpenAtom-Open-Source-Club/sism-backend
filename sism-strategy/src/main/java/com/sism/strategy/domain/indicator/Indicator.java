@@ -93,8 +93,7 @@ public class Indicator extends AggregateRoot<Long> {
     @Column(name = "responsible_user_id")
     private Long responsibleUserId;
 
-    // @OneToMany(mappedBy = "indicator", cascade = CascadeType.ALL)
-    // private List<com.sism.execution.domain.model.milestone.Milestone> milestones = new ArrayList<>();
+    // 指标进度由填报审批结果直接维护；里程碑模型已移除。
 
     public static Indicator create(String description, com.sism.organization.domain.SysOrg ownerOrg,
                                     com.sism.organization.domain.SysOrg targetOrg,

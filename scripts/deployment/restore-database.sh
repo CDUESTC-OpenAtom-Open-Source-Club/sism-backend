@@ -328,7 +328,7 @@ verify_backup_file() {
         # 检查是否包含关键表
         log_info "检查关键表定义..."
         local tables_found=0
-        local required_tables=("sys_org" "sys_user" "cycle" "indicator" "indicator_milestone" "sys_task")
+        local required_tables=("sys_org" "sys_user" "cycle" "indicator" "sys_task")
         
         for table in "${required_tables[@]}"; do
             if gunzip -c "$BACKUP_FILE" 2>/dev/null | grep -q "CREATE TABLE.*$table\|COPY.*$table"; then
@@ -368,7 +368,7 @@ verify_restore() {
     echo "关键表记录数:"
     echo "----------------------------------------"
     
-    TABLES=("sys_org" "sys_user" "cycle" "sys_task" "indicator" "indicator_milestone" "progress_report" "audit_log")
+    TABLES=("sys_org" "sys_user" "cycle" "sys_task" "indicator" "progress_report" "audit_log")
     
     for table in "${TABLES[@]}"; do
         COUNT=$(PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT COUNT(*) FROM $table;" 2>/dev/null || echo "N/A")

@@ -16,7 +16,6 @@ import com.sism.strategy.domain.repository.CycleRepository;
 import com.sism.strategy.domain.repository.IndicatorRepository;
 import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.strategy.interfaces.dto.CreatePlanRequest;
-import com.sism.strategy.interfaces.dto.MilestoneResponse;
 import com.sism.strategy.interfaces.dto.PlanResponse;
 import com.sism.strategy.interfaces.dto.SubmitPlanApprovalRequest;
 import com.sism.strategy.interfaces.dto.UpdatePlanRequest;
@@ -73,7 +72,6 @@ public class PlanApplicationService {
     private final PlanIntegrityService planIntegrityService;
     private final StrategyOrgProperties strategyOrgProperties;
     private final PlanWorkflowRuntimeService planWorkflowRuntimeService;
-    private final MilestoneApplicationService milestoneApplicationService;
     private final ObjectProvider<PlanApplicationService> selfProvider;
 
     @Autowired
@@ -90,7 +88,6 @@ public class PlanApplicationService {
             PlanIntegrityService planIntegrityService,
             StrategyOrgProperties strategyOrgProperties,
             PlanWorkflowRuntimeService planWorkflowRuntimeService,
-            MilestoneApplicationService milestoneApplicationService,
             ObjectProvider<PlanApplicationService> selfProvider
     ) {
         this.planRepository = planRepository;
@@ -105,7 +102,6 @@ public class PlanApplicationService {
         this.planIntegrityService = planIntegrityService;
         this.strategyOrgProperties = strategyOrgProperties;
         this.planWorkflowRuntimeService = planWorkflowRuntimeService;
-        this.milestoneApplicationService = milestoneApplicationService;
         this.selfProvider = selfProvider;
     }
 
@@ -137,7 +133,6 @@ public class PlanApplicationService {
                 planRepository,
                 strategyOrgProperties
         );
-        this.milestoneApplicationService = null;
         this.selfProvider = new ObjectProvider<>() {
             @Override
             public PlanApplicationService getObject(Object... args) {
@@ -454,10 +449,9 @@ public class PlanApplicationService {
     }
 
     private record PlanMetrics(Map<Long, Integer> indicatorCounts,
-                               Map<Long, Integer> milestoneCounts,
                                Map<Long, Integer> completionPercentages) {
         private static PlanMetrics empty() {
-            return new PlanMetrics(Map.of(), Map.of(), Map.of());
+            return new PlanMetrics(Map.of(), Map.of());
         }
     }
 
@@ -644,7 +638,6 @@ public class PlanApplicationService {
         details.setOwnerDepartment(planResponse.getOwnerDepartment());
         details.setCompletionPercentage(planResponse.getCompletionPercentage());
         details.setIndicatorCount(planResponse.getIndicatorCount());
-        details.setMilestoneCount(planResponse.getMilestoneCount());
         details.setCreateTime(planResponse.getCreateTime());
         details.setYear(planResponse.getYear());
         details.setCycleId(planResponse.getCycleId());
@@ -661,12 +654,6 @@ public class PlanApplicationService {
         details.setCurrentApproverId(planResponse.getCurrentApproverId());
         details.setCurrentApproverName(planResponse.getCurrentApproverName());
         details.setCanWithdraw(planResponse.getCanWithdraw());
-        List<MilestoneResponse> milestones = milestoneApplicationService == null
-                ? List.of()
-                : milestoneApplicationService.getMilestonesByPlanId(plan.getId());
-        details.setMilestones(milestones.stream()
-                .map(this::toInternalMilestoneResponse)
-                .collect(Collectors.toList()));
 
         String planStatus = PlanStatus.fromRaw(plan.getStatus()).value();
         List<Indicator> planIndicators = loadPlanIndicators(plan);
@@ -736,7 +723,6 @@ public class PlanApplicationService {
         String targetOrgName = plan.getTargetOrgId() == null ? null : orgNamesById.get(plan.getTargetOrgId());
         String createdByOrgName = plan.getCreatedByOrgId() == null ? null : orgNamesById.get(plan.getCreatedByOrgId());
         int indicatorCount = metricsByPlanId.indicatorCounts().getOrDefault(plan.getId(), 0);
-        int milestoneCount = metricsByPlanId.milestoneCounts().getOrDefault(plan.getId(), 0);
         int completionPercentage = metricsByPlanId.completionPercentages().getOrDefault(plan.getId(), 0);
 
         return PlanResponse.builder()
@@ -750,7 +736,6 @@ public class PlanApplicationService {
                 .ownerDepartment(createdByOrgName)
                 .completionPercentage(completionPercentage)
                 .indicatorCount(indicatorCount)
-                .milestoneCount(milestoneCount)
                 .createTime(plan.getCreatedAt())
                 .year(year)
                 .cycleId(plan.getCycleId())
@@ -875,16 +860,11 @@ public class PlanApplicationService {
                 """
                 SELECT t.plan_id AS plan_id,
                        COUNT(DISTINCT i.id) AS indicator_count,
-                       COUNT(DISTINCT m.id) AS milestone_count,
-                       COUNT(DISTINCT CASE
-                           WHEN UPPER(COALESCE(m.status, '')) = 'COMPLETED' THEN m.id
-                       END) AS completed_milestone_count
+                       ROUND(AVG(COALESCE(i.progress, 0))) AS completion_percentage
                 FROM public.sys_task t
                 LEFT JOIN public.indicator i
                   ON i.task_id = t.task_id
                  AND COALESCE(i.is_deleted, false) = false
-                LEFT JOIN public.indicator_milestone m
-                  ON m.indicator_id = i.id
                 WHERE t.plan_id IN (:planIds)
                   AND COALESCE(t.is_deleted, false) = false
                 GROUP BY t.plan_id
@@ -893,7 +873,6 @@ public class PlanApplicationService {
         );
 
         Map<Long, Integer> indicatorCounts = new HashMap<>();
-        Map<Long, Integer> milestoneCounts = new HashMap<>();
         Map<Long, Integer> completionPercentages = new HashMap<>();
         for (Map<String, Object> row : rows) {
             Long planId = asLong(row.get("plan_id"));
@@ -901,23 +880,11 @@ public class PlanApplicationService {
                 continue;
             }
             int indicatorCount = asInt(row.get("indicator_count"));
-            int milestoneCount = asInt(row.get("milestone_count"));
-            int completedMilestoneCount = asInt(row.get("completed_milestone_count"));
             indicatorCounts.put(planId, indicatorCount);
-            milestoneCounts.put(planId, milestoneCount);
-            completionPercentages.put(planId, calculateCompletionPercentage(milestoneCount, completedMilestoneCount));
+            completionPercentages.put(planId, asInt(row.get("completion_percentage")));
         }
 
-        return new PlanMetrics(indicatorCounts, milestoneCounts, completionPercentages);
-    }
-
-    private int calculateCompletionPercentage(int milestoneCount, int completedMilestoneCount) {
-        if (milestoneCount <= 0) {
-            return 0;
-        }
-
-        double percentage = (completedMilestoneCount * 100.0) / milestoneCount;
-        return (int) Math.round(Math.max(0.0, Math.min(100.0, percentage)));
+        return new PlanMetrics(indicatorCounts, completionPercentages);
     }
 
     private static Long asLong(Object value) {
@@ -945,21 +912,6 @@ public class PlanApplicationService {
 
     private static int asInt(Object value) {
         return value instanceof Number number ? number.intValue() : 0;
-    }
-
-    private InternalMilestoneResponse toInternalMilestoneResponse(MilestoneResponse response) {
-        if (response == null) {
-            return null;
-        }
-        return InternalMilestoneResponse.builder()
-                .id(response.getId())
-                .milestoneName(response.getMilestoneName())
-                .description(response.getDescription())
-                .targetDate(response.getDueDate())
-                .status(response.getStatus())
-                .completionPercentage(response.getTargetProgress())
-                .createTime(response.getCreatedAt())
-                .build();
     }
 
     private void assertNoActivePlanConflict(Long cycleId,
@@ -1368,7 +1320,6 @@ public class PlanApplicationService {
     @lombok.Data
     public static class PlanDetailsResponse extends PlanResponse {
         private List<InternalIndicatorResponse> indicators;
-        private List<InternalMilestoneResponse> milestones;
         private List<PlanWorkflowSnapshotQueryService.WorkflowHistoryItem> workflowHistory;
     }
 
@@ -1430,24 +1381,5 @@ public class PlanApplicationService {
         private static PendingIndicatorState empty() {
             return new PendingIndicatorState(null, null, List.of());
         }
-    }
-
-    /**
-     * 里程碑响应DTO
-     */
-    @lombok.Data
-    @lombok.Builder
-    @lombok.NoArgsConstructor
-    @lombok.AllArgsConstructor
-    public static class InternalMilestoneResponse {
-        private Long id;
-        private String milestoneName;
-        private String description;
-        private java.time.LocalDateTime targetDate;
-        private String status;
-        private Integer priority;
-        private Integer completionPercentage;
-        private Long planId;
-        private java.time.LocalDateTime createTime;
     }
 }

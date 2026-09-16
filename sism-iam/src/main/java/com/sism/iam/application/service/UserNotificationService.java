@@ -75,7 +75,6 @@ public class UserNotificationService implements NotificationProvider {
             Long notificationId,
             Long recipientUserId,
             Long indicatorId,
-            Long milestoneId,
             LocalDateTime createdAt
     ) {}
 
@@ -333,68 +332,6 @@ public class UserNotificationService implements NotificationProvider {
 
     @Transactional
     @Override
-    public OverdueNotification createOverdueNotification(
-            Long recipientUserId,
-            Long senderUserId,
-            Long senderOrgId,
-            Long indicatorId,
-            String indicatorName,
-            Long milestoneId,
-            String milestoneName,
-            LocalDateTime dueDate,
-            Integer actualProgress,
-            Integer expectedProgress
-    ) {
-        if (recipientUserId == null) {
-            throw new IllegalArgumentException("Recipient user ID is required");
-        }
-
-        String resolvedIndicatorName =
-                indicatorName == null || indicatorName.isBlank() ? "指标" : indicatorName.trim();
-        String resolvedMilestoneName =
-                milestoneName == null || milestoneName.isBlank() ? "里程碑" : milestoneName.trim();
-        String dueDateText = dueDate == null ? "未知时间" : dueDate.toString();
-        int actual = actualProgress == null ? 0 : actualProgress;
-        int expected = expectedProgress == null ? 0 : expectedProgress;
-
-        UserNotification notification = new UserNotification();
-        notification.setRecipientUserId(recipientUserId);
-        notification.setSenderUserId(senderUserId);
-        notification.setSenderOrgId(senderOrgId);
-        notification.setNotificationType(TYPE_OVERDUE);
-        notification.setTitle("指标进度逾期提醒");
-        notification.setContent("指标「" + resolvedIndicatorName + "」的里程碑「" + resolvedMilestoneName
-                + "」已于 " + dueDateText + " 截止，当前进度 " + actual + "%，期望进度 " + expected
-                + "%，请尽快处理。");
-        notification.setStatus(STATUS_UNREAD);
-        notification.setActionUrl("/indicators/" + indicatorId);
-        notification.setRelatedEntityType(ENTITY_TYPE_INDICATOR);
-        notification.setRelatedEntityId(indicatorId);
-        notification.setMetadataJson(buildOverdueMetadataJson(
-                indicatorId,
-                resolvedIndicatorName,
-                milestoneId,
-                resolvedMilestoneName,
-                dueDate,
-                actual,
-                expected
-        ));
-        notification.validate();
-
-        UserNotification saved = userNotificationRepository.save(notification);
-        publishNotificationEmailIfPossible(saved);
-        return new OverdueNotification(
-                saved.getId(),
-                saved.getRecipientUserId(),
-                indicatorId,
-                milestoneId,
-                saved.getNotificationType(),
-                saved.getCreatedAt()
-        );
-    }
-
-    @Transactional
-    @Override
     public AlertNotification createAlertNotification(
             Long recipientUserId,
             Long senderUserId,
@@ -639,30 +576,6 @@ public class UserNotificationService implements NotificationProvider {
         }
     }
 
-    private static String buildOverdueMetadataJson(
-            Long indicatorId,
-            String indicatorName,
-            Long milestoneId,
-            String milestoneName,
-            LocalDateTime dueDate,
-            Integer actualProgress,
-            Integer expectedProgress
-    ) {
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("indicatorId", indicatorId);
-        metadata.put("indicatorName", indicatorName);
-        metadata.put("milestoneId", milestoneId);
-        metadata.put("milestoneName", milestoneName);
-        metadata.put("dueDate", dueDate == null ? null : dueDate.toString());
-        metadata.put("actualProgress", actualProgress);
-        metadata.put("expectedProgress", expectedProgress);
-        metadata.put("result", "OVERDUE");
-        try {
-            return OBJECT_MAPPER.writeValueAsString(metadata);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize overdue notification metadata", e);
-        }
-    }
 
     private static String buildAlertMetadataJson(
             Long alertId,

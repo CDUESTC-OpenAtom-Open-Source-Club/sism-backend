@@ -8,7 +8,7 @@ import java.util.Map;
  */
 public interface PlanReportIndicatorRepository {
 
-    Long upsertDraftIndicator(Long reportId, Long indicatorId, Integer progress, String comment, String milestoneNote);
+    Long upsertDraftIndicator(Long reportId, Long indicatorId, Integer progress, String comment);
 
     void attachFiles(Long planReportIndicatorId, java.util.List<Long> attachmentIds, Long createdBy);
 

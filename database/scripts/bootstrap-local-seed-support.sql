@@ -115,7 +115,6 @@ CREATE TABLE IF NOT EXISTS public.plan_report_indicator (
     report_id BIGINT NOT NULL,
     indicator_id BIGINT NOT NULL,
     progress INTEGER,
-    milestone_note TEXT,
     comment TEXT,
     created_at TIMESTAMP
 );

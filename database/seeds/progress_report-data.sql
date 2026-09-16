@@ -7,7 +7,6 @@ BEGIN;
 
 INSERT INTO public.progress_report (
     report_id,
-    achieved_milestone,
     is_final,
     narrative,
     percent_complete,
@@ -17,7 +16,6 @@ INSERT INTO public.progress_report (
     version_no,
     adhoc_task_id,
     indicator_id,
-    milestone_id,
     reporter_id,
     created_at,
     updated_at

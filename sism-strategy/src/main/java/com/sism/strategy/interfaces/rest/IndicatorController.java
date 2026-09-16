@@ -9,13 +9,11 @@ import com.sism.organization.domain.SysOrg;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.strategy.application.BatchIndicatorDistributionApplicationService;
 import com.sism.strategy.application.DistributedPlanMutationBlockedException;
-import com.sism.strategy.application.MilestoneApplicationService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
 import com.sism.task.infrastructure.persistence.JpaTaskRepositoryInternal;
 import com.sism.strategy.interfaces.dto.BatchDistributeIndicatorsRequest;
 import com.sism.strategy.interfaces.dto.BatchDistributeIndicatorsResponse;
-import com.sism.strategy.interfaces.dto.MilestoneResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -75,7 +73,6 @@ public class IndicatorController {
 
     private final StrategyApplicationService strategyApplicationService;
     private final BatchIndicatorDistributionApplicationService batchIndicatorDistributionApplicationService;
-    private final MilestoneApplicationService milestoneApplicationService;
     private final OrganizationRepository organizationRepository;
     private final JpaTaskRepositoryInternal jpaTaskRepository;
     private final JdbcTemplate jdbcTemplate;
@@ -103,7 +100,6 @@ public class IndicatorController {
         }
 
         Map<Long, TaskMetaSnapshot> taskMetaMap = buildTaskMetaMap(indicatorPage.getContent());
-        Map<Long, List<MilestoneResponse>> milestoneMap = buildMilestoneMap(indicatorPage.getContent());
         Map<Long, CurrentMonthIndicatorRoundState> currentMonthRoundStateMap =
                 buildCurrentMonthIndicatorRoundStateMap(indicatorPage.getContent());
         PageResult<IndicatorResponse> result = PageResult.of(
@@ -111,7 +107,6 @@ public class IndicatorController {
                         .map(indicator -> toIndicatorResponse(
                                 indicator,
                                 taskMetaMap,
-                                milestoneMap,
                                 currentMonthRoundStateMap
                         ))
                         .toList(),
@@ -642,21 +637,18 @@ public class IndicatorController {
         }
 
         Map<Long, TaskMetaSnapshot> taskMetaMap = buildTaskMetaMap(indicators);
-        Map<Long, List<MilestoneResponse>> milestoneMap = buildMilestoneMap(indicators);
         Map<Long, CurrentMonthIndicatorRoundState> currentMonthRoundStateMap =
                 buildCurrentMonthIndicatorRoundStateMap(indicators);
         return indicators.stream()
                 .map(indicator -> toIndicatorResponse(
                         indicator,
                         taskMetaMap,
-                        milestoneMap,
                         currentMonthRoundStateMap))
                 .toList();
     }
 
     private IndicatorResponse toIndicatorResponse(Indicator indicator,
                                                  Map<Long, TaskMetaSnapshot> taskMetaMap,
-                                                 Map<Long, List<MilestoneResponse>> milestoneMap,
                                                  Map<Long, CurrentMonthIndicatorRoundState> currentMonthRoundStateMap) {
         IndicatorResponse response = new IndicatorResponse();
         response.setId(indicator.getId());
@@ -703,7 +695,6 @@ public class IndicatorController {
             response.setTargetOrgId(indicator.getTargetOrg().getId());
             response.setTargetOrgName(indicator.getTargetOrg().getName());
         }
-        response.setMilestones(milestoneMap.getOrDefault(indicator.getId(), List.of()));
         return response;
     }
 
@@ -760,24 +751,6 @@ public class IndicatorController {
         return taskMetaMap;
     }
 
-    private Map<Long, List<MilestoneResponse>> buildMilestoneMap(List<Indicator> indicators) {
-        if (indicators == null || indicators.isEmpty()) {
-            return Map.of();
-        }
-
-        List<Long> indicatorIds = indicators.stream()
-                .map(Indicator::getId)
-                .filter(Objects::nonNull)
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new))
-                .stream()
-                .toList();
-
-        if (indicatorIds.isEmpty()) {
-            return Map.of();
-        }
-
-        return milestoneApplicationService.getMilestonesByIndicatorIds(indicatorIds);
-    }
 
     private Map<Long, String> buildTaskTypeMap(List<Indicator> indicators) {
         if (indicators == null || indicators.isEmpty()) {
@@ -1031,7 +1004,6 @@ public class IndicatorController {
         private String indicatorType;
         private java.time.LocalDateTime createdAt;
         private java.time.LocalDateTime updatedAt;
-        private List<MilestoneResponse> milestones;
     }
 
     @Data

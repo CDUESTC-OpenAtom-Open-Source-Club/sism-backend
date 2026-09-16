@@ -94,7 +94,6 @@ class ReportApplicationServiceIntegrationTest {
                     report_id BIGINT NOT NULL,
                     indicator_id BIGINT NOT NULL,
                     progress INTEGER,
-                    milestone_note TEXT,
                     comment TEXT,
                     created_at TIMESTAMP,
                     CONSTRAINT uq_report_indicator UNIQUE (report_id, indicator_id)
@@ -234,14 +233,13 @@ class ReportApplicationServiceIntegrationTest {
         jdbcTemplate.update(
                 """
                 INSERT INTO public.plan_report_indicator
-                    (id, report_id, indicator_id, progress, milestone_note, comment, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (id, report_id, indicator_id, progress, comment, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 planReportIndicatorId,
                 report.getId(),
                 indicator.getId(),
                 33,
-                "里程碑-附件-" + sequence,
                 "提交带附件的填报"
         );
 
@@ -317,14 +315,13 @@ class ReportApplicationServiceIntegrationTest {
         jdbcTemplate.update(
                 """
                 INSERT INTO public.plan_report_indicator
-                    (id, report_id, indicator_id, progress, milestone_note, comment, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (id, report_id, indicator_id, progress, comment, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 70_000L + sequence,
                 report.getId(),
                 indicator.getId(),
                 progress,
-                "里程碑-" + sequence,
                 "填报说明-" + sequence
         );
 

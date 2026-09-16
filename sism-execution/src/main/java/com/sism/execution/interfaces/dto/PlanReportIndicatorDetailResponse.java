@@ -21,7 +21,6 @@ public class PlanReportIndicatorDetailResponse {
     private Long indicatorId;
     private Integer progress;
     private String comment;
-    private String milestoneNote;
     private List<ReportAttachmentResponse> attachments;
 
     public static PlanReportIndicatorDetailResponse fromSnapshot(PlanReportIndicatorSnapshot snapshot) {
@@ -46,7 +45,6 @@ public class PlanReportIndicatorDetailResponse {
                 .indicatorId(snapshot.indicatorId())
                 .progress(snapshot.progress())
                 .comment(snapshot.comment())
-                .milestoneNote(snapshot.milestoneNote())
                 .attachments(attachmentResponses)
                 .build();
     }

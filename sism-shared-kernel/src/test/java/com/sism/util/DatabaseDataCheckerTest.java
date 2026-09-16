@@ -27,7 +27,6 @@ class DatabaseDataCheckerTest {
         when(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM public.assessment_cycle", Long.class)).thenReturn(6L);
         when(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM public.sys_task", Long.class)).thenReturn(7L);
         when(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM public.indicator", Long.class)).thenReturn(8L);
-        when(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM public.indicator_milestone", Long.class)).thenReturn(9L);
         when(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM public.progress_report", Long.class)).thenReturn(10L);
         when(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM public.adhoc_task", Long.class)).thenReturn(11L);
         when(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM public.adhoc_task_indicator_map", Long.class)).thenReturn(12L);
@@ -43,7 +42,7 @@ class DatabaseDataCheckerTest {
 
         Map<String, Long> counts = checker.getAllTableCounts();
 
-        assertEquals(19, counts.size());
+        assertEquals(18, counts.size());
         assertEquals(3L, counts.get("sys_org"));
         assertEquals(21L, counts.get("refresh_token"));
         verify(jdbcTemplate).queryForObject("SELECT COUNT(*) FROM public.sys_org", Long.class);
