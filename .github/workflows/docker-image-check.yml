@@ -1,0 +1,70 @@
+name: Docker Image Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "docker/**"
+      - ".github/workflows/docker-image-check.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: docker-image-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci_pg_pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t sism-backend:ci .
+
+      - name: Report image size
+        run: |
+          docker images sism-backend:ci --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}"
+          echo "---- layer breakdown ----"
+          docker history sism-backend:ci --format "{{.Size}}\t{{.CreatedBy}}" | head -15
+
+      - name: Boot smoke (flyway + actuator health)
+        env:
+          DB_HOST: 127.0.0.1
+          DB_URL: jdbc:postgresql://127.0.0.1:5432/postgres
+          DB_USERNAME: postgres
+          DB_PASSWORD: ci_pg_pw
+          JWT_SECRET: ci-only-secret-0123456789abcdef
+          ALLOWED_ORIGINS: http://localhost:5173
+        run: |
+          docker run -d --name boot-test --network host \
+            -e DB_HOST -e DB_URL -e DB_USERNAME -e DB_PASSWORD -e JWT_SECRET -e ALLOWED_ORIGINS \
+            sism-backend:ci
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/api/v1/actuator/health | grep -q '"status":"UP"'; then
+              ok=1; break
+            fi
+            sleep 5
+          done
+          if [ "$ok" = "1" ]; then
+            echo "✅ BOOT OK (alpine runtime)"
+            docker logs boot-test 2>&1 | grep -E "Started SismApplication|Tomcat started" | tail -2
+          else
+            echo "❌ BOOT FAILED"
+            docker logs boot-test 2>&1 | tail -60
+            exit 1
+          fi
