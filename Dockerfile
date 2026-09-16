@@ -23,11 +23,11 @@ RUN mvn -B -pl sism-main -am package -Dmaven.test.skip=true -Dmaven.javadoc.skip
 RUN JAR=$(ls /workspace/sism-main/target/sism-main-*.jar | grep -v '\.original' | head -1) \
     && java -Djarmode=layertools -jar "$JAR" extract --destination /workspace/layers
 
-FROM eclipse-temurin:17-jre-jammy AS runtime
+FROM eclipse-temurin:17-jre-alpine AS runtime
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+# bash: backend-entrypoint.sh 是 bash 语法
+# postgresql-client: entrypoint 用 pg_isready 等待数据库就绪
+RUN apk add --no-cache bash postgresql-client
 
 WORKDIR /app
 
@@ -42,6 +42,6 @@ RUN chmod +x /app/backend-entrypoint.sh
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=10 \
-  CMD curl -fsS http://localhost:8080/api/v1/actuator/health || exit 1
+  CMD wget -q -O /dev/null http://localhost:8080/api/v1/actuator/health || exit 1
 
 ENTRYPOINT ["/app/backend-entrypoint.sh"]
