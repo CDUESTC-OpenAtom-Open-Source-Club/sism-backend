@@ -31,6 +31,9 @@ JAVA_OPTS="${JAVA_OPTS} -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:G1HeapRegionSi
 JAVA_OPTS="${JAVA_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${JAVA_GC_LOG_DIR}/heapdump.hprof"
 JAVA_OPTS="${JAVA_OPTS} -Xlog:gc*:file=${JAVA_GC_LOG_DIR}/gc.log:time,uptime,level,tags:filecount=5,filesize=10m"
 JAVA_OPTS="${JAVA_OPTS} -Djava.security.egd=file:/dev/./urandom"
+# 显式锁定 JVM 时区为北京时间：jackson 的 spring.jackson.time-zone 只对 java.util.Date
+# 生效，LocalDateTime（全仓主力类型）不受其影响，必须由 JVM 时区兜底。
+JAVA_OPTS="${JAVA_OPTS} -Duser.timezone=${APP_TIMEZONE:-Asia/Shanghai}"
 
 echo "Waiting for PostgreSQL at ${DB_HOST}:${DB_PORT}..."
 until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USERNAME}" >/dev/null 2>&1; do
