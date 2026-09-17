@@ -59,7 +59,7 @@ jobs:
             -e SPRING_FLYWAY_ENABLED \
             sism-backend:ci
           ok=0
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS http://localhost:8080/api/v1/actuator/health | grep -q '"status":"UP"'; then
               ok=1; break
             fi
