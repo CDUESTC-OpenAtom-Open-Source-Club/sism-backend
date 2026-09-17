@@ -346,6 +346,11 @@ jobs:
           gzip -t "${ARTIFACT_DIR}/backend-image.tar.gz"
           gzip -dc "${ARTIFACT_DIR}/backend-image.tar.gz" | sudo docker load
           sudo docker image inspect "${BACKEND_IMAGE}" >/dev/null
+        # 说明：本步骤在服务器本机的 self-hosted runner 上执行，走的是服务器跨境线路
+        # （实测约 42~50 KB/s，294MB 镜像需 1.7 小时），超时/失败属预期。
+        # 失败时不要在此反复重试——请改用 Mac 跳板部署（约 1 分钟）：
+        #   ~/.zcode/skills/springboard-deploy/springboard-deploy.sh backend
+        # 详见 docs/SISM-Mac中转站部署方案-2026-09-17.md
 
       - name: Upload compose stack
         env:
