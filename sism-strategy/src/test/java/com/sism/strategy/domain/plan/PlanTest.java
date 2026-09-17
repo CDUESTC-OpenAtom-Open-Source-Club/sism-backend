@@ -44,6 +44,29 @@ class PlanTest {
     }
 
     @Test
+    @DisplayName("Should promote DRAFT plan on indicator distributed and stay idempotent")
+    void shouldPromoteDraftPlanOnIndicatorDistributed() {
+        Plan plan = Plan.create(1L, 1L, 1L, PlanLevel.STRAT_TO_FUNC);
+
+        assertTrue(plan.promoteFromDraftOnIndicatorDistributed());
+        assertEquals("DISTRIBUTED", plan.getStatus());
+
+        // 幂等：已 DISTRIBUTED 时再次调用返回 false 且不抛异常
+        assertFalse(plan.promoteFromDraftOnIndicatorDistributed());
+        assertEquals("DISTRIBUTED", plan.getStatus());
+    }
+
+    @Test
+    @DisplayName("Should not promote PENDING plan on indicator distributed")
+    void shouldNotPromotePendingPlanOnIndicatorDistributed() {
+        Plan plan = Plan.create(1L, 1L, 1L, PlanLevel.STRAT_TO_FUNC);
+        plan.submitForApproval();
+
+        assertFalse(plan.promoteFromDraftOnIndicatorDistributed());
+        assertEquals("PENDING", plan.getStatus());
+    }
+
+    @Test
     @DisplayName("Should allow plan approval submission only in draft or returned state")
     void shouldAllowPlanApprovalSubmissionOnlyInDraftOrReturnedState() {
         Plan plan = Plan.create(1L, 1L, 1L, PlanLevel.COMPREHENSIVE);
