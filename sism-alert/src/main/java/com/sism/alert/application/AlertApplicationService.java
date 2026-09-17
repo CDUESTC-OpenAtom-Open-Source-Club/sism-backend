@@ -317,6 +317,8 @@ public class AlertApplicationService {
             case CRITICAL -> BigDecimal.valueOf(30);
             case WARNING -> BigDecimal.valueOf(20);
             case INFO -> BigDecimal.valueOf(10);
+            // 进度等级档位（AHEAD/NORMAL，P1）：人工鉴定产生，不参与差距自动判定
+            case AHEAD, NORMAL -> BigDecimal.valueOf(0);
         };
         return jdbcTemplate.queryForObject(
                 """
