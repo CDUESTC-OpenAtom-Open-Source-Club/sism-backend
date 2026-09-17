@@ -79,13 +79,6 @@
             <version>0.12.3</version>
         </dependency>
 
-        <!-- N+1 Query Detection -->
-        <dependency>
-            <groupId>net.ttddyy</groupId>
-            <artifactId>datasource-proxy</artifactId>
-            <version>1.9</version>
-        </dependency>
-
         <!-- dotenv-java for environment variable loading -->
         <dependency>
             <groupId>io.github.cdimascio</groupId>
@@ -100,18 +93,6 @@
             <version>5.2.5</version>
         </dependency>
 
-        <!-- iText for PDF Export -->
-        <dependency>
-            <groupId>com.itextpdf</groupId>
-            <artifactId>itextpdf</artifactId>
-            <version>5.5.13.3</version>
-        </dependency>
-        <dependency>
-            <groupId>com.itextpdf</groupId>
-            <artifactId>itext-asian</artifactId>
-            <version>5.2.0</version>
-        </dependency>
-
         <!-- OpenAPI/Swagger -->
         <dependency>
             <groupId>org.springdoc</groupId>
@@ -119,14 +100,14 @@
             <version>${springdoc.version}</version>
         </dependency>
 
-        <!-- Jqwik for property-based testing -->
+        <!-- Jqwik for property-based testing（版本管理保留：sism-iam 仍声明该依赖） -->
         <dependency>
-                       <groupId>net.jqwik</groupId>
-             <artifactId>jqwik</artifactId>
-             <version>${jqwik.version}</version>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <version>${jqwik.version}</version>
         </dependency>
 
-        <!-- MapStruct for DTO mapping -->
+        <!-- MapStruct for DTO mapping（版本管理保留：6 个模块的编译期注解处理器仍在用） -->
         <dependency>
             <groupId>org.mapstruct</groupId>
             <artifactId>mapstruct</artifactId>

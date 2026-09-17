@@ -53,12 +53,6 @@
             <artifactId>caffeine</artifactId>
         </dependency>
 
-        <!-- N+1 Query Detection -->
-        <dependency>
-            <groupId>net.ttddyy</groupId>
-            <artifactId>datasource-proxy</artifactId>
-        </dependency>
-
         <!-- dotenv-java for environment variable loading -->
         <dependency>
             <groupId>io.github.cdimascio</groupId>

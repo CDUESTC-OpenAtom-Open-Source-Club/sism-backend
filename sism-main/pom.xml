@@ -113,10 +113,11 @@
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
         </dependency>
+        <!-- H2 仅测试使用：原先误标为 runtime，导致 2.6MB 的 H2 被打进生产镜像（生产用 PostgreSQL） -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>runtime</scope>
+            <scope>test</scope>
         </dependency>
 
         <!-- JWT -->
