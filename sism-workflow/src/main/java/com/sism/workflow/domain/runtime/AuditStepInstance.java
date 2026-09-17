@@ -47,6 +47,13 @@ public class AuditStepInstance {
     @Column(name = "comment")
     private String comment;
 
+    /**
+     * 本节点的鉴定进度等级（超前 AHEAD / 正常 NORMAL / 延期 DELAYED）。
+     * 仅审批节点（APPROVAL）在通过时填写；填报人提交节点为空。
+     */
+    @Column(name = "appraisal_level")
+    private String appraisalLevel;
+
     @Column(name = "approved_at")
     private LocalDateTime approvedAt;
 

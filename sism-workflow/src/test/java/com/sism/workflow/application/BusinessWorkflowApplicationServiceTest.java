@@ -283,7 +283,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(auditInstanceRepository.findByStepInstanceId(256L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(3L)).thenReturn(flowDef);
         when(approverResolver.canUserApprove(stepDef, 9L, 35L, instance)).thenReturn(true);
-        when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意")).thenReturn(instance);
+        when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("128").status("IN_REVIEW").build()
         );
@@ -291,7 +291,7 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceResponse response = businessWorkflowApplicationService.approveTask("256", request, 9L);
 
         assertEquals("128", response.getInstanceId());
-        verify(workflowApplicationService).approveAuditInstance(instance, 9L, "同意");
+        verify(workflowApplicationService).approveAuditInstance(instance, 9L, "同意", null);
     }
 
     @Test
@@ -330,7 +330,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(auditInstanceRepository.findById(133L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
         when(approverResolver.canUserApprove(stepDef, 9L, 35L, instance)).thenReturn(true);
-        when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意")).thenReturn(instance);
+        when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("133").status("IN_REVIEW").build()
         );
@@ -338,7 +338,7 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceResponse response = businessWorkflowApplicationService.approveTask("392", request, 9L);
 
         assertEquals("133", response.getInstanceId());
-        verify(workflowApplicationService).approveAuditInstance(instance, 9L, "同意");
+        verify(workflowApplicationService).approveAuditInstance(instance, 9L, "同意", null);
     }
 
     @Test
@@ -373,7 +373,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(auditInstanceRepository.findByStepInstanceId(5L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(3L)).thenReturn(flowDef);
         when(approverResolver.canUserApprove(stepDef, 192L, 36L, instance)).thenReturn(true);
-        when(workflowApplicationService.approveAuditInstance(instance, 192L, "同意")).thenReturn(instance);
+        when(workflowApplicationService.approveAuditInstance(instance, 192L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("4036").status("IN_REVIEW").build()
         );
@@ -381,7 +381,7 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceResponse response = businessWorkflowApplicationService.approveTask("5", request, 192L);
 
         assertEquals("4036", response.getInstanceId());
-        verify(workflowApplicationService).approveAuditInstance(instance, 192L, "同意");
+        verify(workflowApplicationService).approveAuditInstance(instance, 192L, "同意", null);
     }
 
     @Test
@@ -417,7 +417,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(auditInstanceRepository.findByStepInstanceId(3L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
         when(approverResolver.canUserApprove(stepDef, 401L, 35L, instance)).thenReturn(true);
-        when(workflowApplicationService.approveAuditInstance(instance, 401L, "同意")).thenReturn(instance);
+        when(workflowApplicationService.approveAuditInstance(instance, 401L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("7036").status("IN_REVIEW").build()
         );
@@ -460,7 +460,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(auditInstanceRepository.findByStepInstanceId(400L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(flowDef);
         when(approverResolver.canUserApprove(stepDef, 9L, 22L, instance)).thenReturn(true);
-        when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意")).thenReturn(instance);
+        when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("140").status("IN_REVIEW").build()
         );
@@ -468,7 +468,7 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceResponse response = businessWorkflowApplicationService.approveTask("400", request, 9L);
 
         assertEquals("140", response.getInstanceId());
-        verify(workflowApplicationService).approveAuditInstance(instance, 9L, "同意");
+        verify(workflowApplicationService).approveAuditInstance(instance, 9L, "同意", null);
     }
 
     @Test
@@ -531,7 +531,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(auditInstanceRepository.findByStepInstanceId(501L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(flowDef);
         when(approverResolver.canUserApprove(stepDef, 11L, 56L, instance)).thenReturn(true);
-        when(workflowApplicationService.approveAuditInstance(instance, 11L, "通过")).thenReturn(instance);
+        when(workflowApplicationService.approveAuditInstance(instance, 11L, "通过", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("88").status("IN_REVIEW").build()
         );
@@ -539,7 +539,7 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceResponse response = businessWorkflowApplicationService.decideTask("501", request, 11L);
 
         assertEquals("88", response.getInstanceId());
-        verify(workflowApplicationService).approveAuditInstance(instance, 11L, "通过");
+        verify(workflowApplicationService).approveAuditInstance(instance, 11L, "通过", null);
     }
 
     @Test

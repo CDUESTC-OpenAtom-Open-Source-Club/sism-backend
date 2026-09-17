@@ -12,6 +12,7 @@ import com.sism.execution.domain.report.WorkflowApprovalMetadata;
 import com.sism.execution.domain.report.WorkflowApprovalMetadataQuery;
 import com.sism.execution.domain.report.WorkflowAuditSyncGateway;
 import com.sism.execution.interfaces.dto.PlanReportQueryRequest;
+import com.sism.enums.ProgressLevel;
 import com.sism.execution.interfaces.dto.UpdatePlanReportIndicatorDetailRequest;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.shared.domain.exception.TechnicalException;
@@ -74,6 +75,7 @@ public class ReportApplicationService {
     public PlanReport createReport(String reportMonth, Long reportOrgId,
                                    ReportOrgType reportOrgType, Long planId, Long createdBy) {
         String normalizedMonth = normalizeReportMonth(reportMonth);
+        assertEarliestUnfilledMonth(reportMonth, normalizedMonth, reportOrgId, reportOrgType, planId);
         Optional<PlanReport> existingReport = planReportRepository.findLatestByMonthlyScope(
                 planId, normalizedMonth, reportOrgType, reportOrgId);
         PlanReport previousRound = null;
@@ -156,7 +158,7 @@ public class ReportApplicationService {
             report.setTitle(title);
         }
         PlanReport savedReport = planReportRepository.save(report);
-        upsertIndicatorDetail(savedReport.getId(), indicatorId, progress, content, List.of(), operatorUserId);
+        upsertIndicatorDetail(savedReport.getId(), indicatorId, progress, content, null, List.of(), operatorUserId);
         return enrichReportMetadata(savedReport);
     }
 
@@ -192,6 +194,7 @@ public class ReportApplicationService {
                     detail.getIndicatorId(),
                     detail.getProgress(),
                     detail.getContent(),
+                    detail.getSelfRating(),
                     detail.getAttachmentIds(),
                     operatorUserId
             );
@@ -731,10 +734,41 @@ public class ReportApplicationService {
         }
     }
 
+    /**
+     * P1 月份规则（会议定案）：只能填报「未填报的最近一个月」，不允许跳月。
+     * 即：同计划 + 同填报组织下，存在 reportMonth 严格小于本次填报月份的历史报告时，
+     * 本次填报月份必须是该最小月份（把最早的欠账补上）。
+     * 月份格式统一 yyyy-MM，字符串比较即时间序比较。
+     */
+    private void assertEarliestUnfilledMonth(String rawMonth,
+                                             String normalizedMonth,
+                                             Long reportOrgId,
+                                             ReportOrgType reportOrgType,
+                                             Long planId) {
+        if (normalizedMonth == null || planId == null || reportOrgId == null) {
+            return;
+        }
+        List<PlanReport> existing = planReportRepository.findByReportOrgId(reportOrgId).stream()
+                .filter(report -> !Boolean.TRUE.equals(report.isDeleted()))
+                .filter(report -> report.getPlanId() != null && report.getPlanId().equals(planId))
+                .filter(report -> report.getReportOrgType() == reportOrgType)
+                .filter(report -> report.getReportMonth() != null)
+                .toList();
+        String earliest = existing.stream()
+                .map(PlanReport::getReportMonth)
+                .min(String::compareTo)
+                .orElse(null);
+        if (earliest != null && earliest.compareTo(normalizedMonth) < 0) {
+            throw new ConflictException(
+                    "存在更早的未填报月份 " + earliest + "，请先补报 " + earliest + " 后再填报 " + normalizedMonth);
+        }
+    }
+
     private void upsertIndicatorDetail(Long reportId,
                                        Long indicatorId,
                                        Integer progress,
                                        String comment,
+                                       String selfRating,
                                        List<Long> attachmentIds,
                                        Long operatorUserId) {
         if (reportId == null || indicatorId == null) {
@@ -742,10 +776,15 @@ public class ReportApplicationService {
         }
 
         validatePendingProgress(indicatorId, progress);
+        ProgressLevel rating = ProgressLevel.normalize(selfRating);
+        String normalizedRating = rating == null ? null : rating.name();
+        // 完成情况描述同时落 comment 与 description（口径：两列语义合并，读侧优先 description）
         Long planReportIndicatorId = planReportIndicatorRepository.upsertDraftIndicator(
                 reportId,
                 indicatorId,
                 progress,
+                comment,
+                normalizedRating,
                 comment
         );
         // The draft indicator and its attachments must be kept in sync as a unit.

@@ -95,6 +95,10 @@ public class WorkflowApplicationService {
         return approveWorkflowUseCase.approve(instance, userId, comment);
     }
 
+    public AuditInstance approveAuditInstance(AuditInstance instance, Long userId, String comment, String appraisalLevel) {
+        return approveWorkflowUseCase.approve(instance, userId, comment, appraisalLevel);
+    }
+
     public AuditInstance rejectAuditInstance(AuditInstance instance, Long userId, String comment) {
         return rejectWorkflowUseCase.reject(instance, userId, comment);
     }

@@ -58,16 +58,18 @@ class CanonicalWorkflowTemplateMetadataTest {
 
     @Test
     void planApprovalCollegeTemplateShouldKeepExplicitMetadata() {
+        // 2026-09-17 定案：学院链 5 节点（学院多一级），终审为战略发展部
         AuditFlowDef flowDef = flow(
                 "PLAN_APPROVAL_COLLEGE",
                 step(1, "填报人提交", AuditStepDef.STEP_TYPE_SUBMIT, null, false),
                 step(2, "二级学院审批人审批", AuditStepDef.STEP_TYPE_APPROVAL, 2L, false),
                 step(3, "学院院长审批人审批", AuditStepDef.STEP_TYPE_APPROVAL, 4L, false),
-                step(4, "职能部门终审人审批", AuditStepDef.STEP_TYPE_APPROVAL, 2L, true)
+                step(4, "职能部门审批人审批", AuditStepDef.STEP_TYPE_APPROVAL, 2L, false),
+                step(5, "战略发展部终审人审批", AuditStepDef.STEP_TYPE_APPROVAL, 3L, true)
         );
 
         assertDoesNotThrow(flowDef::validate);
-        assertExplicitMetadata(flowDef, 4);
+        assertExplicitMetadata(flowDef, 5);
         assertTerminalApprovalCount(flowDef, 1);
     }
 

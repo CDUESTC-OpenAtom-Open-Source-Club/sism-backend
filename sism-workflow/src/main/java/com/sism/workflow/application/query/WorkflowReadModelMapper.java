@@ -56,6 +56,7 @@ public class WorkflowReadModelMapper {
                 .approverOrgId(step.getApproverOrgId())
                 .stepNo(step.getStepNo())
                 .comment(step.getComment())
+                .appraisalLevel(step.getAppraisalLevel())
                 .approvedAt(step.getApprovedAt())
                 .createdTime(step.getCreatedAt())
                 .build();
@@ -88,6 +89,7 @@ public class WorkflowReadModelMapper {
                 .operatorName(null)
                 .action(action)
                 .comment(step.getComment())
+                .appraisalLevel(step.getAppraisalLevel())
                 .operateTime(step.getApprovedAt() != null ? step.getApprovedAt() : step.getCreatedAt())
                 .build();
     }

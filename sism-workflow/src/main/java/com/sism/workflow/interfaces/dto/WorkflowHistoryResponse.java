@@ -23,5 +23,6 @@ public class WorkflowHistoryResponse {
     private String operatorName;
     private String action; // APPROVE, REJECT, REASSIGN
     private String comment;
+    private String appraisalLevel;
     private LocalDateTime operateTime;
 }

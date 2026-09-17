@@ -26,6 +26,9 @@ class ApproverResolverTest {
     @Mock
     private WorkflowBusinessContextPort workflowBusinessContextPort;
 
+    @Mock
+    private com.sism.workflow.domain.definition.FlowDefinitionRepository flowDefinitionRepository;
+
     @Test
     void resolveApproverId_shouldRejectWhenRoleMissing() {
         AuditStepDef stepDef = new AuditStepDef();
@@ -34,7 +37,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertThrows(IllegalStateException.class, () -> resolver.resolveApproverId(stepDef, 1L, 2L));
@@ -53,7 +57,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(202L, resolver.resolveApproverId(stepDef, 1L, 30L));
@@ -73,7 +78,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(369L, resolver.resolveApproverId(stepDef, 188L, 56L));
@@ -88,7 +94,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         when(userProvider.findActiveIdentitiesByRole(4L)).thenReturn(List.of());
@@ -110,7 +117,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(300L, resolver.resolveApproverId(stepDef, 223L, 44L));
@@ -130,7 +138,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(124L, resolver.resolveApproverId(stepDef, 188L, 35L));
@@ -144,7 +153,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals("审批人", resolver.resolveApproverName(300L));
@@ -160,6 +170,11 @@ class ApproverResolverTest {
         AuditInstance instance = new AuditInstance();
         instance.setEntityType("PLAN");
         instance.setEntityId(7057L);
+        instance.setFlowDefId(4L);
+
+        com.sism.workflow.domain.definition.AuditFlowDef collegeFlow = new com.sism.workflow.domain.definition.AuditFlowDef();
+        collegeFlow.setFlowCode("PLAN_APPROVAL_COLLEGE");
+        when(flowDefinitionRepository.findById(4L)).thenReturn(java.util.Optional.of(collegeFlow));
 
         UserIdentity collegeApprover = new UserIdentity(370L, "u370", "College370", 57L, true);
         UserIdentity functionalApprover = new UserIdentity(267L, "u267", "Func267", 44L, true);
@@ -171,7 +186,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(267L, resolver.resolveApproverId(stepDef, 188L, 57L, instance));
@@ -187,6 +203,11 @@ class ApproverResolverTest {
         AuditInstance instance = new AuditInstance();
         instance.setEntityType("PLAN");
         instance.setEntityId(8088L);
+        instance.setFlowDefId(4L);
+
+        com.sism.workflow.domain.definition.AuditFlowDef collegeFlow = new com.sism.workflow.domain.definition.AuditFlowDef();
+        collegeFlow.setFlowCode("PLAN_APPROVAL_COLLEGE");
+        when(flowDefinitionRepository.findById(4L)).thenReturn(java.util.Optional.of(collegeFlow));
 
         UserIdentity creatorOrgApprover = new UserIdentity(267L, "u267", "Func267", 44L, true);
         UserIdentity requesterOrgApprover = new UserIdentity(370L, "u370", "Req370", 57L, true);
@@ -198,7 +219,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(267L, resolver.resolveApproverId(stepDef, 188L, 57L, instance));
@@ -221,7 +243,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(false, resolver.canUserApprove(stepDef, 410L, 44L));
@@ -242,7 +265,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(false, resolver.canUserApprove(stepDef, 223L, 44L));
@@ -263,7 +287,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertEquals(
@@ -286,7 +311,8 @@ class ApproverResolverTest {
         ApproverResolver resolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
 
         assertThrows(IllegalStateException.class, () -> resolver.resolveAssignedApproverId(stepDef, 410L, 44L, null));

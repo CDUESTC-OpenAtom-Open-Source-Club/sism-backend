@@ -21,6 +21,10 @@ public class PlanReportIndicatorDetailResponse {
     private Long indicatorId;
     private Integer progress;
     private String comment;
+    /** 自评进度等级 AHEAD/NORMAL/DELAYED（P1 上报链改造） */
+    private String selfRating;
+    /** 完成情况描述（与 comment 同源，读侧优先） */
+    private String description;
     private List<ReportAttachmentResponse> attachments;
 
     public static PlanReportIndicatorDetailResponse fromSnapshot(PlanReportIndicatorSnapshot snapshot) {
@@ -45,6 +49,8 @@ public class PlanReportIndicatorDetailResponse {
                 .indicatorId(snapshot.indicatorId())
                 .progress(snapshot.progress())
                 .comment(snapshot.comment())
+                .selfRating(snapshot.selfRating())
+                .description(snapshot.description())
                 .attachments(attachmentResponses)
                 .build();
     }

@@ -107,6 +107,15 @@ public class AuditInstance extends AggregateRoot<Long> {
     }
 
     public void approve(Long userId, String comment) {
+        approve(userId, comment, null);
+    }
+
+    /**
+     * 审批通过并留痕鉴定进度等级（P1 上报链改造）。
+     *
+     * @param appraisalLevel 本节点鉴定等级 AHEAD/NORMAL/DELAYED，可为空（非鉴定场景）
+     */
+    public void approve(Long userId, String comment, String appraisalLevel) {
         if (!STATUS_PENDING.equals(status)) {
             throw new IllegalStateException("Cannot approve: workflow is not in review");
         }
@@ -122,6 +131,9 @@ public class AuditInstance extends AggregateRoot<Long> {
         current.setApproverId(userId);
         current.setStatus(STEP_STATUS_APPROVED);
         current.setComment(comment);
+        if (appraisalLevel != null && !appraisalLevel.isBlank()) {
+            current.setAppraisalLevel(appraisalLevel);
+        }
         current.setApprovedAt(LocalDateTime.now());
 
         // 不再查找WAITING步骤，由ApproveWorkflowUseCase动态创建下一步

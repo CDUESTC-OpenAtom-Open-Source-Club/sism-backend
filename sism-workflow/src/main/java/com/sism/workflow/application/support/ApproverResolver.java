@@ -4,6 +4,7 @@ import com.sism.shared.domain.user.UserIdentity;
 import com.sism.shared.domain.user.UserProvider;
 import com.sism.shared.domain.workflow.WorkflowBusinessContextPort;
 import com.sism.workflow.domain.definition.AuditStepDef;
+import com.sism.workflow.domain.definition.FlowDefinitionRepository;
 import com.sism.workflow.domain.runtime.AuditInstance;
 import com.sism.workflow.interfaces.dto.ApproverCandidateResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -21,19 +22,24 @@ public class ApproverResolver {
     private static final String PLAN_ENTITY_TYPE = "PLAN";
     private static final String PLAN_REPORT_ENTITY_TYPE = "PLAN_REPORT";
     private static final String COLLEGE_FINAL_APPROVAL_STEP_NAME = "职能部门终审";
+    private static final String FUNCTIONAL_DEPT_STEP_NAME = "职能部门";
+    private static final String COLLEGE_APPROVAL_FLOW_CODE = "PLAN_APPROVAL_COLLEGE";
 
     private final UserProvider userProvider;
     private final List<WorkflowBusinessContextPort> workflowBusinessContextPorts;
     private final WorkflowApproverProperties workflowApproverProperties;
+    private final FlowDefinitionRepository flowDefinitionRepository;
 
     public ApproverResolver(
             UserProvider userProvider,
             List<WorkflowBusinessContextPort> workflowBusinessContextPorts,
-            WorkflowApproverProperties workflowApproverProperties
+            WorkflowApproverProperties workflowApproverProperties,
+            FlowDefinitionRepository flowDefinitionRepository
     ) {
         this.userProvider = userProvider;
         this.workflowBusinessContextPorts = workflowBusinessContextPorts;
         this.workflowApproverProperties = workflowApproverProperties;
+        this.flowDefinitionRepository = flowDefinitionRepository;
     }
 
     public Long resolveApproverId(AuditStepDef stepDef, Long requesterId, Long requesterOrgId) {
@@ -248,16 +254,36 @@ public class ApproverResolver {
             return false;
         }
 
+        // 仅学院审批流（PLAN_APPROVAL_COLLEGE）中的「职能部门」节点需要把审批范围
+        // 指到职能部门（sourceOrgId）；职能部门自身链（PLAN_APPROVAL_FUNCDEPT）里
+        // 同名步骤的 requesterOrgId 本就是职能部门，不适用。
+        if (!isCollegeApprovalFlow(instance)) {
+            return false;
+        }
+
         if (Boolean.TRUE.equals(stepDef.getIsTerminal())) {
             return true;
         }
 
         String stepName = stepDef.getStepName();
-        boolean fallbackMatched = stepName != null && stepName.contains(COLLEGE_FINAL_APPROVAL_STEP_NAME);
-        if (fallbackMatched) {
+        // 新 5 节点链：第 4 步「职能部门审批人审批」（非终审）；
+        // 旧 4 节点链：终审步骤名含「职能部门终审」（存量实例兜底）。
+        boolean matched = stepName != null
+                && (stepName.contains(FUNCTIONAL_DEPT_STEP_NAME)
+                    || stepName.contains(COLLEGE_FINAL_APPROVAL_STEP_NAME));
+        if (matched && !stepName.contains(FUNCTIONAL_DEPT_STEP_NAME)) {
             log.warn("Using legacy step-name fallback for college final approval scope: stepName={}", stepName);
         }
-        return fallbackMatched;
+        return matched;
+    }
+
+    private boolean isCollegeApprovalFlow(AuditInstance instance) {
+        if (instance == null || instance.getFlowDefId() == null) {
+            return false;
+        }
+        return flowDefinitionRepository.findById(instance.getFlowDefId())
+                .map(flowDef -> COLLEGE_APPROVAL_FLOW_CODE.equalsIgnoreCase(flowDef.getFlowCode()))
+                .orElse(false);
     }
 
     private boolean matchesRoleScope(UserIdentity user, Long roleId, Long requesterOrgId) {

@@ -1,6 +1,7 @@
 package com.sism.strategy.application;
 
 import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.strategy.infrastructure.StrategyOrgProperties;
 import lombok.RequiredArgsConstructor;
@@ -370,7 +371,7 @@ class PlanWorkflowRuntimeService {
         if (ROLE_CODE_VICE_PRESIDENT.equals(roleCode)) {
             return context.requesterOrgId();
         }
-        if (ROLE_CODE_APPROVER.equals(roleCode) && isCollegeFinalApprovalStep(stepDef)) {
+        if (ROLE_CODE_APPROVER.equals(roleCode) && isFunctionalDeptStepInCollegeChain(stepDef, context)) {
             return planRepository.findById(context.entityId())
                     .map(Plan::getCreatedByOrgId)
                     .orElse(context.requesterOrgId());
@@ -378,10 +379,21 @@ class PlanWorkflowRuntimeService {
         return context.requesterOrgId();
     }
 
-    private boolean isCollegeFinalApprovalStep(WorkflowStepDefinition stepDef) {
-        return stepDef != null
-                && stepDef.stepName() != null
-                && stepDef.stepName().contains("职能部门终审");
+    /**
+     * 学院链（FUNC_TO_COLLEGE 包）中的「职能部门」审批节点：审批范围应指到
+     * 职能部门（包的 created_by），而不是填报的学院。新 5 节点链该步名为
+     * 「职能部门审批人审批」（非终审），旧 4 节点链为「职能部门终审人审批」，
+     * 统一按步骤名含「职能部门」+ 计划层级 FUNC_TO_COLLEGE 判定。
+     */
+    private boolean isFunctionalDeptStepInCollegeChain(
+            WorkflowStepDefinition stepDef, WorkflowInstanceContext context) {
+        if (stepDef == null || stepDef.stepName() == null
+                || !stepDef.stepName().contains("职能部门")) {
+            return false;
+        }
+        return planRepository.findById(context.entityId())
+                .map(plan -> PlanLevel.FUNC_TO_COLLEGE == plan.getPlanLevel())
+                .orElse(false);
     }
 
     private String loadRoleCode(Long roleId) {

@@ -83,7 +83,8 @@ class StartWorkflowUseCaseTest {
         ApproverResolver approverResolver = new ApproverResolver(
                 userProvider,
                 List.of(workflowBusinessContextPort),
-                workflowApproverProperties()
+                workflowApproverProperties(),
+                flowDefinitionRepository
         );
         SubmissionStepAutoCompletePolicy autoCompletePolicy = new SubmissionStepAutoCompletePolicy();
         StepInstanceFactory stepInstanceFactory = new StepInstanceFactory(approverResolver, autoCompletePolicy);

@@ -95,6 +95,9 @@ class ReportApplicationServiceIntegrationTest {
                     indicator_id BIGINT NOT NULL,
                     progress INTEGER,
                     comment TEXT,
+                    self_rating VARCHAR(16),
+                    appraisal_level VARCHAR(16),
+                    description TEXT,
                     created_at TIMESTAMP,
                     CONSTRAINT uq_report_indicator UNIQUE (report_id, indicator_id)
                 )

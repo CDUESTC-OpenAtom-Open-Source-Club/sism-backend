@@ -220,6 +220,15 @@ public class BusinessWorkflowApplicationService {
     @Transactional
     public WorkflowInstanceResponse approveTask(
             String taskId, ApprovalRequest request, Long userId) {
+        return approveTask(taskId, request, userId, null);
+    }
+
+    /**
+     * 审批任务（可携带本节点鉴定进度等级，P1 上报链改造）
+     */
+    @Transactional
+    public WorkflowInstanceResponse approveTask(
+            String taskId, ApprovalRequest request, Long userId, String appraisalLevel) {
 
         log.info("Approving task: {}, userId: {}", taskId, userId);
 
@@ -237,7 +246,7 @@ public class BusinessWorkflowApplicationService {
 
         String resolvedComment = resolveApprovalComment(request == null ? null : request.getComment());
         AuditInstance approved = workflowApplicationService.approveAuditInstance(
-                instance, userId, resolvedComment);
+                instance, userId, resolvedComment, appraisalLevel);
         createApprovalResultNotification(
                 approved,
                 userId,
@@ -255,9 +264,14 @@ public class BusinessWorkflowApplicationService {
     public WorkflowInstanceResponse decideTask(
             String taskId, WorkflowTaskDecisionRequest request, Long userId) {
         if (Boolean.TRUE.equals(request.getApproved())) {
+            // 鉴定进度等级（P1）：通过时可选填写，归一校验（旧预警档位码归并为 DELAYED）
+            String appraisalLevel = com.sism.enums.ProgressLevel
+                    .normalize(request.getAppraisalLevel()) == null
+                    ? null
+                    : com.sism.enums.ProgressLevel.normalize(request.getAppraisalLevel()).name();
             ApprovalRequest approvalRequest = new ApprovalRequest();
             approvalRequest.setComment(resolveApprovalComment(request.getComment()));
-            return approveTask(taskId, approvalRequest, userId);
+            return approveTask(taskId, approvalRequest, userId, appraisalLevel);
         }
 
         RejectionRequest rejectionRequest = new RejectionRequest();

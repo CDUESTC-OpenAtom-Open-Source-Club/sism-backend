@@ -4,6 +4,7 @@ import com.sism.shared.domain.user.UserIdentity;
 import com.sism.shared.domain.user.UserProvider;
 import com.sism.shared.domain.workflow.WorkflowBusinessContextPort;
 import com.sism.workflow.domain.definition.AuditFlowDef;
+import com.sism.workflow.domain.definition.FlowDefinitionRepository;
 import com.sism.workflow.domain.definition.AuditStepDef;
 import com.sism.workflow.domain.runtime.AuditInstance;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,9 @@ class StepInstanceFactoryTest {
     @Mock
     private WorkflowBusinessContextPort workflowBusinessContextPort;
 
+    @Mock
+    private FlowDefinitionRepository flowDefinitionRepository;
+
     @Test
     void initialize_shouldInferSubmitStepFromLegacyName() {
         AuditFlowDef flowDef = new AuditFlowDef();
@@ -36,7 +40,7 @@ class StepInstanceFactoryTest {
         flowDef.setSteps(List.of(stepDef));
 
         StepInstanceFactory factory = new StepInstanceFactory(
-                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties()),
+                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties(), flowDefinitionRepository),
                 new SubmissionStepAutoCompletePolicy()
         );
 
@@ -60,7 +64,7 @@ class StepInstanceFactoryTest {
         flowDef.setSteps(List.of(stepDef));
 
         StepInstanceFactory factory = new StepInstanceFactory(
-                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties()),
+                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties(), flowDefinitionRepository),
                 new SubmissionStepAutoCompletePolicy()
         );
 
@@ -82,7 +86,7 @@ class StepInstanceFactoryTest {
         flowDef.setSteps(List.of(stepDef));
 
         StepInstanceFactory factory = new StepInstanceFactory(
-                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties()),
+                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties(), flowDefinitionRepository),
                 new SubmissionStepAutoCompletePolicy()
         );
 
@@ -116,7 +120,7 @@ class StepInstanceFactoryTest {
         when(userProvider.findActiveIdentitiesByRole(3L)).thenReturn(List.of(approver));
 
         StepInstanceFactory factory = new StepInstanceFactory(
-                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties()),
+                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties(), flowDefinitionRepository),
                 new SubmissionStepAutoCompletePolicy()
         );
 
@@ -155,7 +159,7 @@ class StepInstanceFactoryTest {
         when(userProvider.getUserRoleIds(410L)).thenReturn(List.of(1L, 2L, 3L, 4L));
 
         StepInstanceFactory factory = new StepInstanceFactory(
-                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties()),
+                new ApproverResolver(userProvider, List.of(workflowBusinessContextPort), workflowApproverProperties(), flowDefinitionRepository),
                 new SubmissionStepAutoCompletePolicy()
         );
 
