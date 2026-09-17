@@ -179,7 +179,28 @@ public class StrategyApplicationService {
         indicator.distribute();
         indicator = indicatorRepository.save(indicator);
         publishAndSaveEvents(indicator);
+        syncPlanContainerOnIndicatorDistributed(indicator);
         return indicator;
+    }
+
+    /**
+     * 指标下发后同步计划容器状态（缺陷修复：此前只改指标不改计划，
+     * 导致"指标已下发、计划仍 DRAFT"，职能部门因计划状态闸门看不到已下发指标）。
+     * 仅推进 DRAFT 计划；PENDING 走工作流、已 DISTRIBUTED 幂等跳过。
+     */
+    private void syncPlanContainerOnIndicatorDistributed(Indicator indicator) {
+        if (indicator.getTaskId() == null) {
+            return;
+        }
+        taskRepository.findById(indicator.getTaskId())
+                .map(StrategicTask::getPlanId)
+                .flatMap(planRepository::findById)
+                .ifPresent(plan -> {
+                    if (plan.promoteFromDraftOnIndicatorDistributed()) {
+                        Plan saved = planRepository.save(plan);
+                        publishAndSaveEvents(saved);
+                    }
+                });
     }
 
     private void validatePlanBasicWeightBeforeDistribution(Indicator indicator, Long targetOrgId) {
