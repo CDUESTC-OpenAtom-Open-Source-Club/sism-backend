@@ -93,7 +93,8 @@ class BusinessImportApplicationServiceTest {
                 basicTaskWeightValidationService,
                 workflowApplicationService,
                 auditInstanceRepository,
-                transactionTemplate);
+                transactionTemplate,
+                new org.springframework.jdbc.core.JdbcTemplate());
     }
 
     @Test

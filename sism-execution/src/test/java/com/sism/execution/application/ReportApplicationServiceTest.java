@@ -70,7 +70,8 @@ class ReportApplicationServiceTest {
                 indicatorRepository,
                 eventPublisher,
                 workflowApprovalMetadataQuery,
-                workflowAuditSyncGateway
+                workflowAuditSyncGateway,
+                java.util.List.of()
         );
     }
 

@@ -237,9 +237,9 @@ public class ReportApplicationService {
                 .orElseThrow(() -> new ResourceNotFoundException("Report not found with id: " + reportId));
 
         // P5 全面锁死：该组织存在异动审批中的指标时，禁止提交填报
-        boolean locked = workflowBusinessContextPorts.stream()
-                .anyMatch(port -> port.isOrgLockedByMutation(
-                        report.getReportOrgId() == null ? null : Long.valueOf(report.getReportOrgId())));
+        final Long lockedOrgId = report.getReportOrgId() == null ? null : Long.valueOf(report.getReportOrgId());
+        boolean locked = lockedOrgId != null && workflowBusinessContextPorts.stream()
+                .anyMatch(port -> port.isOrgLockedByMutation(lockedOrgId));
         if (locked) {
             throw new IllegalStateException(
                     "上级正在对该部门的指标进行异动审批，期间暂不能提交填报，请稍后再试");
