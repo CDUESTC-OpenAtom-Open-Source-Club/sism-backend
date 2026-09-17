@@ -11,7 +11,8 @@ WITH canonical_flows AS (
         'PLAN_DISPATCH_STRATEGY',
         'PLAN_DISPATCH_FUNCDEPT',
         'PLAN_APPROVAL_FUNCDEPT',
-        'PLAN_APPROVAL_COLLEGE'
+        'PLAN_APPROVAL_COLLEGE',
+        'PLAN_MUTATION_STRATEGY'
     )
 ),
 ordered_steps AS (

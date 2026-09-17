@@ -52,6 +52,7 @@ public class BusinessWorkflowApplicationService {
     private final UserProvider userProvider;
     private final NotificationProvider notificationProvider;
     private final DingTalkTodoProvider dingTalkTodoProvider;
+    private final java.util.List<com.sism.shared.domain.workflow.WorkflowBusinessContextPort> workflowBusinessContextPorts;
 
     // ==================== 工作流启动 ====================
 
@@ -247,6 +248,11 @@ public class BusinessWorkflowApplicationService {
         String resolvedComment = resolveApprovalComment(request == null ? null : request.getComment());
         AuditInstance approved = workflowApplicationService.approveAuditInstance(
                 instance, userId, resolvedComment, appraisalLevel);
+        if (appraisalLevel != null && !appraisalLevel.isBlank()) {
+            workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevel(
+                    instance.getEntityType(), instance.getEntityId(), appraisalLevel));
+        }
+        endMutationIfTerminal(instance);
         createApprovalResultNotification(
                 approved,
                 userId,
@@ -338,6 +344,7 @@ public class BusinessWorkflowApplicationService {
             pushDingTalkTodoToUser(instance, pendingStep, detailSnapshot, request.getTargetUserId());
         }
 
+        endMutationIfTerminal(instance);
         return workflowReadModelMapper.toInstanceResponse(instance);
     }
 
@@ -636,5 +643,18 @@ public class BusinessWorkflowApplicationService {
             return comment.trim();
         }
         return "审批驳回";
+    }
+
+    private void endMutationIfTerminal(AuditInstance instance) {
+        if (instance == null || !"INDICATOR".equalsIgnoreCase(instance.getEntityType())) {
+            return;
+        }
+        boolean terminal = !"PENDING".equalsIgnoreCase(instance.getStatus());
+        if (!terminal) {
+            return;
+        }
+        boolean approved = "APPROVED".equalsIgnoreCase(instance.getStatus());
+        workflowBusinessContextPorts.forEach(port -> port.endIndicatorMutation(
+                instance.getEntityType(), instance.getEntityId(), approved));
     }
 }

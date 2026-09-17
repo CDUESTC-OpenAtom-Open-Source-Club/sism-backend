@@ -184,6 +184,7 @@ class IndicatorControllerTest {
     private IndicatorController instantiateController() {
         try {
             Constructor<IndicatorController> constructor = IndicatorController.class.getDeclaredConstructor(
+                    com.sism.strategy.application.IndicatorMutationService.class,
                     StrategyApplicationService.class,
                     BatchIndicatorDistributionApplicationService.class,
                     OrganizationRepository.class,
@@ -194,6 +195,8 @@ class IndicatorControllerTest {
             );
             Object userNotificationService = null;
             return constructor.newInstance(
+                    new com.sism.strategy.application.IndicatorMutationService(
+                            jdbcTemplate, null, null, null),
                     strategyApplicationService,
                     batchIndicatorDistributionApplicationService,
                     organizationRepository,

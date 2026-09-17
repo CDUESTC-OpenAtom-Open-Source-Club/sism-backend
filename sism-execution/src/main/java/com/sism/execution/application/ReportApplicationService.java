@@ -58,6 +58,7 @@ public class ReportApplicationService {
     private final DomainEventPublisher eventPublisher;
     private final WorkflowApprovalMetadataQuery workflowApprovalMetadataQuery;
     private final WorkflowAuditSyncGateway workflowAuditSyncGateway;
+    private final java.util.List<com.sism.shared.domain.workflow.WorkflowBusinessContextPort> workflowBusinessContextPorts;
 
     /**
      * 创建报告（草稿）
@@ -234,6 +235,15 @@ public class ReportApplicationService {
     public PlanReport submitReport(Long reportId, Long userId) {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report not found with id: " + reportId));
+
+        // P5 全面锁死：该组织存在异动审批中的指标时，禁止提交填报
+        boolean locked = workflowBusinessContextPorts.stream()
+                .anyMatch(port -> port.isOrgLockedByMutation(
+                        report.getReportOrgId() == null ? null : Long.valueOf(report.getReportOrgId())));
+        if (locked) {
+            throw new IllegalStateException(
+                    "上级正在对该部门的指标进行异动审批，期间暂不能提交填报，请稍后再试");
+        }
 
         report.submit(userId);
         report = planReportRepository.save(report);
