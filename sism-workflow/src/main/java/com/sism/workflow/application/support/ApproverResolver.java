@@ -119,13 +119,21 @@ public class ApproverResolver {
         return scopeOrgId;
     }
 
+    /**
+     * 解析某审批节点的候选审批人（用于流程预览）。
+     *
+     * 注意：候选人为空是合法业务状态——预览方（如战略发展部）的组织范围内可能本就没有
+     * 该节点的审批人（例如战略部用户查看职能链的"职能部门审批人"节点）。此处返回空列表，
+     * 由调用方按空态展示；不得抛异常，否则预览接口会对正常页面渲染返回 400。
+     * 真正缺失角色配置（roleId 未设置）仍视为配置错误并抛异常。
+     */
     public List<ApproverCandidateResponse> resolveCandidates(AuditStepDef stepDef, Long requesterOrgId) {
         Long roleId = stepDef.getRoleId();
         if (roleId == null || roleId <= 0) {
             throw new IllegalStateException("Workflow step is missing role assignment: " + stepDef.getStepName());
         }
 
-        List<ApproverCandidateResponse> candidates = findScopedActiveUsersByRole(roleId, requesterOrgId).stream()
+        return findScopedActiveUsersByRole(roleId, requesterOrgId).stream()
                 .sorted(Comparator.comparing(UserIdentity::id))
                 .map(user -> ApproverCandidateResponse.builder()
                         .userId(user.id())
@@ -134,10 +142,6 @@ public class ApproverResolver {
                         .orgId(user.orgId())
                         .build())
                 .toList();
-        if (candidates.isEmpty()) {
-            throw new IllegalStateException("No available approver candidates for step: " + stepDef.getStepName());
-        }
-        return candidates;
     }
 
     public boolean canUserApprove(AuditStepDef stepDef, Long userId, Long requesterOrgId) {
