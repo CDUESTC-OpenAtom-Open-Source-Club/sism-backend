@@ -129,8 +129,9 @@ public class BusinessWorkflowController {
             @Valid @RequestBody ApprovalRequest request,
             @AuthenticationPrincipal CurrentUser currentUser
     ) {
+        // 透传鉴定进度等级（P1）：中间节点仅留痕，终审由 B9 逻辑投影到业务明细行
         WorkflowInstanceResponse response = workflowService.approveTask(
-                taskId, request, currentUser.getId());
+                taskId, request, currentUser.getId(), request.getAppraisalLevel());
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 
