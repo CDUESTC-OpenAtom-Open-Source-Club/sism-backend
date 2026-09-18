@@ -177,6 +177,27 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handle path-variable/type conversion failures (e.g. GET /{id} receiving a
+     * non-numeric segment like "overview"). Without this handler such requests
+     * fall through to the generic Exception handler and misleadingly return 500.
+     */
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodArgumentTypeMismatchException(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException e) {
+        String requestId = getOrGenerateRequestId();
+        String requestContext = getRequestContext();
+
+        log.warn("Method argument type mismatch: message={}, requestId={}, context=[{}]",
+                e.getMessage(), requestId, requestContext);
+
+        ApiResponse<Void> response = ApiResponse.error(1001, MESSAGE_INVALID_REQUEST);
+
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(response);
+    }
+
+    /**
      * Handle malformed request bodies such as invalid JSON.
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)

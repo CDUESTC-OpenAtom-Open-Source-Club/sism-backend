@@ -98,6 +98,22 @@ public class Plan extends AggregateRoot<Long> {
         this.addEvent(new PlanStatusChangedEvent(this.id, previousStatus, this.status));
     }
 
+    /**
+     * 指标下发后同步计划容器状态（幂等）：仅当计划仍为 DRAFT 时推进为 DISTRIBUTED。
+     * PENDING（审批中）/ RETURNED 不在此处理，仍走各自的工作流路径；
+     * 已 DISTRIBUTED 时静默返回，避免与 activate()/approve() 的防重冲突。
+     */
+    public boolean promoteFromDraftOnIndicatorDistributed() {
+        if (!PlanStatus.DRAFT.value().equals(this.status)) {
+            return false;
+        }
+        String previousStatus = this.status;
+        this.status = PlanStatus.DISTRIBUTED.value();
+        this.updatedAt = LocalDateTime.now();
+        this.addEvent(new PlanStatusChangedEvent(this.id, previousStatus, this.status));
+        return true;
+    }
+
     public void ensureCanSubmitForApproval() {
         if (!PlanStatus.DRAFT.value().equals(this.status) && !PlanStatus.RETURNED.value().equals(this.status)) {
             throw new IllegalStateException("Plan must be in DRAFT or RETURNED state to submit for approval");
