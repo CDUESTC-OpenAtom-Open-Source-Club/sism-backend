@@ -167,10 +167,9 @@ public class BusinessImportApplicationService {
             throw new IllegalArgumentException("替换当前表格暂未开放，请先使用更新已有模式");
         }
 
+        // P6 修订（2026-09-17 用户定案）：导入不做权限限制，任何部门的任何人都可使用；
+        // 自动通过仍走系统默认账号（resolveSystemAdmin）留痕
         boolean autoSubmitAndApprove = Boolean.TRUE.equals(request.autoSubmitAndApprove());
-        if (autoSubmitAndApprove) {
-            ensureCanAutoApprove(currentUser);
-        }
         String workflowCode = context.type() == ImportType.STRATEGIC_TASK
                 ? STRATEGIC_WORKFLOW_CODE
                 : DISTRIBUTION_WORKFLOW_CODE;
@@ -647,22 +646,6 @@ public class BusinessImportApplicationService {
                 && currentUser.getAuthorities() != null
                 && currentUser.getAuthorities().stream()
                 .anyMatch(authority -> SYSTEM_ADMIN_ROLE_CODE.equals(authority.getAuthority()));
-    }
-
-    /**
-     * 导入后自动发起审批仅部门最高领导人可用：分管校领导/学院院长席位、战略部负责人、系统管理员。
-     * 填报人与普通部门审核人（ROLE_APPROVER）均不可越级触发自动审批。
-     */
-    private void ensureCanAutoApprove(CurrentUser currentUser) {
-        boolean allowed = currentUser != null
-                && currentUser.getAuthorities() != null
-                && currentUser.getAuthorities().stream()
-                .map(org.springframework.security.core.GrantedAuthority::getAuthority)
-                .anyMatch(AUTO_APPROVE_ROLE_CODES::contains);
-        if (!allowed) {
-            throw new SecurityException(
-                    "填报人账号不能自动发起审批，请取消勾选自动审批后重试，或由部门负责人及以上角色操作");
-        }
     }
 
     private void activateIndicatorIfPlanDistributed(Plan plan, Indicator indicator) {
