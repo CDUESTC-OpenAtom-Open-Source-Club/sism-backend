@@ -47,4 +47,4 @@ ALTER TABLE public.alert_event
     DROP CONSTRAINT IF EXISTS alert_event_severity_check;
 ALTER TABLE public.alert_event
     ADD CONSTRAINT alert_event_severity_check
-    CHECK (severity IN ('INFO', 'WARNING', 'CRITICAL', 'AHEAD', 'NORMAL'));
+    CHECK (severity IN ('INFO', 'WARNING', 'CRITICAL', 'AHEAD', 'NORMAL', 'DELAYED'));

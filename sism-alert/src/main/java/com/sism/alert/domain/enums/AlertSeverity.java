@@ -34,7 +34,12 @@ public enum AlertSeverity {
     /**
      * 进度等级：正常（人工鉴定）
      */
-    NORMAL;
+    NORMAL,
+
+    /**
+     * 进度等级：延期（人工鉴定）。与遗留 WARNING 语义归并，统一三档编码
+     */
+    DELAYED;
 
     /**
      * Normalizes legacy alert severity labels to the canonical database vocabulary.
@@ -50,7 +55,8 @@ public enum AlertSeverity {
         return switch (severity.trim().toUpperCase(Locale.ROOT)) {
             case "AHEAD", "超前", "超前完成" -> AHEAD;
             case "NORMAL", "OK", "正常" -> NORMAL;
-            case "DELAYED", "延期", "延后" -> WARNING;
+            case "延期", "延后" -> DELAYED;
+            case "DELAYED" -> DELAYED;
             case "MAJOR", "WARNING" -> WARNING;
             case "MINOR", "INFO" -> INFO;
             case "CRITICAL" -> CRITICAL;
