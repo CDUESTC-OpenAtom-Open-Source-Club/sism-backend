@@ -220,6 +220,56 @@ class ReportApplicationServiceTest {
     }
 
     @Test
+    void createReport_allowsNextMonthWhenEarlierMonthIsApproved() {
+        // 防跳月守卫（缺陷修复）：202601 已批准（已结清）时，创建 202602 应放行，
+        // 否则已批准月份永远占据「最早未填报月」，月度上报无法推进。
+        PlanReport approvedJanuary = PlanReport.createDraft("202601", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        approvedJanuary.setId(31L);
+        approvedJanuary.setStatus(PlanReport.STATUS_APPROVED);
+
+        when(planReportRepository.findByReportOrgId(39L)).thenReturn(List.of(approvedJanuary));
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202602", ReportOrgType.FUNC_DEPT, 39L))
+                .thenReturn(Optional.empty());
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PlanReport created = reportApplicationService.createReport("202602", 39L, ReportOrgType.FUNC_DEPT, 111L);
+
+        assertThat(created.getReportMonth()).isEqualTo("202602");
+        assertThat(created.getStatus()).isEqualTo(PlanReport.STATUS_DRAFT);
+    }
+
+    @Test
+    void createReport_stillBlocksNextMonthWhenEarlierMonthOnlyHasUnsettledReport() {
+        // 202601 只有 DRAFT（未结清）时，创建 202602 仍应 409（必须先补最早的欠账）
+        PlanReport draftJanuary = PlanReport.createDraft("202601", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        draftJanuary.setId(32L);
+        draftJanuary.setStatus(PlanReport.STATUS_DRAFT);
+
+        when(planReportRepository.findByReportOrgId(39L)).thenReturn(List.of(draftJanuary));
+
+        assertThatThrownBy(() -> reportApplicationService.createReport("202602", 39L, ReportOrgType.FUNC_DEPT, 111L))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("存在更早的未填报月份 202601");
+    }
+
+    @Test
+    void createReport_stillBlocksEarlierMonthWhenLaterMonthIsApproved() {
+        // 已批准月之后的未结清月（SUBMITTED）仍算欠账：创建更晚月份应被拦截
+        PlanReport approvedJanuary = PlanReport.createDraft("202601", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        approvedJanuary.setId(33L);
+        approvedJanuary.setStatus(PlanReport.STATUS_APPROVED);
+        PlanReport submittedFebruary = PlanReport.createDraft("202602", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        submittedFebruary.setId(34L);
+        submittedFebruary.setStatus(PlanReport.STATUS_SUBMITTED);
+
+        when(planReportRepository.findByReportOrgId(39L)).thenReturn(List.of(approvedJanuary, submittedFebruary));
+
+        assertThatThrownBy(() -> reportApplicationService.createReport("202603", 39L, ReportOrgType.FUNC_DEPT, 111L))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("存在更早的未填报月份 202602");
+    }
+
+    @Test
     void submitReport_shouldThrowResourceNotFoundWhenReportMissing() {
         when(planReportRepository.findById(404L)).thenReturn(Optional.empty());
 

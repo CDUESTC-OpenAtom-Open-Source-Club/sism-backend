@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -770,6 +771,8 @@ public class ReportApplicationService {
      * P1 月份规则（会议定案）：只能填报「未填报的最近一个月」，不允许跳月。
      * 即：同计划 + 同填报组织下，存在 reportMonth 严格小于本次填报月份的历史报告时，
      * 本次填报月份必须是该最小月份（把最早的欠账补上）。
+     * 已批准（APPROVED）的月份视为已结清，不参与「最早未填报月」比较；
+     * 仅 DRAFT/REJECTED/SUBMITTED 等未结清报告的月份仍算欠账、继续拦截跳月。
      * 月份格式统一 yyyy-MM，字符串比较即时间序比较。
      */
     private void assertEarliestUnfilledMonth(String rawMonth,
@@ -786,8 +789,15 @@ public class ReportApplicationService {
                 .filter(report -> report.getReportOrgType() == reportOrgType)
                 .filter(report -> report.getReportMonth() != null)
                 .toList();
+        // 已批准（APPROVED）的月份视为已结清，不再参与「最早未填报月」比较——
+        // 否则已批准月份会永远占据「最早」，月度上报整条链无法推进到下一个月。
+        Set<String> settledMonths = existing.stream()
+                .filter(report -> PlanReport.STATUS_APPROVED.equals(report.getStatus()))
+                .map(PlanReport::getReportMonth)
+                .collect(Collectors.toSet());
         String earliest = existing.stream()
                 .map(PlanReport::getReportMonth)
+                .filter(month -> !settledMonths.contains(month))
                 .min(String::compareTo)
                 .orElse(null);
         if (earliest != null && earliest.compareTo(normalizedMonth) < 0) {
