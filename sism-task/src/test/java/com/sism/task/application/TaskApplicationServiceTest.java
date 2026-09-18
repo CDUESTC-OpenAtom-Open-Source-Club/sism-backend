@@ -63,6 +63,9 @@ class TaskApplicationServiceTest {
     @Mock
     private PlanBindingRepository planBindingRepository;
 
+    @Mock
+    private com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
+
     @InjectMocks
     private TaskApplicationService taskApplicationService;
 

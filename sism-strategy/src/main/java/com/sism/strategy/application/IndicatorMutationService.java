@@ -205,15 +205,42 @@ public class IndicatorMutationService {
 
     /** 异动历史（快照列表，前端「已更改 N 次」悬浮展示）。 */
     public List<Map<String, Object>> history(Long indicatorId) {
-        return jdbcTemplate.queryForList(
+        return jdbcTemplate.query(
                 """
-                SELECT log_id, action, before_json, after_json, changed_fields,
-                       actor_user_id, created_at
+                SELECT log_id, action, before_json::text AS before_json, after_json::text AS after_json,
+                       changed_fields::text AS changed_fields, actor_user_id, created_at
                 FROM public.audit_log
                 WHERE entity_type = 'INDICATOR' AND entity_id = ?
                 ORDER BY created_at DESC
                 """,
+                (rs, rowNum) -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("log_id", rs.getLong("log_id"));
+                    row.put("action", rs.getString("action"));
+                    row.put("before_json", parseJson(rs.getString("before_json")));
+                    row.put("after_json", parseJson(rs.getString("after_json")));
+                    row.put("changed_fields", parseJson(rs.getString("changed_fields")));
+                    row.put("actor_user_id", rs.getObject("actor_user_id"));
+                    row.put("created_at", rs.getTimestamp("created_at").toLocalDateTime());
+                    return row;
+                },
                 indicatorId);
+    }
+
+    /**
+     * jsonb 列经 JdbcTemplate 取出时是 PGobject，直接返回会被序列化成
+     * {"type":"jsonb","value":"...","null":false}，前端无法解析。这里显式解析为对象。
+     */
+    private Object parseJson(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(raw, Map.class);
+        } catch (Exception e) {
+            log.warn("[IndicatorMutation] 解析快照 JSON 失败: {}", e.getMessage());
+            return null;
+        }
     }
 
     /** 处于异动中的指标清单（看板异动汇总 + 全面锁死判定）。 */

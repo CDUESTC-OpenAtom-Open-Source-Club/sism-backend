@@ -32,6 +32,9 @@ class TaskControllerTest {
     @Mock
     private TaskApplicationService taskApplicationService;
 
+    @Mock
+    private com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
+
     @InjectMocks
     private TaskController taskController;
 
