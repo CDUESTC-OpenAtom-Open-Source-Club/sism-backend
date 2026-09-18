@@ -25,7 +25,9 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -330,9 +332,30 @@ public class StrategyApplicationService {
         return indicatorRepository.findByTaskId(taskId);
     }
 
+    /**
+     * 任务下的根指标（D2 孤立指标容忍，会议定案「父级缺失不报错、当孤立指标」）：
+     * parent 为空，或父指标已删除/不存在（软删）的，一律视为根指标返回，
+     * 避免父级被删后子指标在前端凭空消失。
+     */
     public List<Indicator> getRootIndicatorsByTaskId(Long taskId) {
-        return indicatorRepository.findByTaskId(taskId).stream()
-                .filter(indicator -> indicator.getParentIndicatorId() == null)
+        List<Indicator> all = indicatorRepository.findByTaskId(taskId);
+        Map<Long, Indicator> byId = all.stream()
+                .collect(Collectors.toMap(Indicator::getId, indicator -> indicator, (a, b) -> a));
+        return all.stream()
+                .filter(indicator -> {
+                    Long parentId = indicator.getParentIndicatorId();
+                    if (parentId == null) {
+                        return true;
+                    }
+                    Indicator parent = byId.get(parentId);
+                    if (parent == null) {
+                        // 父不在该任务集合：可能跨任务或已被删，以库内现状为准
+                        return indicatorRepository.findById(parentId)
+                                .map(p -> Boolean.TRUE.equals(p.getIsDeleted()))
+                                .orElse(true);
+                    }
+                    return Boolean.TRUE.equals(parent.getIsDeleted());
+                })
                 .toList();
     }
 

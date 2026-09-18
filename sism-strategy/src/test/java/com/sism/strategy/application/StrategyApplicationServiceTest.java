@@ -25,6 +25,8 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
@@ -400,6 +402,37 @@ class StrategyApplicationServiceTest {
 
         assertEquals("当前任务已下发，不能重复导入或下发", exception.getMessage());
         verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("D2: 父指标已软删时，其子指标应作为根指标返回（容忍显示）")
+    void shouldTreatOrphanChildAsRootWhenParentDeleted() {
+        Indicator aliveParent = new Indicator();
+        aliveParent.setId(101L);
+        aliveParent.setParentIndicatorId(null);
+        aliveParent.setIsDeleted(false);
+        Indicator deadParent = new Indicator();
+        deadParent.setId(990001L);
+        deadParent.setParentIndicatorId(null);
+        deadParent.setIsDeleted(true);
+        Indicator orphanChild = new Indicator();
+        orphanChild.setId(990002L);
+        orphanChild.setParentIndicatorId(990001L);
+        orphanChild.setIsDeleted(false);
+        Indicator normalChild = new Indicator();
+        normalChild.setId(990003L);
+        normalChild.setParentIndicatorId(101L);
+        normalChild.setIsDeleted(false);
+
+        when(indicatorRepository.findByTaskId(41001L))
+                .thenReturn(List.of(aliveParent, deadParent, orphanChild, normalChild));
+
+        List<Indicator> roots = createService().getRootIndicatorsByTaskId(41001L);
+
+        List<Long> ids = roots.stream().map(Indicator::getId).toList();
+        // 存活父 + 软删父 + 其孤儿子 都应作为根返回；父存活的子不提升
+        assertTrue(ids.containsAll(List.of(101L, 990001L, 990002L)));
+        assertFalse(ids.contains(990003L));
     }
 
     private StrategyApplicationService createService() {
