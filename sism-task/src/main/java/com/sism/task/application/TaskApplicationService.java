@@ -45,6 +45,7 @@ public class TaskApplicationService {
     private final DomainEventPublisher eventPublisher;
     private final EventStore eventStore;
     private final PlanBindingRepository planBindingRepository;
+    private final TaskMutationHistoryService taskMutationHistoryService;
 
     @Transactional
     public TaskResponse createTask(CreateTaskRequest request, CurrentUser currentUser, boolean isAdmin) {
@@ -152,8 +153,15 @@ public class TaskApplicationService {
     @Transactional
     public TaskResponse updateTaskName(Long id, String name, CurrentUser currentUser, boolean isAdmin) {
         StrategicTask task = loadTaskWithAccess(id, currentUser, isAdmin);
+        String previousName = task.getName();
         task.updateName(name);
         taskRepository.save(task);
+        taskMutationHistoryService.recordRename(
+                task.getId(),
+                previousName,
+                task.getName(),
+                currentUser == null ? null : currentUser.getId()
+        );
         publishAndSaveEvents(task);
         return toCommandResponse(task);
     }

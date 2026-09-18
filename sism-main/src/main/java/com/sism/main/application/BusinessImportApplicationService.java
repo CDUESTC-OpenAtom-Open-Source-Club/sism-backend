@@ -47,7 +47,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -60,12 +59,6 @@ public class BusinessImportApplicationService {
 
     private static final String SYSTEM_ADMIN_USERNAME = "admin";
     private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
-    // 仅部门最高领导人可自动发起审批：分管校领导/学院院长席位、战略部负责人、系统管理员；
-    // 填报人(ROLE_REPORTER)与部门审核人(ROLE_APPROVER)均不可越级
-    private static final Set<String> AUTO_APPROVE_ROLE_CODES = Set.of(
-            "ROLE_STRATEGY_DEPT_HEAD",
-            "ROLE_VICE_PRESIDENT",
-            "ROLE_SYSTEM_ADMIN");
     private static final String STRATEGIC_WORKFLOW_CODE = "PLAN_DISPATCH_STRATEGY";
     private static final String DISTRIBUTION_WORKFLOW_CODE = "PLAN_DISPATCH_FUNCDEPT";
 
@@ -148,12 +141,13 @@ public class BusinessImportApplicationService {
             importBatchJdbcTemplate.update(
                 """
                 INSERT INTO public.import_batch (
-                    batch_id, import_type, operator_user_id, operator_org_id, target_org_id, cycle_id, total_rows
+                    batch_id, import_type, file_name, operator_user_id, operator_org_id, target_org_id, cycle_id, total_rows
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 batchId,
                 context.type().name(),
+                context.response() == null ? null : context.response().fileName(),
                 context.currentUserId(),
                 context.sourceOrgId(),
                 context.targetOrgId(),

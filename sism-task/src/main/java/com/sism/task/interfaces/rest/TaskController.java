@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 
 @RestController
@@ -33,6 +34,7 @@ public class TaskController {
             "hasAnyRole('STRATEGY_DEPT_HEAD','VICE_PRESIDENT')";
 
     private final TaskApplicationService taskApplicationService;
+    private final com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
 
     @PostMapping
     @Operation(summary = "创建新任务", description = "创建战略任务，并为未来任务类型保留明确的任务类别语义。")
@@ -165,6 +167,14 @@ public class TaskController {
         CurrentUser currentUser = admin ? null : requireCurrentUser(authentication);
         TaskResponse updated = taskApplicationService.updateTaskName(id, request.getName(), currentUser, admin);
         return ResponseEntity.ok(ApiResponse.success(updated));
+    }
+
+    @GetMapping("/{id}/mutation-history")
+    @Operation(summary = "战略任务变更历史", description = "该任务全部改名快照（已更改 N 次）")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> taskMutationHistory(
+            @PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success(taskMutationHistoryService.history(id)));
     }
 
     @PutMapping("/{id}/sort-order")
