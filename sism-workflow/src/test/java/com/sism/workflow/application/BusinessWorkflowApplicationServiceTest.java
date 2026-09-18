@@ -29,6 +29,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -657,5 +658,108 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceDetailResponse actual = businessWorkflowApplicationService.getInstanceDetailByBusiness("PLAN", 77L);
 
         assertEquals("300", actual.getInstanceId());
+    }
+
+    @Test
+    void approveTask_shouldProjectAppraisalLevelWhenInstanceReachesTerminalApproved() {
+        // B9：整条链走完（终态 APPROVED）时，本次 decision 的鉴定等级才投影到业务明细行
+        AuditInstance instance = approvableInstance(8100L, 801L, AuditInstance.STATUS_APPROVED);
+        AuditFlowDef flowDef = stepDefOf(instance);
+
+        ApprovalRequest request = new ApprovalRequest();
+        request.setComment("同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(801L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(51L), eq(35L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.approveAuditInstance(instance, 51L, "同意", "NORMAL")).thenReturn(instance);
+        when(userProvider.getUserOrgId(51L)).thenReturn(Optional.empty());
+        when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
+                WorkflowInstanceResponse.builder().instanceId("8100").status("APPROVED").build()
+        );
+
+        com.sism.shared.domain.workflow.WorkflowBusinessContextPort port =
+                org.mockito.Mockito.mock(com.sism.shared.domain.workflow.WorkflowBusinessContextPort.class);
+        BusinessWorkflowApplicationService service = serviceWithPorts(List.of(port));
+
+        service.approveTask("801", request, 51L, "NORMAL");
+
+        verify(port).applyAppraisalLevel("PLAN", 8100L, "NORMAL");
+    }
+
+    @Test
+    void approveTask_shouldNotProjectAppraisalLevelWhenInstanceStillPending() {
+        // B9：中间节点（实例仍 PENDING）不投影，鉴定只留在 audit_step_instance.appraisal_level 留痕
+        AuditInstance instance = approvableInstance(8200L, 821L, AuditInstance.STATUS_PENDING);
+        AuditFlowDef flowDef = stepDefOf(instance);
+
+        ApprovalRequest request = new ApprovalRequest();
+        request.setComment("同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(821L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(52L), eq(35L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.approveAuditInstance(instance, 52L, "同意", "AHEAD")).thenReturn(instance);
+        when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
+                WorkflowInstanceResponse.builder().instanceId("8200").status("IN_REVIEW").build()
+        );
+
+        com.sism.shared.domain.workflow.WorkflowBusinessContextPort port =
+                org.mockito.Mockito.mock(com.sism.shared.domain.workflow.WorkflowBusinessContextPort.class);
+        BusinessWorkflowApplicationService service = serviceWithPorts(List.of(port));
+
+        service.approveTask("821", request, 52L, "AHEAD");
+
+        verify(port, never()).applyAppraisalLevel(any(), any(), any());
+    }
+
+    private BusinessWorkflowApplicationService serviceWithPorts(
+            List<com.sism.shared.domain.workflow.WorkflowBusinessContextPort> ports) {
+        return new BusinessWorkflowApplicationService(
+                workflowDefinitionQueryService,
+                auditInstanceRepository,
+                workflowQueryRepository,
+                workflowApplicationService,
+                workflowReadModelService,
+                workflowReadModelMapper,
+                workflowPreviewQueryService,
+                workflowTaskRepository,
+                approverResolver,
+                userProvider,
+                notificationProvider,
+                dingTalkTodoProvider,
+                ports
+        );
+    }
+
+    private AuditInstance approvableInstance(long instanceId, long stepId, String statusAfterApproval) {
+        AuditInstance instance = new AuditInstance();
+        instance.setId(instanceId);
+        instance.setStatus(statusAfterApproval);
+        instance.setFlowDefId(1L);
+        instance.setRequesterOrgId(35L);
+        instance.setEntityType("PLAN");
+        instance.setEntityId(instanceId);
+
+        com.sism.workflow.domain.runtime.AuditStepInstance currentStep =
+                new com.sism.workflow.domain.runtime.AuditStepInstance();
+        currentStep.setId(stepId);
+        currentStep.setStepDefId(3L);
+        currentStep.setStepNo(3);
+        currentStep.setStepName("分管校领导审批");
+        currentStep.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        instance.addStepInstance(currentStep);
+        return instance;
+    }
+
+    private AuditFlowDef stepDefOf(AuditInstance instance) {
+        AuditFlowDef flowDef = new AuditFlowDef();
+        flowDef.setId(1L);
+        AuditStepDef stepDef = new AuditStepDef();
+        stepDef.setId(3L);
+        stepDef.setRoleId(4L);
+        stepDef.setStepName("分管校领导审批");
+        flowDef.setSteps(List.of(stepDef));
+        return flowDef;
     }
 }

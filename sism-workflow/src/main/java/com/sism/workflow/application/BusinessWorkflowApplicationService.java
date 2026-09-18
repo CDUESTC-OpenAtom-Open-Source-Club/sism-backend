@@ -248,7 +248,11 @@ public class BusinessWorkflowApplicationService {
         String resolvedComment = resolveApprovalComment(request == null ? null : request.getComment());
         AuditInstance approved = workflowApplicationService.approveAuditInstance(
                 instance, userId, resolvedComment, appraisalLevel);
-        if (appraisalLevel != null && !appraisalLevel.isBlank()) {
+        // B9 鉴定投影口径：仅当审批后实例到达终态（status == APPROVED，整条链走完）时，
+        // 才把本次 decision 的鉴定等级投影到业务明细行；
+        // 中间节点的鉴定仅写入 audit_step_instance.appraisal_level 留痕（approveAuditInstance 内既有逻辑）。
+        if (appraisalLevel != null && !appraisalLevel.isBlank()
+                && AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus())) {
             workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevel(
                     instance.getEntityType(), instance.getEntityId(), appraisalLevel));
         }

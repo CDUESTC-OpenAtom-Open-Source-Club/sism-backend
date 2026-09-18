@@ -29,6 +29,12 @@ public class IndicatorMutationService {
     private static final long STRATEGY_ORG_ID = 35L;
     private static final long ROLE_VICE_PRESIDENT_ID = 4L;
 
+    /** A3 锁死主动通知：标题/文案为会议定案口径。 */
+    private static final String MUTATION_LOCK_NOTICE_TITLE = "指标异动审批中";
+    private static final String MUTATION_LOCK_NOTICE_CONTENT =
+            "上级正在对该部门的指标进行异动审批，期间暂不能填报或提交，请稍后再试";
+    private static final String MUTATION_LOCK_NOTICE_TYPE = "INDICATOR_MUTATION";
+
     private final JdbcTemplate jdbcTemplate;
     private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final com.sism.shared.domain.user.UserProvider userProvider;
@@ -129,7 +135,72 @@ public class IndicatorMutationService {
                 request, operatorUserId, strategyOrgProperties.getStrategyOrgId());
         log.info("[IndicatorMutation] 异动已发起: indicatorId={}, instanceId={}",
                 indicatorId, response.getInstanceId());
+
+        // A3 锁死主动通知：异动发起成功后，给被锁组织用户写一条站内消息
+        notifyLockedOrgUsers(indicatorId, operatorUserId);
         return response.getInstanceId();
+    }
+
+    /**
+     * A3 锁死主动通知：异动发起成功后，给被锁组织（指标的 target_org_id）的全部在岗用户
+     * 写一条站内消息（直接落 sys_user_notification，与 iam UserNotificationService 同表同结构）。
+     * 尽力而为：查询/写入失败只记日志，不影响异动发起主流程。
+     */
+    private void notifyLockedOrgUsers(Long indicatorId, Long operatorUserId) {
+        try {
+            List<Long> targetOrgIds = jdbcTemplate.queryForList(
+                    "SELECT target_org_id FROM public.indicator WHERE id = ?",
+                    Long.class, indicatorId);
+            Long targetOrgId = targetOrgIds == null || targetOrgIds.isEmpty() ? null : targetOrgIds.get(0);
+            if (targetOrgId == null) {
+                log.info("[IndicatorMutation] 指标无 target_org_id，跳过锁死通知: indicatorId={}", indicatorId);
+                return;
+            }
+
+            List<Long> recipientIds = jdbcTemplate.query(
+                    """
+                    SELECT u.id
+                    FROM public.sys_user u
+                    WHERE u.org_id = ?
+                      AND COALESCE(u.is_active, false) = true
+                    ORDER BY u.id ASC
+                    """,
+                    (rs, rowNum) -> rs.getLong(1),
+                    targetOrgId);
+            if (recipientIds.isEmpty()) {
+                log.info("[IndicatorMutation] 被锁组织无在岗用户，跳过锁死通知: indicatorId={}, orgId={}",
+                        indicatorId, targetOrgId);
+                return;
+            }
+
+            String batchKey = java.util.UUID.randomUUID().toString();
+            String actionUrl = "/indicators/" + indicatorId;
+            for (Long recipientId : recipientIds) {
+                jdbcTemplate.update(
+                        """
+                        INSERT INTO public.sys_user_notification (
+                            recipient_user_id, sender_user_id, sender_org_id,
+                            notification_type, title, content, status,
+                            action_url, related_entity_type, related_entity_id, batch_key
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'UNREAD', ?, 'INDICATOR', ?, ?)
+                        """,
+                        recipientId,
+                        operatorUserId,
+                        strategyOrgProperties.getStrategyOrgId(),
+                        MUTATION_LOCK_NOTICE_TYPE,
+                        MUTATION_LOCK_NOTICE_TITLE,
+                        MUTATION_LOCK_NOTICE_CONTENT,
+                        actionUrl,
+                        indicatorId,
+                        batchKey
+                );
+            }
+            log.info("[IndicatorMutation] 锁死通知已写入: indicatorId={}, orgId={}, recipients={}",
+                    indicatorId, targetOrgId, recipientIds.size());
+        } catch (Exception ex) {
+            log.warn("[IndicatorMutation] 锁死通知写入失败（不影响异动发起）: indicatorId={}, error={}",
+                    indicatorId, ex.getMessage());
+        }
     }
 
     /** 异动历史（快照列表，前端「已更改 N 次」悬浮展示）。 */
