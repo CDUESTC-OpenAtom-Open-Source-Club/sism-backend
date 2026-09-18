@@ -348,6 +348,43 @@ public class BusinessImportApplicationService {
                 errors.add("文件中的职能部门与当前选择不一致");
             }
 
+            // D4（2026-09-18 定案）：「内部ID」列填写时按 ID 精确关联，并做三类校验
+            //（① ID 存在 ② 属于导入目标部门 ③ 属于当年考核周期），异常前置拦截
+            Long linkedIndicatorId = parseIndicatorId(normalized.indicatorId());
+            boolean linkedById = linkedIndicatorId != null;
+            if (linkedById) {
+                Indicator linked = indicatorRepository.findById(linkedIndicatorId)
+                        .filter(indicator -> Boolean.FALSE.equals(indicator.getIsDeleted()))
+                        .orElse(null);
+                if (linked == null) {
+                    errors.add("内部 ID " + linkedIndicatorId + " 不存在（或已被删除），请核对导出表中的内部ID列");
+                } else {
+                    Long linkedTargetOrgId = linked.getTargetOrg() == null ? null : linked.getTargetOrg().getId();
+                    if (!targetOrg.getId().equals(linkedTargetOrgId)) {
+                        errors.add("内部 ID " + linkedIndicatorId + " 属于其他部门，不能导入到「"
+                                + targetOrg.getName() + "」，请核对导出表中的内部ID列");
+                    } else {
+                        Long linkedCycleId = linked.getTaskId() == null ? null
+                                : taskRepository.findById(linked.getTaskId())
+                                        .map(StrategicTask::getCycleId).orElse(null);
+                        if (!cycleId.equals(linkedCycleId)) {
+                            errors.add("内部 ID " + linkedIndicatorId + " 属于其他考核年度，请重新导出最新模板");
+                        }
+                    }
+                }
+                normalized = withIndicatorId(normalized, linkedIndicatorId);
+                String businessKey = "id:" + linkedIndicatorId;
+                return new ImportRowPreview(
+                        row.rowNo(),
+                        errors.isEmpty() ? ImportAction.UPDATE : ImportAction.ERROR,
+                        businessKey,
+                        normalized,
+                        row.source(),
+                        errors,
+                        warnings
+                );
+            }
+
             String businessKey = strategicBusinessKey(cycleId, targetOrg.getId(), normalized);
             ImportAction action = errors.isEmpty()
                     ? (existing.containsKey(businessKey) ? ImportAction.UPDATE : ImportAction.CREATE)
@@ -425,6 +462,25 @@ public class BusinessImportApplicationService {
                 continue;
             }
             NormalizedImportRow normalized = row.normalized();
+
+            // D4（2026-09-18 定案）：带「内部ID」的行按 ID 精确更新（任务归属不变，仅更新指标自身字段）
+            if (row.normalized().indicatorId() != null) {
+                Long linkedId = Long.valueOf(row.normalized().indicatorId());
+                Indicator linked = strategyApplicationService.updateIndicator(
+                        linkedId,
+                        normalized.indicatorName(),
+                        normalized.weight(),
+                        null,
+                        null,
+                        normalized.remark(),
+                        null,
+                        currentOrg,
+                        targetOrg);
+                counter.updated++;
+                activateIndicatorIfPlanDistributed(plan, linked);
+                continue;
+            }
+
             StrategicTask task = findOrCreateTask(
                     plan,
                     context.cycleId(),
@@ -719,6 +775,7 @@ public class BusinessImportApplicationService {
                                             indicator.getType(),
                                             indicator.getWeightPercent(),
                                             indicator.getRemark(),
+                                            null,
                                             null));
                         },
                         Function.identity(),
@@ -755,7 +812,8 @@ public class BusinessImportApplicationService {
                                         indicator.getType(),
                                         indicator.getWeightPercent(),
                                         indicator.getRemark(),
-                                        indicator.getParentIndicatorId())),
+                                        indicator.getParentIndicatorId(),
+                                        null)),
                         Function.identity(),
                         (left, right) -> left
                 ));
@@ -836,7 +894,36 @@ public class BusinessImportApplicationService {
                 row.indicatorType(),
                 row.weight(),
                 row.remark(),
-                parentIndicatorId);
+                parentIndicatorId,
+                row.indicatorId());
+    }
+
+    /** D4：「内部ID」原始串转 Long，空白/非法返回 null（合法性已在预览阶段校验）。 */
+    private Long parseIndicatorId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.valueOf(raw.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private NormalizedImportRow withIndicatorId(NormalizedImportRow row, Long indicatorId) {
+        return new NormalizedImportRow(
+                row.department(),
+                row.college(),
+                row.taskType(),
+                row.strategicTask(),
+                row.parentStrategicTask(),
+                row.parentIndicator(),
+                row.indicatorName(),
+                row.indicatorType(),
+                row.weight(),
+                row.remark(),
+                row.parentIndicatorId(),
+                indicatorId == null ? null : String.valueOf(indicatorId));
     }
 
     private TaskType toTaskType(String value) {

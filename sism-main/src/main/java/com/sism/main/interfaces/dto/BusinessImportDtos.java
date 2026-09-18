@@ -57,7 +57,9 @@ public final class BusinessImportDtos {
             String indicatorType,
             BigDecimal weight,
             String remark,
-            Long parentIndicatorId
+            Long parentIndicatorId,
+            // D4（2026-09-18 定案）：战略任务导入支持「内部ID」列精确关联（原始串，空白=未填）
+            String indicatorId
     ) {
         public Map<String, Object> toMap() {
             return Map.ofEntries(
@@ -71,7 +73,8 @@ public final class BusinessImportDtos {
                     Map.entry("indicatorType", indicatorType == null ? "" : indicatorType),
                     Map.entry("weight", weight == null ? "" : weight),
                     Map.entry("remark", remark == null ? "" : remark),
-                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId)
+                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId),
+                    Map.entry("indicatorId", indicatorId == null ? "" : indicatorId)
             );
         }
     }

@@ -48,7 +48,9 @@ public class ExcelBusinessImportParser {
             Map.entry("indicatorName", List.of("核心指标", "指标名称", "指标内容")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "指标权重")),
-            Map.entry("remark", List.of("备注", "说明"))
+            Map.entry("remark", List.of("备注", "说明")),
+            // D4（2026-09-18 定案）：导出表自带「内部ID」列，回导时精确关联 + 三类校验
+            Map.entry("indicatorId", List.of("内部ID", "内部 ID", "指标ID", "指标 ID"))
     );
 
     private static final Map<String, List<String>> DISTRIBUTION_ALIASES = Map.ofEntries(
@@ -209,6 +211,7 @@ public class ExcelBusinessImportParser {
         String indicatorType = normalizeIndicatorType(value(source, aliases, "indicatorType"));
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
         String remark = clean(value(source, aliases, "remark"));
+        String indicatorIdRaw = clean(value(source, aliases, "indicatorId"));
         return new NormalizedImportRow(
                 department,
                 college,
@@ -220,13 +223,18 @@ public class ExcelBusinessImportParser {
                 indicatorType,
                 weight,
                 remark,
-                null
+                null,
+                indicatorIdRaw
         );
     }
 
     private List<String> validate(NormalizedImportRow row, ImportType type) {
         List<String> errors = new ArrayList<>();
         if (type == ImportType.STRATEGIC_TASK) {
+            // D4（2026-09-18 定案）：「内部ID」列填写时必须为数字，格式错误前置拦截
+            if (!isBlank(row.indicatorId()) && !row.indicatorId().trim().matches("\\d+")) {
+                errors.add("内部ID 格式不正确（应为数字），请直接复制导出表中的内部ID列");
+            }
             if (isBlank(row.taskType())) {
                 errors.add("任务类型不能为空或无法识别");
             }
