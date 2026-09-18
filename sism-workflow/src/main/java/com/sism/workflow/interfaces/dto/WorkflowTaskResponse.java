@@ -40,6 +40,8 @@ public class WorkflowTaskResponse {
     private Integer stepNo;
     private String stepType;
     private String comment;
+    /** 本节点鉴定进度等级 AHEAD/NORMAL/DELAYED（P1 上报链改造） */
+    private String appraisalLevel;
     private LocalDateTime approvedAt;
     private LocalDateTime createdTime;
     private LocalDateTime startedAt;

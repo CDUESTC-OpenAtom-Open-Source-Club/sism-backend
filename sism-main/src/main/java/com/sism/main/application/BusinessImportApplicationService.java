@@ -33,6 +33,7 @@ import com.sism.workflow.domain.runtime.AuditInstance;
 import com.sism.workflow.domain.runtime.AuditInstanceRepository;
 import com.sism.workflow.domain.runtime.AuditStepInstance;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
@@ -53,6 +54,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class BusinessImportApplicationService {
 
@@ -78,6 +80,7 @@ public class BusinessImportApplicationService {
     private final WorkflowApplicationService workflowApplicationService;
     private final AuditInstanceRepository auditInstanceRepository;
     private final TransactionTemplate transactionTemplate;
+    private final org.springframework.jdbc.core.JdbcTemplate importBatchJdbcTemplate;
     private final Map<String, PreviewContext> previews = new ConcurrentHashMap<>();
 
     public ImportPreviewResponse previewStrategicTasks(MultipartFile file,
@@ -139,14 +142,34 @@ public class BusinessImportApplicationService {
         }
 
         ConflictMode conflictMode = request.conflictMode() == null ? ConflictMode.APPEND : request.conflictMode();
+
+        // P6 导入留痕：谁/什么文件/什么时间（持久化，替代原内存 Map 丢失风险）
+        try {
+            importBatchJdbcTemplate.update(
+                """
+                INSERT INTO public.import_batch (
+                    batch_id, import_type, operator_user_id, operator_org_id, target_org_id, cycle_id, total_rows
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                batchId,
+                context.type().name(),
+                context.currentUserId(),
+                context.sourceOrgId(),
+                context.targetOrgId(),
+                context.cycleId(),
+                context.response() == null || context.response().rows() == null ? 0 : context.response().rows().size()
+            );
+        } catch (Exception e) {
+            log.warn("[Import] 写入导入批次留痕失败（不阻断导入）: batchId={}, err={}", batchId, e.getMessage());
+        }
         if (conflictMode == ConflictMode.REPLACE_SCOPE) {
             throw new IllegalArgumentException("替换当前表格暂未开放，请先使用更新已有模式");
         }
 
+        // P6 修订（2026-09-17 用户定案）：导入不做权限限制，任何部门的任何人都可使用；
+        // 自动通过仍走系统默认账号（resolveSystemAdmin）留痕
         boolean autoSubmitAndApprove = Boolean.TRUE.equals(request.autoSubmitAndApprove());
-        if (autoSubmitAndApprove) {
-            ensureCanAutoApprove(currentUser);
-        }
         String workflowCode = context.type() == ImportType.STRATEGIC_TASK
                 ? STRATEGIC_WORKFLOW_CODE
                 : DISTRIBUTION_WORKFLOW_CODE;
@@ -464,9 +487,20 @@ public class BusinessImportApplicationService {
             NormalizedImportRow normalized = row.normalized();
             Indicator parent = indicatorRepository.findById(normalized.parentIndicatorId())
                     .orElseThrow(() -> new IllegalArgumentException("父级指标不存在: " + normalized.parentIndicatorId()));
+            // P6 ID 三类校验（会议定案：异常难追踪，必须前置拦截）
+            Long parentTargetOrgId = parent.getTargetOrg() == null ? null : parent.getTargetOrg().getId();
+            if (parentTargetOrgId == null || !parentTargetOrgId.equals(currentOrg.getId())) {
+                throw new IllegalArgumentException(
+                        "父级指标 ID " + normalized.parentIndicatorId() + " 不属于本部门（" + currentOrg.getName() + "），请核对导出表中的内部 ID");
+            }
             StrategicTask parentTask = parent.getTaskId() == null
                     ? null
                     : taskRepository.findById(parent.getTaskId()).orElse(null);
+            if (parentTask != null && parentTask.getCycleId() != null
+                    && !parentTask.getCycleId().equals(context.cycleId())) {
+                throw new IllegalArgumentException(
+                        "父级指标 ID " + normalized.parentIndicatorId() + " 属于其他考核年度，不能跨年度关联，请重新导出最新模板");
+            }
             String taskName = firstNonBlank(normalized.parentStrategicTask(), parentTask == null ? null : parentTask.getName(), "学院子指标");
             TaskType taskType = parentTask == null ? TaskType.DEVELOPMENT : parentTask.getTaskType();
             StrategicTask task = findOrCreateTask(plan, context.cycleId(), taskName, taskType, targetCollege, currentOrg);
@@ -612,22 +646,6 @@ public class BusinessImportApplicationService {
                 && currentUser.getAuthorities() != null
                 && currentUser.getAuthorities().stream()
                 .anyMatch(authority -> SYSTEM_ADMIN_ROLE_CODE.equals(authority.getAuthority()));
-    }
-
-    /**
-     * 导入后自动发起审批仅部门最高领导人可用：分管校领导/学院院长席位、战略部负责人、系统管理员。
-     * 填报人与普通部门审核人（ROLE_APPROVER）均不可越级触发自动审批。
-     */
-    private void ensureCanAutoApprove(CurrentUser currentUser) {
-        boolean allowed = currentUser != null
-                && currentUser.getAuthorities() != null
-                && currentUser.getAuthorities().stream()
-                .map(org.springframework.security.core.GrantedAuthority::getAuthority)
-                .anyMatch(AUTO_APPROVE_ROLE_CODES::contains);
-        if (!allowed) {
-            throw new SecurityException(
-                    "填报人账号不能自动发起审批，请取消勾选自动审批后重试，或由部门负责人及以上角色操作");
-        }
     }
 
     private void activateIndicatorIfPlanDistributed(Plan plan, Indicator indicator) {

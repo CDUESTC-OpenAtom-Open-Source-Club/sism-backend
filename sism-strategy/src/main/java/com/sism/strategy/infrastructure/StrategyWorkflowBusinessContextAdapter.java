@@ -17,6 +17,7 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
 
     private final PlanRepository planRepository;
     private final OrganizationRepository organizationRepository;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
     @Override
     public Optional<Long> getPlanIdByEntity(String entityType, Long entityId) {
@@ -55,5 +56,39 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
         return organizationRepository.findById(orgId)
                 .map(org -> org.getName() != null && !org.getName().isBlank() ? org.getName() : "Org#" + orgId)
                 .orElse("Org#" + orgId);
+    }
+
+    /**
+     * P5 指标异动：异动审批终态后清除指标锁标记（通过/驳回都清除，
+     * 驳回时变更内容保留在原表，由发起人自行还原）。
+     */
+    @Override
+    public void endIndicatorMutation(String entityType, Long entityId, boolean approved) {
+        if (!"INDICATOR".equalsIgnoreCase(entityType) || entityId == null) {
+            return;
+        }
+        jdbcTemplate.update(
+                "UPDATE public.indicator SET mutation_status = NULL, mutation_started_at = NULL WHERE id = ?",
+                entityId);
+    }
+
+    /**
+     * P5 指标异动：组织下存在异动中的指标时全面锁死填报/提交。
+     */
+    @Override
+    public boolean isOrgLockedByMutation(Long orgId) {
+        if (orgId == null) {
+            return false;
+        }
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.indicator
+                WHERE mutation_status = 'IN_MUTATION'
+                  AND COALESCE(is_deleted, false) = false
+                  AND (target_org_id = ? OR owner_org_id = ?)
+                """,
+                Integer.class, orgId, orgId);
+        return count != null && count > 0;
     }
 }

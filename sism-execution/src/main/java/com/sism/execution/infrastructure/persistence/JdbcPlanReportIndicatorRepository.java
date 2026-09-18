@@ -22,13 +22,26 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
 
     @Override
     public Long upsertDraftIndicator(Long reportId, Long indicatorId, Integer progress, String comment) {
+        return upsertDraftIndicator(reportId, indicatorId, progress, comment, null, null);
+    }
+
+    @Override
+    public Long upsertDraftIndicator(Long reportId,
+                                     Long indicatorId,
+                                     Integer progress,
+                                     String comment,
+                                     String selfRating,
+                                     String description) {
         return jdbcTemplate.queryForObject(
                 """
-                INSERT INTO public.plan_report_indicator (report_id, indicator_id, progress, comment, created_at)
-                VALUES (?, ?, ?, ?, now())
+                INSERT INTO public.plan_report_indicator
+                    (report_id, indicator_id, progress, comment, self_rating, description, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, now())
                 ON CONFLICT (report_id, indicator_id) DO UPDATE SET
                     progress = EXCLUDED.progress,
                     comment = EXCLUDED.comment,
+                    self_rating = EXCLUDED.self_rating,
+                    description = EXCLUDED.description,
                     created_at = now()
                 RETURNING id
                 """,
@@ -36,7 +49,27 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                 reportId,
                 indicatorId,
                 progress == null ? 0 : progress,
-                comment
+                comment,
+                selfRating,
+                description
+        );
+    }
+
+    @Override
+    public void applyAppraisalLevel(Long reportId, String appraisalLevel) {
+        if (reportId == null || appraisalLevel == null || appraisalLevel.isBlank()) {
+            return;
+        }
+        jdbcTemplate.update(
+                """
+                UPDATE public.plan_report_indicator
+                SET appraisal_level = ?
+                WHERE report_id = ?
+                  AND (appraisal_level IS NULL OR appraisal_level <> ?)
+                """,
+                appraisalLevel,
+                reportId,
+                appraisalLevel
         );
     }
 
@@ -127,6 +160,8 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                        pri.indicator_id,
                        pri.progress,
                        pri.comment,
+                       pri.self_rating,
+                       pri.description,
                        a.id AS attachment_id,
                        a.original_name,
                        a.size_bytes,
@@ -155,6 +190,8 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                                         rs.getLong("indicator_id"),
                                         rs.getInt("progress"),
                                         rs.getString("comment"),
+                                        rs.getString("self_rating"),
+                                        rs.getString("description"),
                                         attachments
                                 ),
                                 attachments

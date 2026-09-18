@@ -19,6 +19,7 @@ public class ExecutionWorkflowBusinessContextAdapter implements WorkflowBusiness
     private final PlanReportRepository planReportRepository;
     private final PlanRepository planRepository;
     private final OrganizationRepository organizationRepository;
+    private final com.sism.execution.domain.report.PlanReportIndicatorRepository planReportIndicatorRepository;
 
     @Override
     public Optional<Long> getPlanIdByEntity(String entityType, Long entityId) {
@@ -30,6 +31,22 @@ public class ExecutionWorkflowBusinessContextAdapter implements WorkflowBusiness
             return Optional.empty();
         }
         return planReportRepository.findById(entityId).map(report -> report.getPlanId());
+    }
+
+    /**
+     * P1 上报链改造：审批携带鉴定进度等级时，投影到该报告全部明细行的
+     * appraisal_level（终审/逐级鉴定均覆盖，与节点留痕互为补充）。
+     */
+    @Override
+    public void applyAppraisalLevel(String entityType, Long entityId, String appraisalLevel) {
+        if (appraisalLevel == null || appraisalLevel.isBlank()) {
+            return;
+        }
+        if (!PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType)
+                && !LEGACY_PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType)) {
+            return;
+        }
+        planReportIndicatorRepository.applyAppraisalLevel(entityId, appraisalLevel);
     }
 
     @Override

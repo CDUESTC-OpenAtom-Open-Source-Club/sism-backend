@@ -60,17 +60,25 @@ class ReportApplicationServiceTest {
     @Mock
     private WorkflowApprovalMetadataQuery workflowApprovalMetadataQuery;
 
+    @Mock
+    private com.sism.shared.domain.workflow.WorkflowBusinessContextPort workflowBusinessContextPort;
+
     private ReportApplicationService reportApplicationService;
 
     @BeforeEach
     void setUp() {
-        reportApplicationService = new ReportApplicationService(
+        reportApplicationService = newService(java.util.List.of());
+    }
+
+    private ReportApplicationService newService(List<com.sism.shared.domain.workflow.WorkflowBusinessContextPort> ports) {
+        return new ReportApplicationService(
                 planReportRepository,
                 planReportIndicatorRepository,
                 indicatorRepository,
                 eventPublisher,
                 workflowApprovalMetadataQuery,
-                workflowAuditSyncGateway
+                workflowAuditSyncGateway,
+                ports
         );
     }
 
@@ -299,8 +307,8 @@ class ReportApplicationServiceTest {
         when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
                 .thenReturn(Optional.of(approvedReport), Optional.of(approvedReport));
         when(planReportIndicatorRepository.findByReportId(41L)).thenReturn(List.of(
-                new PlanReportIndicatorSnapshot(1001L, 80, "content", List.of()),
-                new PlanReportIndicatorSnapshot(1002L, null, "content", List.of())
+                new PlanReportIndicatorSnapshot(1001L, 80, "content", null, null, List.of()),
+                new PlanReportIndicatorSnapshot(1002L, null, "content", null, null, List.of())
         ));
         when(indicatorRepository.findByIds(List.of(1001L, 1002L))).thenReturn(List.of(first, second));
 
@@ -415,7 +423,7 @@ class ReportApplicationServiceTest {
         assertThat(updated.getId()).isEqualTo(12L);
         assertThat(updated.getCreatedBy()).isEqualTo(8001L);
         verify(planReportIndicatorRepository)
-                .upsertDraftIndicator(12L, 2001L, 45, "本月推进完成");
+                .upsertDraftIndicator(12L, 2001L, 45, "本月推进完成", null, "本月推进完成");
     }
 
     @Test
@@ -445,7 +453,7 @@ class ReportApplicationServiceTest {
 
         verify(planReportRepository, never()).save(any(PlanReport.class));
         verify(planReportIndicatorRepository, never())
-                .upsertDraftIndicator(any(), any(), any(), any());
+                .upsertDraftIndicator(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -466,7 +474,7 @@ class ReportApplicationServiceTest {
         when(planReportRepository.findById(22L)).thenReturn(Optional.of(report));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(indicatorRepository.findById(2010L)).thenReturn(Optional.of(indicator));
-        when(planReportIndicatorRepository.upsertDraftIndicator(22L, 2010L, 45, "带附件的填报"))
+        when(planReportIndicatorRepository.upsertDraftIndicator(22L, 2010L, 45, "带附件的填报", null, "带附件的填报"))
                 .thenReturn(7001L);
 
         PlanReport updated = reportApplicationService.updateReportBatch(
@@ -494,7 +502,7 @@ class ReportApplicationServiceTest {
 
         when(planReportRepository.findById(16L)).thenReturn(Optional.of(report));
         when(planReportIndicatorRepository.findByReportIds(List.of(16L)))
-                .thenReturn(Map.of(16L, List.of(new PlanReportIndicatorSnapshot(2003L, 15, "已填报草稿", List.of()))));
+                .thenReturn(Map.of(16L, List.of(new PlanReportIndicatorSnapshot(2003L, 15, "已填报草稿", null, null, List.of()))));
 
         PlanReport hydrated = reportApplicationService.findReportById(16L).orElseThrow();
 
@@ -518,9 +526,9 @@ class ReportApplicationServiceTest {
         when(planReportRepository.findById(13L)).thenReturn(Optional.of(report));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(planReportIndicatorRepository.findByReportId(13L))
-                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", List.of())));
+                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", null, null, List.of())));
         when(planReportIndicatorRepository.findByReportIds(List.of(13L)))
-                .thenReturn(Map.of(13L, List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", List.of()))));
+                .thenReturn(Map.of(13L, List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", null, null, List.of()))));
         when(indicatorRepository.findByIds(List.of(2001L))).thenReturn(List.of(indicator));
         when(indicatorRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -550,9 +558,9 @@ class ReportApplicationServiceTest {
         when(planReportRepository.findById(15L)).thenReturn(Optional.of(report));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(planReportIndicatorRepository.findByReportId(15L))
-                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", List.of())));
+                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", null, null, List.of())));
         when(planReportIndicatorRepository.findByReportIds(List.of(15L)))
-                .thenReturn(Map.of(15L, List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", List.of()))));
+                .thenReturn(Map.of(15L, List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", null, null, List.of()))));
         when(indicatorRepository.findByIds(List.of(2002L))).thenReturn(List.of(indicator));
         when(indicatorRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -579,7 +587,7 @@ class ReportApplicationServiceTest {
         reportApplicationService.updateReport(14L, "纯报表", null, 20, "问题", "计划");
 
         verify(planReportIndicatorRepository, never())
-                .upsertDraftIndicator(any(), any(), any(), any());
+                .upsertDraftIndicator(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -646,8 +654,8 @@ class ReportApplicationServiceTest {
                 .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(first, second), pageable, 2));
         when(planReportIndicatorRepository.findByReportIds(List.of(51L, 52L)))
                 .thenReturn(Map.of(
-                        51L, List.of(new PlanReportIndicatorSnapshot(3001L, 11, "A", List.of())),
-                        52L, List.of(new PlanReportIndicatorSnapshot(3002L, 22, "B", List.of()))
+                        51L, List.of(new PlanReportIndicatorSnapshot(3001L, 11, "A", null, null, List.of())),
+                        52L, List.of(new PlanReportIndicatorSnapshot(3002L, 22, "B", null, null, List.of()))
                 ));
 
         var page = reportApplicationService.findReportsByStatus("SUBMITTED", 1, 10);
@@ -656,5 +664,57 @@ class ReportApplicationServiceTest {
         assertThat(page.getContent().get(0).getIndicatorDetails()).hasSize(1);
         assertThat(page.getContent().get(1).getIndicatorDetails()).hasSize(1);
         verify(planReportIndicatorRepository).findByReportIds(List.of(51L, 52L));
+    }
+
+    @Test
+    void createReport_shouldRejectWhenOrgLockedByMutation() {
+        when(workflowBusinessContextPort.isOrgLockedByMutation(39L)).thenReturn(true);
+        ReportApplicationService lockedService = newService(List.of(workflowBusinessContextPort));
+
+        assertThatThrownBy(() -> lockedService.createReport("202603", 39L, ReportOrgType.FUNC_DEPT, 111L, 7001L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("上级正在对该部门的指标进行异动审批，期间暂不能填报或修改，请稍后再试");
+
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    @Test
+    void updateReport_shouldRejectWhenOrgLockedByMutation() {
+        PlanReport report = PlanReport.createDraft("202603", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        report.setId(60L);
+        when(planReportRepository.findById(60L)).thenReturn(Optional.of(report));
+        when(workflowBusinessContextPort.isOrgLockedByMutation(39L)).thenReturn(true);
+        ReportApplicationService lockedService = newService(List.of(workflowBusinessContextPort));
+
+        assertThatThrownBy(() -> lockedService.updateReport(
+                60L, "指标 A", 2001L, "内容", "摘要", 45, "问题", "计划", 8001L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("上级正在对该部门的指标进行异动审批，期间暂不能填报或修改，请稍后再试");
+
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+        verify(planReportIndicatorRepository, never())
+                .upsertDraftIndicator(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateReportBatch_shouldRejectWhenOrgLockedByMutation() {
+        PlanReport report = PlanReport.createDraft("202603", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        report.setId(61L);
+        when(planReportRepository.findById(61L)).thenReturn(Optional.of(report));
+        when(workflowBusinessContextPort.isOrgLockedByMutation(39L)).thenReturn(true);
+        ReportApplicationService lockedService = newService(List.of(workflowBusinessContextPort));
+
+        UpdatePlanReportIndicatorDetailRequest detail = new UpdatePlanReportIndicatorDetailRequest();
+        detail.setIndicatorId(2010L);
+        detail.setProgress(45);
+
+        assertThatThrownBy(() -> lockedService.updateReportBatch(
+                61L, "标题", "内容", "摘要", 45, "问题", "计划", 8002L, List.of(detail)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("上级正在对该部门的指标进行异动审批，期间暂不能填报或修改，请稍后再试");
+
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+        verify(planReportIndicatorRepository, never())
+                .upsertDraftIndicator(any(), any(), any(), any(), any(), any());
     }
 }

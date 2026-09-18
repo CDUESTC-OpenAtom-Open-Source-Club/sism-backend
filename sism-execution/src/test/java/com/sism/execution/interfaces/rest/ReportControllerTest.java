@@ -244,7 +244,7 @@ class ReportControllerTest {
 
         PlanReport report = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 301L, 106L);
         report.setId(10L);
-        report.setIndicatorDetails(List.of(new PlanReportIndicatorSnapshot(77L, 45, "comment", null)));
+        report.setIndicatorDetails(List.of(new PlanReportIndicatorSnapshot(77L, 45, "comment", null, null, List.of())));
         when(reportApplicationService.findReportById(10L)).thenReturn(Optional.of(report));
 
         var response = controller.getReportById(10L, currentUser);

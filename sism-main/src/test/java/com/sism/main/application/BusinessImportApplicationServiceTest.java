@@ -42,6 +42,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -93,7 +94,8 @@ class BusinessImportApplicationServiceTest {
                 basicTaskWeightValidationService,
                 workflowApplicationService,
                 auditInstanceRepository,
-                transactionTemplate);
+                transactionTemplate,
+                new org.springframework.jdbc.core.JdbcTemplate());
     }
 
     @Test
@@ -166,8 +168,8 @@ class BusinessImportApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("Should reject auto approval commit for reporter-only user")
-    void shouldRejectAutoApproveCommitForReporterOnlyUser() {
+    @DisplayName("Should allow reporter-only user after import permission policy change")
+    void shouldAllowAnyUserToAutoApproveAfterPolicyChange() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
 
@@ -180,20 +182,20 @@ class BusinessImportApplicationServiceTest {
                 fixture.currentUser());
 
         CurrentUser reporterOnly = reporterOnlyUser(fixture);
-        var exception = assertThrows(SecurityException.class, () -> service.commit(
-                preview.batchId(),
-                new ImportCommitRequest(
-                        preview.confirmToken(),
-                        ConflictMode.APPEND,
-                        true,
-                        "导入后自动下发审批"),
-                reporterOnly));
+        stubCommitDependencies(fixture);
 
-        assertEquals(
-                "填报人账号不能自动发起审批，请取消勾选自动审批后重试，或由部门负责人及以上角色操作",
-                exception.getMessage());
-        verify(transactionTemplate, never()).execute(any());
-        verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
+        // P6 修订：导入不做权限限制，填报人也可自动审批（系统默认账号留痕）
+        assertDoesNotThrow(() -> {
+            service.commit(
+                    preview.batchId(),
+                    new ImportCommitRequest(
+                            preview.confirmToken(),
+                            ConflictMode.APPEND,
+                            true,
+                            "导入后自动下发审批"),
+                    reporterOnly);
+        });
+        verify(transactionTemplate).execute(any());
     }
 
     private CurrentUser reporterOnlyUser(Fixture fixture) {

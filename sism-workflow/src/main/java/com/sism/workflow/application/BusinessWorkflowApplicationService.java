@@ -52,6 +52,7 @@ public class BusinessWorkflowApplicationService {
     private final UserProvider userProvider;
     private final NotificationProvider notificationProvider;
     private final DingTalkTodoProvider dingTalkTodoProvider;
+    private final java.util.List<com.sism.shared.domain.workflow.WorkflowBusinessContextPort> workflowBusinessContextPorts;
 
     // ==================== 工作流启动 ====================
 
@@ -220,6 +221,15 @@ public class BusinessWorkflowApplicationService {
     @Transactional
     public WorkflowInstanceResponse approveTask(
             String taskId, ApprovalRequest request, Long userId) {
+        return approveTask(taskId, request, userId, null);
+    }
+
+    /**
+     * 审批任务（可携带本节点鉴定进度等级，P1 上报链改造）
+     */
+    @Transactional
+    public WorkflowInstanceResponse approveTask(
+            String taskId, ApprovalRequest request, Long userId, String appraisalLevel) {
 
         log.info("Approving task: {}, userId: {}", taskId, userId);
 
@@ -237,7 +247,16 @@ public class BusinessWorkflowApplicationService {
 
         String resolvedComment = resolveApprovalComment(request == null ? null : request.getComment());
         AuditInstance approved = workflowApplicationService.approveAuditInstance(
-                instance, userId, resolvedComment);
+                instance, userId, resolvedComment, appraisalLevel);
+        // B9 鉴定投影口径：仅当审批后实例到达终态（status == APPROVED，整条链走完）时，
+        // 才把本次 decision 的鉴定等级投影到业务明细行；
+        // 中间节点的鉴定仅写入 audit_step_instance.appraisal_level 留痕（approveAuditInstance 内既有逻辑）。
+        if (appraisalLevel != null && !appraisalLevel.isBlank()
+                && AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus())) {
+            workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevel(
+                    instance.getEntityType(), instance.getEntityId(), appraisalLevel));
+        }
+        endMutationIfTerminal(instance);
         createApprovalResultNotification(
                 approved,
                 userId,
@@ -255,9 +274,14 @@ public class BusinessWorkflowApplicationService {
     public WorkflowInstanceResponse decideTask(
             String taskId, WorkflowTaskDecisionRequest request, Long userId) {
         if (Boolean.TRUE.equals(request.getApproved())) {
+            // 鉴定进度等级（P1）：通过时可选填写，归一校验（旧预警档位码归并为 DELAYED）
+            String appraisalLevel = com.sism.enums.ProgressLevel
+                    .normalize(request.getAppraisalLevel()) == null
+                    ? null
+                    : com.sism.enums.ProgressLevel.normalize(request.getAppraisalLevel()).name();
             ApprovalRequest approvalRequest = new ApprovalRequest();
             approvalRequest.setComment(resolveApprovalComment(request.getComment()));
-            return approveTask(taskId, approvalRequest, userId);
+            return approveTask(taskId, approvalRequest, userId, appraisalLevel);
         }
 
         RejectionRequest rejectionRequest = new RejectionRequest();
@@ -324,6 +348,7 @@ public class BusinessWorkflowApplicationService {
             pushDingTalkTodoToUser(instance, pendingStep, detailSnapshot, request.getTargetUserId());
         }
 
+        endMutationIfTerminal(instance);
         return workflowReadModelMapper.toInstanceResponse(instance);
     }
 
@@ -622,5 +647,18 @@ public class BusinessWorkflowApplicationService {
             return comment.trim();
         }
         return "审批驳回";
+    }
+
+    private void endMutationIfTerminal(AuditInstance instance) {
+        if (instance == null || !"INDICATOR".equalsIgnoreCase(instance.getEntityType())) {
+            return;
+        }
+        boolean terminal = !"PENDING".equalsIgnoreCase(instance.getStatus());
+        if (!terminal) {
+            return;
+        }
+        boolean approved = "APPROVED".equalsIgnoreCase(instance.getStatus());
+        workflowBusinessContextPorts.forEach(port -> port.endIndicatorMutation(
+                instance.getEntityType(), instance.getEntityId(), approved));
     }
 }

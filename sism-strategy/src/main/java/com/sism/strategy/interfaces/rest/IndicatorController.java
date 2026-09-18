@@ -71,6 +71,7 @@ public class IndicatorController {
         return java.time.YearMonth.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
     }
 
+    private final com.sism.strategy.application.IndicatorMutationService indicatorMutationService;
     private final StrategyApplicationService strategyApplicationService;
     private final BatchIndicatorDistributionApplicationService batchIndicatorDistributionApplicationService;
     private final OrganizationRepository organizationRepository;
@@ -970,6 +971,36 @@ public class IndicatorController {
     }
 
     // ==================== Request/Response DTOs ====================
+
+    // ==================== P5 指标异动 ====================
+
+    @org.springframework.transaction.annotation.Transactional
+    @org.springframework.web.bind.annotation.PostMapping("/{id}/mutation")
+    @Operation(summary = "发起指标异动", description = "仅战略发展部；原地修改+写快照+启动异动审批链并锁死该组织填报")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<String>> initiateMutation(
+            @PathVariable Long id,
+            @org.springframework.web.bind.annotation.RequestBody java.util.Map<String, Object> changes,
+            @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
+        Long operator = currentUser == null ? null : currentUser.getId();
+        String instanceId = indicatorMutationService.initiate(id, changes, operator);
+        return ResponseEntity.ok(ApiResponse.success(instanceId));
+    }
+
+    @org.springframework.web.bind.annotation.GetMapping("/{id}/mutation-history")
+    @Operation(summary = "指标异动历史", description = "该指标全部异动快照（已更改 N 次）")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> mutationHistory(
+            @PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success(indicatorMutationService.history(id)));
+    }
+
+    @org.springframework.web.bind.annotation.GetMapping("/mutations/in-progress")
+    @Operation(summary = "异动中指标清单", description = "看板异动汇总数据源")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> inMutation() {
+        return ResponseEntity.ok(ApiResponse.success(indicatorMutationService.listInMutation()));
+    }
 
     @Data
     @NoArgsConstructor
