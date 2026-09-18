@@ -31,11 +31,11 @@ public class AlertRequest {
     @Positive(message = "窗口ID必须为正数")
     private Long windowId;
 
-    @Schema(description = "严重程度（CRITICAL, WARNING, INFO；兼容 MAJOR/MINOR 别名）",
+    @Schema(description = "严重程度（进度等级三档 AHEAD/NORMAL/DELAYED；旧档 CRITICAL/WARNING/INFO，兼容 MAJOR/MINOR 别名）",
             requiredMode = Schema.RequiredMode.REQUIRED, example = "WARNING")
     @NotBlank(message = "严重程度不能为空")
-    @Pattern(regexp = "^(?i)(INFO|WARNING|CRITICAL|MAJOR|MINOR)$",
-            message = "严重程度必须是 INFO/WARNING/CRITICAL 或 MAJOR/MINOR")
+    @Pattern(regexp = "^(?i)(INFO|WARNING|CRITICAL|MAJOR|MINOR|AHEAD|NORMAL|DELAYED)$",
+            message = "严重程度必须是 AHEAD/NORMAL/DELAYED 或旧档 INFO/WARNING/CRITICAL、MAJOR/MINOR")
     private String severity;
 
     @Schema(description = "实际完成百分比", requiredMode = Schema.RequiredMode.REQUIRED, example = "45.50")

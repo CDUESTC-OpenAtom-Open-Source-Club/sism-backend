@@ -348,22 +348,39 @@ public class UserNotificationService implements NotificationProvider {
             throw new IllegalArgumentException("Recipient user ID is required");
         }
 
-        String severityLabel = switch (severity == null ? "" : severity.trim().toUpperCase()) {
+        String normalizedSeverity = severity == null ? "" : severity.trim().toUpperCase();
+        String severityLabel = switch (normalizedSeverity) {
             case "CRITICAL" -> "严重";
             case "WARNING" -> "警告";
+            // 三档进度等级（P1）：人工判定产生，语义是等级调整而非差距告警
+            case "AHEAD" -> "超前完成";
+            case "NORMAL" -> "正常";
+            case "DELAYED" -> "延期";
             default -> "提示";
         };
         String resolvedIndicatorName = indicatorName == null || indicatorName.isBlank()
                 ? "指标#" + indicatorId : indicatorName.trim();
-        String title = "指标告警通知（" + severityLabel + "）";
-        String content = String.format(
-                "指标「%s」触发了%s级别告警。实际进度 %s%%，期望进度 %s%%，偏差 %s%%。请及时处理。",
-                resolvedIndicatorName,
-                severityLabel,
-                actualPercent == null ? "N/A" : actualPercent.stripTrailingZeros().toPlainString(),
-                expectedPercent == null ? "N/A" : expectedPercent.stripTrailingZeros().toPlainString(),
-                gapPercent == null ? "N/A" : gapPercent.stripTrailingZeros().toPlainString()
-        );
+        String title;
+        String content;
+        if (isProgressLevelSeverity(normalizedSeverity)) {
+            // 三档进度等级：人工鉴定，无百分比概念，走专用文案（用户定案 2026-09-18）
+            title = "进度等级调整通知（" + severityLabel + "）";
+            content = String.format(
+                    "指标「%s」的进度等级被上级调整为「%s」，请知悉。",
+                    resolvedIndicatorName,
+                    severityLabel
+            );
+        } else {
+            title = "指标告警通知（" + severityLabel + "）";
+            content = String.format(
+                    "指标「%s」触发了%s级别告警。实际进度 %s%%，期望进度 %s%%，偏差 %s%%。请及时处理。",
+                    resolvedIndicatorName,
+                    severityLabel,
+                    actualPercent == null ? "N/A" : actualPercent.stripTrailingZeros().toPlainString(),
+                    expectedPercent == null ? "N/A" : expectedPercent.stripTrailingZeros().toPlainString(),
+                    gapPercent == null ? "N/A" : gapPercent.stripTrailingZeros().toPlainString()
+            );
+        }
         String actionUrl = alertId == null ? "/alerts" : "/alerts?alertId=" + alertId;
 
         UserNotification notification = new UserNotification();
@@ -576,6 +593,13 @@ public class UserNotificationService implements NotificationProvider {
         }
     }
 
+
+    /** 三档进度等级（P1）：AHEAD/NORMAL/DELAYED，人工判定产生，通知走专用文案。 */
+    private static boolean isProgressLevelSeverity(String normalizedSeverity) {
+        return "AHEAD".equals(normalizedSeverity)
+                || "NORMAL".equals(normalizedSeverity)
+                || "DELAYED".equals(normalizedSeverity);
+    }
 
     private static String buildAlertMetadataJson(
             Long alertId,
