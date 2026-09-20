@@ -2,11 +2,12 @@ package com.sism.alert.infrastructure.event;
 
 import com.sism.alert.domain.Alert;
 import com.sism.alert.domain.event.AlertCreatedEvent;
+import com.sism.alert.domain.event.AlertResolvedEvent;
 import com.sism.alert.domain.event.AlertTriggeredEvent;
+import com.sism.shared.domain.notification.NotificationProvider;
 import com.sism.alert.domain.repository.AlertRepository;
 import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.user.UserRepository;
-import com.sism.shared.domain.notification.NotificationProvider;
 import com.sism.strategy.domain.indicator.Indicator;
 import com.sism.strategy.domain.repository.IndicatorRepository;
 import lombok.RequiredArgsConstructor;
@@ -46,6 +47,21 @@ public class AlertNotificationListener {
         }
 
         notifyAlertRecipients(event.alertId(), event.severity());
+    }
+
+    /** H2（2026-09-19）：告警解决（等级调整/审批流转）后，关闭该告警历史推送的未读通知。 */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void handleAlertResolved(AlertResolvedEvent event) {
+        if (event == null || event.alertId() == null) {
+            return;
+        }
+        try {
+            notificationProvider.deleteAlertNotifications(event.alertId());
+        } catch (Exception ex) {
+            log.error("Failed to delete resolved alert notifications: alertId={}, error={}",
+                    event.alertId(), ex.getMessage(), ex);
+        }
     }
 
     private void notifyAlertRecipients(Long alertId, String severity) {

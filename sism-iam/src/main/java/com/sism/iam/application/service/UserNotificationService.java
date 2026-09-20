@@ -8,6 +8,7 @@ import com.sism.iam.domain.notification.UserNotificationRepository;
 import com.sism.iam.domain.user.UserRepository;
 import com.sism.shared.domain.notification.NotificationProvider;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.context.ApplicationEventPublisher;
@@ -27,6 +28,7 @@ import com.sism.iam.application.NotificationEvent;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class UserNotificationService implements NotificationProvider {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper().findAndRegisterModules();
@@ -593,6 +595,22 @@ public class UserNotificationService implements NotificationProvider {
         }
     }
 
+
+    /**
+     * H2（2026-09-19）：告警已解决（等级调整/审批流转）时，删除该告警历史推送的
+     * 未读通知，避免「待审批」催办指向已过时状态（五角色体验测试 H2）。
+     */
+    @Override
+    public void deleteAlertNotifications(Long alertId) {
+        if (alertId == null) {
+            return;
+        }
+        long deleted = userNotificationRepository.deleteByNotificationTypeAndRelatedEntityTypeAndRelatedEntityId(
+                TYPE_ALERT, ENTITY_TYPE_ALERT, alertId);
+        if (deleted > 0) {
+            log.info("[Notification] 已随告警解决关闭历史通知: alertId={}, deleted={}", alertId, deleted);
+        }
+    }
 
     /** 三档进度等级（P1）：AHEAD/NORMAL/DELAYED，人工判定产生，通知走专用文案。 */
     private static boolean isProgressLevelSeverity(String normalizedSeverity) {
