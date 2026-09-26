@@ -2,6 +2,7 @@ package com.sism.main.application;
 
 import com.sism.iam.domain.user.UserRepository;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ConflictMode;
+import com.sism.main.interfaces.dto.BusinessImportDtos.ImportAction;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportCommitRequest;
 import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.OrganizationRepository;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
@@ -46,9 +48,12 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -78,6 +83,8 @@ class BusinessImportApplicationServiceTest {
     private AuditInstanceRepository auditInstanceRepository;
     @Mock
     private TransactionTemplate transactionTemplate;
+    @Mock
+    private JdbcTemplate importBatchJdbcTemplate;
 
     private BusinessImportApplicationService service;
 
@@ -95,7 +102,7 @@ class BusinessImportApplicationServiceTest {
                 workflowApplicationService,
                 auditInstanceRepository,
                 transactionTemplate,
-                new org.springframework.jdbc.core.JdbcTemplate());
+                importBatchJdbcTemplate);
     }
 
     @Test
@@ -303,6 +310,202 @@ class BusinessImportApplicationServiceTest {
         verify(transactionTemplate, never()).execute(any());
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(anyLong(), anyLong());
         verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
+    }
+
+    // ==================== #83 批次二：行为基线（固化现状，重构回归网） ====================
+
+    @Test
+    @DisplayName("D4: strategic preview flags linked indicator from another cycle as error row")
+    void shouldFlagCrossYearLinkedIndicatorInStrategicPreview() {
+        Fixture fixture = fixture();
+        StrategicTask task2025 = crossYearTask(fixture);
+        Indicator crossYearIndicator = crossYearIndicator(fixture, task2025.getId());
+        when(organizationRepository.findById(fixture.functionalOrg().getId()))
+                .thenReturn(Optional.of(fixture.functionalOrg()));
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L,
+                PlanLevel.STRAT_TO_FUNC,
+                fixture.functionalOrg().getId(),
+                fixture.functionalOrg().getId()))
+                .thenReturn(Optional.empty());
+        when(indicatorRepository.findById(2001L)).thenReturn(Optional.of(crossYearIndicator));
+        when(taskRepository.findById(task2025.getId())).thenReturn(Optional.of(task2025));
+
+        var preview = service.previewStrategicTasks(
+                strategicWorkbookWithInternalId("cross-year-strategic.xlsx", "2001"),
+                2026L,
+                fixture.functionalOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertEquals(1, preview.rows().size());
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                .anyMatch(msg -> msg.contains("属于其他考核年度")));
+        assertTrue(preview.blocking());
+    }
+
+    @Test
+    @DisplayName("D4: distribution commit rejects parent indicator from another cycle")
+    void shouldRejectCrossYearParentIndicatorOnDistributionCommit() {
+        Fixture fixture = fixture();
+        StrategicTask task2025 = crossYearTask(fixture);
+        Indicator crossYearIndicator = crossYearIndicator(fixture, task2025.getId());
+        stubPreviewDependencies(fixture);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            TransactionCallback<Object> callback = invocation.getArgument(0);
+            return callback.doInTransaction(new SimpleTransactionStatus());
+        });
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
+            Plan plan = invocation.getArgument(0);
+            plan.setId(900L);
+            return plan;
+        });
+        when(indicatorRepository.findById(2001L)).thenReturn(Optional.of(crossYearIndicator));
+        when(taskRepository.findById(task2025.getId())).thenReturn(Optional.of(task2025));
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("cross-year-distribution.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        var blocked = assertThrows(IllegalArgumentException.class, () -> service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(
+                        preview.confirmToken(),
+                        ConflictMode.APPEND,
+                        false,
+                        "确认导入"),
+                fixture.currentUser()));
+
+        assertTrue(blocked.getMessage().contains("属于其他考核年度"));
+        assertTrue(blocked.getMessage().contains("2001"));
+    }
+
+    @Test
+    @DisplayName("P6: successful commit persists import_batch audit row")
+    void shouldPersistImportBatchAuditRowOnCommit() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        stubCommitDependencies(fixture);
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("audit-success.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(
+                        preview.confirmToken(),
+                        ConflictMode.APPEND,
+                        false,
+                        "确认导入"),
+                fixture.currentUser());
+
+        assertEquals("COMMITTED", result.status());
+        verify(importBatchJdbcTemplate).update(
+                contains("INSERT INTO public.import_batch"),
+                eq(preview.batchId()),
+                eq("DISTRIBUTION"),
+                eq("audit-success.xlsx"),
+                eq(8L),
+                eq(4L),
+                eq(36L),
+                eq(2026L),
+                eq(2));
+    }
+
+    @Test
+    @DisplayName("P6: import_batch audit write failure does not block commit")
+    void shouldNotBlockCommitWhenImportBatchAuditWriteFails() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        stubCommitDependencies(fixture);
+        doThrow(new RuntimeException("import_batch table unavailable"))
+                .when(importBatchJdbcTemplate)
+                .update(anyString(), any(Object[].class));
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("audit-failure.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(
+                        preview.confirmToken(),
+                        ConflictMode.APPEND,
+                        false,
+                        "确认导入"),
+                fixture.currentUser());
+
+        assertEquals("COMMITTED", result.status());
+        assertEquals(2, result.createdCount());
+    }
+
+    private StrategicTask crossYearTask(Fixture fixture) {
+        StrategicTask task2025 = StrategicTask.create(
+                "旧年度任务",
+                TaskType.BASIC,
+                900L,
+                2025L,
+                fixture.college(),
+                fixture.functionalOrg());
+        task2025.setId(1002L);
+        return task2025;
+    }
+
+    private Indicator crossYearIndicator(Fixture fixture, Long taskId) {
+        Indicator indicator = Indicator.create(
+                "父级核心指标A",
+                fixture.functionalOrg(),
+                fixture.functionalOrg(),
+                "定量");
+        indicator.setId(2001L);
+        indicator.setTaskId(taskId);
+        return indicator;
+    }
+
+    private MockMultipartFile strategicWorkbookWithInternalId(String fileName, String internalId) {
+        try (Workbook workbook = new XSSFWorkbook();
+             ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("核心指标下发");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("职能部门");
+            header.createCell(1).setCellValue("战略任务");
+            header.createCell(2).setCellValue("核心指标");
+            header.createCell(3).setCellValue("指标类型");
+            header.createCell(4).setCellValue("权重");
+            header.createCell(5).setCellValue("内部ID");
+
+            Row first = sheet.createRow(1);
+            first.createCell(0).setCellValue("人力资源部");
+            first.createCell(1).setCellValue("基础任务");
+            first.createCell(2).setCellValue("父级核心指标A");
+            first.createCell(3).setCellValue("定量");
+            first.createCell(4).setCellValue(30);
+            first.createCell(5).setCellValue(internalId);
+
+            workbook.write(outputStream);
+            return new MockMultipartFile(
+                    "file",
+                    fileName,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    outputStream.toByteArray());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
     }
 
     private void stubPreviewDependencies(Fixture fixture) {
