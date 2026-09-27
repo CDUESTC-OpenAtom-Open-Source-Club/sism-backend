@@ -7,6 +7,7 @@ import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.notification.UserNotificationRepository;
 import com.sism.iam.domain.user.UserRepository;
 import com.sism.shared.domain.notification.NotificationProvider;
+import com.sism.shared.domain.notification.RealtimeNotificationProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -46,6 +47,38 @@ public class UserNotificationService implements NotificationProvider {
     private final UserNotificationRepository userNotificationRepository;
     private final UserRepository userRepository;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final RealtimeNotificationProvider realtimeNotificationProvider;
+
+    /**
+     * 2026-09-27 细粒度异步刷新：持久化通知落库后，通过 WS 实时通道推送给在线收件人。
+     * 前端按 entityType/type 映射数据域，仅刷新受影响的视图；推送失败不影响业务事务。
+     */
+    private void publishRealtime(UserNotification notification, String stepName) {
+        try {
+            realtimeNotificationProvider.publish(
+                    notification.getRecipientUserId(),
+                    notification.getNotificationType(),
+                    notification.getTitle(),
+                    notification.getContent(),
+                    notification.getRelatedEntityType(),
+                    notification.getRelatedEntityId(),
+                    extractApprovalInstanceId(notification.getActionUrl()),
+                    stepName
+            );
+        } catch (Exception ex) {
+            log.warn("实时通知发布失败: id={}, type={}", notification.getId(), notification.getNotificationType(), ex);
+        }
+    }
+
+    private Long extractApprovalInstanceId(String actionUrl) {
+        if (actionUrl == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("approvalInstanceId=(\\d+)")
+                .matcher(actionUrl);
+        return matcher.find() ? Long.valueOf(matcher.group(1)) : null;
+    }
 
     public record ReminderResult(
             Long reminderId,
@@ -249,6 +282,7 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
+        publishRealtime(saved, resolvedStepName);
         return new SubmissionNotificationResult(
                 saved.getId(),
                 saved.getRecipientUserId(),
@@ -333,6 +367,7 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
+        publishRealtime(saved, resolvedStepName);
         return new ApprovalResultNotification(
                 saved.getId(),
                 saved.getRecipientUserId(),
