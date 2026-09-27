@@ -151,6 +151,11 @@ public class JpaUserNotificationRepository implements UserNotificationRepository
     }
 
     @Override
+    public int markApprovalSubmittedNotificationsRead(Long recipientUserId, String actionUrlPattern, LocalDateTime readAt) {
+        return jpaRepository.markApprovalSubmittedNotificationsRead(recipientUserId, actionUrlPattern, readAt);
+    }
+
+    @Override
     public Optional<UserNotification> findLatestReminder(Long relatedEntityId, Long senderUserId) {
         return jpaRepository
                 .findTopByNotificationTypeAndRelatedEntityTypeAndRelatedEntityIdAndSenderUserIdOrderByCreatedAtDesc(
