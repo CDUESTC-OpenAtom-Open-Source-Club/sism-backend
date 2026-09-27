@@ -261,6 +261,18 @@ public class UserNotificationService implements NotificationProvider {
 
     @Transactional
     @Override
+    public int markApprovalSubmittedNotificationsRead(Long approvalInstanceId, Long recipientUserId) {
+        if (approvalInstanceId == null || recipientUserId == null) {
+            return 0;
+        }
+        // actionUrl 由 createSubmissionNotification 统一生成为 /messages?approvalInstanceId={id}
+        String actionUrlPattern = "%/messages?approvalInstanceId=" + approvalInstanceId;
+        return userNotificationRepository.markApprovalSubmittedNotificationsRead(
+                recipientUserId, actionUrlPattern, LocalDateTime.now());
+    }
+
+    @Transactional
+    @Override
     public ApprovalResultNotification createApprovalResultNotification(
             Long recipientUserId,
             Long senderUserId,

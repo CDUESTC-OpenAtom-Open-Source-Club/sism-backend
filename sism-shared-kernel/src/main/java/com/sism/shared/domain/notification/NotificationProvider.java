@@ -31,6 +31,15 @@ public interface NotificationProvider {
             String comment
     );
 
+    /**
+     * 2026-09-27 用户拍板：审批处理完成后消息留痕——
+     * 将该审批实例上指定审批人仍未读的「待审批」通知标记为已读。
+     * 通知保留在消息中心（不删除），仅从未读转为已读留痕。
+     *
+     * @return 标记的通知条数
+     */
+    int markApprovalSubmittedNotificationsRead(Long approvalInstanceId, Long recipientUserId);
+
     record AlertNotification(
             Long notificationId,
             Long recipientUserId,
