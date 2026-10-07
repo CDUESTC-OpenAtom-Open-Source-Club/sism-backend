@@ -174,7 +174,8 @@ public class IndicatorMutationService {
             }
 
             String batchKey = java.util.UUID.randomUUID().toString();
-            String actionUrl = "/indicators/" + indicatorId;
+            // T1: 前端无 /indicators/{id} 路由，跳转指标详情会 404；改跳进度页（路由已存在）
+            String actionUrl = "/indicators/" + indicatorId + "/progress";
             for (Long recipientId : recipientIds) {
                 jdbcTemplate.update(
                         """
