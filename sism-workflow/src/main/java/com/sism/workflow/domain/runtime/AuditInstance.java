@@ -219,6 +219,18 @@ public class AuditInstance extends AggregateRoot<Long> {
         this.completedAt = LocalDateTime.now();
     }
 
+    /**
+     * 2026-10-07：撤回前抓取当前待审批步骤的审批人名单，
+     * 供「审批链已撤回」实时通知使用（人被置回 WAITING 后就查不到了）。
+     */
+    public List<Long> getPendingApproverIds() {
+        return stepInstances.stream()
+                .filter(step -> STEP_STATUS_PENDING.equals(step.getStatus()))
+                .map(AuditStepInstance::getApproverId)
+                .filter(approverId -> approverId != null)
+                .toList();
+    }
+
     public void reactivateWithdrawnStep() {
         if (!STATUS_PENDING.equals(status) && !STATUS_WITHDRAWN.equals(status) && !STATUS_REJECTED.equals(status)) {
             throw new IllegalStateException("Cannot reactivate: workflow is not in a resumable state");

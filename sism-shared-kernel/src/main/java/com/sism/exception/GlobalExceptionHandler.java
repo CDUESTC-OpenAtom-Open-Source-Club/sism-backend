@@ -245,7 +245,11 @@ public class GlobalExceptionHandler {
         log.warn("Illegal state: message={}, requestId={}, context=[{}]",
                 e.getMessage(), requestId, requestContext);
 
-        ApiResponse<Void> response = ApiResponse.error(ErrorCodes.BAD_REQUEST, MESSAGE_INVALID_STATE);
+        // 业务态非法（如指标异动锁死填报）的提示语需要透传给用户，不能吞成通用文案
+        String message = e.getMessage() == null || e.getMessage().isBlank()
+                ? MESSAGE_INVALID_STATE
+                : e.getMessage();
+        ApiResponse<Void> response = ApiResponse.error(ErrorCodes.BAD_REQUEST, message);
 
         return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)

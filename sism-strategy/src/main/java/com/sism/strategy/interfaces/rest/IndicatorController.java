@@ -984,7 +984,8 @@ public class IndicatorController {
             @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
         Long operator = currentUser == null ? null : currentUser.getId();
         String instanceId = indicatorMutationService.initiate(id, changes, operator);
-        return ResponseEntity.ok(ApiResponse.success(instanceId));
+        // 显式两参重载：单参 success(String) 会命中 message 重载，把 instanceId 写进 message 而 data 为 null
+        return ResponseEntity.ok(ApiResponse.success("Success", instanceId));
     }
 
     @org.springframework.web.bind.annotation.GetMapping("/{id}/mutation-history")

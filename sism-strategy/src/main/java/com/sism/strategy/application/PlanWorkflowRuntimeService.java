@@ -1,5 +1,7 @@
 package com.sism.strategy.application;
 
+import com.sism.shared.domain.notification.WorkflowChainWithdrawnEvent;
+import com.sism.shared.infrastructure.event.DomainEventPublisher;
 import com.sism.strategy.domain.plan.Plan;
 import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.repository.PlanRepository;
@@ -24,11 +26,40 @@ class PlanWorkflowRuntimeService {
     private final JdbcTemplate jdbcTemplate;
     private final PlanRepository planRepository;
     private final StrategyOrgProperties strategyOrgProperties;
+    private final DomainEventPublisher eventPublisher;
 
     void withdrawWorkflowCurrentStep(Long workflowInstanceId) {
         if (workflowInstanceId == null) {
             return;
         }
+
+        // 2026-10-07：撤回前抓取原待审批人与实例信息（更新后 PENDING 步骤被置回 WAITING，
+        // 便再也无法定位该通知谁）——撤回成功后发实时事件，由 sism-main 推送 WebSocket
+        List<Long> pendingApproverIds = jdbcTemplate.query(
+                """
+                SELECT asi.approver_id
+                FROM public.audit_step_instance asi
+                WHERE asi.instance_id = ?
+                  AND asi.status = 'PENDING'
+                  AND asi.approver_id IS NOT NULL
+                """,
+                (rs, _rowNum) -> rs.getLong(1),
+                workflowInstanceId
+        );
+        final String[] instanceMeta = new String[3];
+        jdbcTemplate.query(
+                """
+                SELECT entity_type, entity_id, requester_id
+                FROM public.audit_instance
+                WHERE id = ?
+                """,
+                rs -> {
+                    instanceMeta[0] = rs.getString("entity_type");
+                    instanceMeta[1] = rs.getString("entity_id");
+                    instanceMeta[2] = rs.getString("requester_id");
+                },
+                workflowInstanceId
+        );
 
         List<WorkflowStepRow> submitterSteps = jdbcTemplate.query(
                 """
@@ -75,6 +106,31 @@ class PlanWorkflowRuntimeService {
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """, workflowInstanceId);
+
+        // 2026-10-07：撤回完成，实时通知原待审批人（跨账号场景不再依赖心跳/手动刷新）
+        if (!pendingApproverIds.isEmpty()) {
+            String resolvedEntityType = instanceMeta[0] != null && !instanceMeta[0].isBlank()
+                    ? instanceMeta[0]
+                    : "PLAN";
+            eventPublisher.publish(new WorkflowChainWithdrawnEvent(
+                    workflowInstanceId,
+                    resolvedEntityType,
+                    parseLongOrNull(instanceMeta[1]),
+                    parseLongOrNull(instanceMeta[2]),
+                    pendingApproverIds
+            ));
+        }
+    }
+
+    private static Long parseLongOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     boolean reactivateWithdrawnWorkflowCurrentStep(Long workflowInstanceId, String submitComment) {
