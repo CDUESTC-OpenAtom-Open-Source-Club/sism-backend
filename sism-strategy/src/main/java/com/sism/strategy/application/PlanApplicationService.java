@@ -131,7 +131,8 @@ public class PlanApplicationService {
         this.planWorkflowRuntimeService = new PlanWorkflowRuntimeService(
                 jdbcTemplate,
                 planRepository,
-                strategyOrgProperties
+                strategyOrgProperties,
+                eventPublisher
         );
         this.selfProvider = new ObjectProvider<>() {
             @Override
