@@ -7,6 +7,7 @@ import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.notification.UserNotificationRepository;
 import com.sism.iam.domain.user.UserRepository;
 import com.sism.shared.domain.notification.NotificationProvider;
+import com.sism.shared.domain.notification.UserNotificationRealtimePushEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -249,6 +250,19 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
+        // 2026-10-07：落库同时发实时推送事件（sism-main 监听后走 WebSocket），
+        // 审批人的「处理审批/查看审批」状态秒级收敛，不再依赖心跳或手动刷新
+        applicationEventPublisher.publishEvent(new UserNotificationRealtimePushEvent(
+                saved.getRecipientUserId(),
+                saved.getSenderUserId(),
+                saved.getNotificationType(),
+                saved.getTitle(),
+                saved.getContent(),
+                normalizedEntityType,
+                entityId,
+                approvalInstanceId,
+                resolvedStepName
+        ));
         return new SubmissionNotificationResult(
                 saved.getId(),
                 saved.getRecipientUserId(),
@@ -321,6 +335,18 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
+        // 2026-10-07：落库同时发实时推送事件（sism-main 监听后走 WebSocket）
+        applicationEventPublisher.publishEvent(new UserNotificationRealtimePushEvent(
+                saved.getRecipientUserId(),
+                saved.getSenderUserId(),
+                saved.getNotificationType(),
+                saved.getTitle(),
+                saved.getContent(),
+                normalizedEntityType,
+                entityId,
+                approvalInstanceId,
+                resolvedStepName
+        ));
         return new ApprovalResultNotification(
                 saved.getId(),
                 saved.getRecipientUserId(),
