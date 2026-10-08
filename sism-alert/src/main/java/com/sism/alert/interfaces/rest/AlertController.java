@@ -249,15 +249,14 @@ public class AlertController {
     // ==================== Update ====================
 
     @PutMapping("/indicator/{indicatorId}/manual-level")
-    @Operation(summary = "设置指标手动预警等级", description = "战略发展部在战略任务管理表格中手动设置或取消预警等级")
+    @Operation(summary = "设置指标手动预警等级", description = "战略发展部、分管校领导及指标所属填报部门可手动设置或取消进度鉴定等级（后写覆盖，2026-10-07 裁决 B）")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<AlertResponse>> setManualAlertLevel(
             @PathVariable Long indicatorId,
             @Valid @RequestBody ManualAlertLevelRequest request,
             Authentication authentication
     ) {
-        ensureManualAlertWriteAccess(authentication);
-        alertAccessService.ensureIndicatorAccess(indicatorId, authentication);
+        ensureManualAlertWriteAccess(indicatorId, authentication);
         Long handledBy = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(
                 alertApplicationService.setManualAlertLevel(indicatorId, request.getSeverity(), handledBy)
@@ -266,7 +265,7 @@ public class AlertController {
         ));
     }
 
-    private void ensureManualAlertWriteAccess(Authentication authentication) {
+    private void ensureManualAlertWriteAccess(Long indicatorId, Authentication authentication) {
         if (authentication == null) {
             throw new AuthorizationException("当前请求缺少认证信息");
         }
@@ -280,7 +279,9 @@ public class AlertController {
                 && STRATEGIC_DEPT_ORG_ID.equals(currentUser.getOrgId())) {
             return;
         }
-        throw new AuthorizationException("仅战略发展部可调整预警等级");
+        // 2026-10-07 裁决（鉴定等级 B）：每个审核节点与指标所属填报部门均可鉴定，
+        // 后写覆盖先写；无该指标访问权的一律拒绝
+        alertAccessService.ensureIndicatorAccess(indicatorId, authentication);
     }
 
     @PostMapping("/{id}/resolve")
