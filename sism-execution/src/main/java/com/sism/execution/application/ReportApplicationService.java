@@ -817,7 +817,12 @@ public class ReportApplicationService {
             return;
         }
 
-        validatePendingProgress(indicatorId, progress);
+        // 2026-10-07 裁决：进度改为等级制（自评进度等级）定性评价，不再采集百分比。
+        // 带 selfRating 的等级制填报跳过「进度必须递增」的百分比校验；
+        // 旧的无等级路径保持原校验以兼容历史调用。
+        if (selfRating == null || selfRating.isBlank()) {
+            validatePendingProgress(indicatorId, progress);
+        }
         ProgressLevel rating = ProgressLevel.normalize(selfRating);
         String normalizedRating = rating == null ? null : rating.name();
         // 完成情况描述同时落 comment 与 description（口径：两列语义合并，读侧优先 description）
