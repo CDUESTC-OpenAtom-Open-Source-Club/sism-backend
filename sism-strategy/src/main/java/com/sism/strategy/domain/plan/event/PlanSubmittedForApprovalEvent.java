@@ -21,13 +21,24 @@ public class PlanSubmittedForApprovalEvent implements DomainEvent {
     private final Long submitterId;
     private final Long submitterOrgId;
     private final String comment;
+    /** 2026-10-10 跨窗口实时修复：撤回后重新发起时复活的实例 ID；全新提交流程为 null。 */
+    private final Long resumedWorkflowInstanceId;
 
     public PlanSubmittedForApprovalEvent(Long planId,
                                          String workflowCode,
                                          Long submitterId,
                                          Long submitterOrgId,
                                          String comment) {
-        this(UUID.randomUUID().toString(), LocalDateTime.now(), planId, workflowCode, submitterId, submitterOrgId, comment);
+        this(UUID.randomUUID().toString(), LocalDateTime.now(), planId, workflowCode, submitterId, submitterOrgId, comment, null);
+    }
+
+    public PlanSubmittedForApprovalEvent(Long planId,
+                                         String workflowCode,
+                                         Long submitterId,
+                                         Long submitterOrgId,
+                                         String comment,
+                                         Long resumedWorkflowInstanceId) {
+        this(UUID.randomUUID().toString(), LocalDateTime.now(), planId, workflowCode, submitterId, submitterOrgId, comment, resumedWorkflowInstanceId);
     }
 
     @JsonCreator
@@ -38,6 +49,18 @@ public class PlanSubmittedForApprovalEvent implements DomainEvent {
                                          @JsonProperty("submitterId") Long submitterId,
                                          @JsonProperty("submitterOrgId") Long submitterOrgId,
                                          @JsonProperty("comment") String comment) {
+        this(eventId, occurredOn, planId, workflowCode, submitterId, submitterOrgId, comment, null);
+    }
+
+    @JsonCreator
+    public PlanSubmittedForApprovalEvent(@JsonProperty("eventId") String eventId,
+                                         @JsonProperty("occurredOn") LocalDateTime occurredOn,
+                                         @JsonProperty("planId") Long planId,
+                                         @JsonProperty("workflowCode") String workflowCode,
+                                         @JsonProperty("submitterId") Long submitterId,
+                                         @JsonProperty("submitterOrgId") Long submitterOrgId,
+                                         @JsonProperty("comment") String comment,
+                                         @JsonProperty("resumedWorkflowInstanceId") Long resumedWorkflowInstanceId) {
         this.eventId = eventId;
         this.occurredOn = occurredOn;
         this.planId = planId;
@@ -45,6 +68,7 @@ public class PlanSubmittedForApprovalEvent implements DomainEvent {
         this.submitterId = submitterId;
         this.submitterOrgId = submitterOrgId;
         this.comment = comment;
+        this.resumedWorkflowInstanceId = resumedWorkflowInstanceId;
     }
 
     @Override

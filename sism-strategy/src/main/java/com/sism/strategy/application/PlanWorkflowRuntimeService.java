@@ -133,9 +133,13 @@ class PlanWorkflowRuntimeService {
         }
     }
 
-    boolean reactivateWithdrawnWorkflowCurrentStep(Long workflowInstanceId, String submitComment) {
+    /**
+     * 2026-10-10 跨窗口实时修复：复活撤回实例时返回该实例 ID，供提交通知链路使用；
+     * 未复活（无实例/无可复活步骤）返回 null。
+     */
+    Long reactivateWithdrawnWorkflowCurrentStep(Long workflowInstanceId, String submitComment) {
         if (workflowInstanceId == null) {
-            return false;
+            return null;
         }
 
         List<WorkflowStepRow> withdrawnSteps = jdbcTemplate.query(
@@ -166,7 +170,7 @@ class PlanWorkflowRuntimeService {
         );
 
         if (withdrawnSteps.isEmpty()) {
-            return false;
+            return null;
         }
 
         WorkflowStepRow withdrawnStep = withdrawnSteps.get(0);
@@ -220,10 +224,10 @@ class PlanWorkflowRuntimeService {
                         UPDATE public.audit_instance
                         SET status = 'IN_REVIEW',
                             completed_at = NULL,
-                            updated_at = CURRENT_TIMESTAMP
+                        updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
                         """, workflowInstanceId);
-                return true;
+                return workflowInstanceId;
             }
 
             WorkflowStepRow waitingStep = loadFirstWaitingWorkflowStep(workflowInstanceId);
@@ -299,7 +303,7 @@ class PlanWorkflowRuntimeService {
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """, workflowInstanceId);
-        return true;
+        return workflowInstanceId;
     }
 
     private String normalizeSubmitComment(String submitComment) {

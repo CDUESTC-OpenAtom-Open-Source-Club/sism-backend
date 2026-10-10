@@ -49,6 +49,19 @@ public class PlanWorkflowEventListener {
         }
 
         try {
+            // 2026-10-10 跨窗口实时修复：撤回后重新发起时事务内已复活原实例，
+            // 这里直接用复活实例 ID 走通知链路，不再新建实例。
+            if (event.getResumedWorkflowInstanceId() != null && event.getResumedWorkflowInstanceId() > 0) {
+                log.info("Plan workflow resumed for planId={}, instanceId={}",
+                        event.getPlanId(), event.getResumedWorkflowInstanceId());
+                com.sism.workflow.interfaces.dto.WorkflowInstanceResponse resumedResponse =
+                        com.sism.workflow.interfaces.dto.WorkflowInstanceResponse.builder()
+                                .instanceId(String.valueOf(event.getResumedWorkflowInstanceId()))
+                                .build();
+                notifyNextApprovers(event, event.getWorkflowCode(), resumedResponse);
+                return;
+            }
+
             StartWorkflowRequest request = new StartWorkflowRequest();
             request.setWorkflowCode(event.getWorkflowCode());
             request.setBusinessEntityId(event.getPlanId());

@@ -305,18 +305,19 @@ public class PlanApplicationService {
         plan.submitForApproval(allowsDistributedSubmission(request));
         Plan saved = planRepository.save(plan);
         publishAndClearEvents(saved);
-        boolean resumedWithdrawnWorkflow = planWorkflowRuntimeService.reactivateWithdrawnWorkflowCurrentStep(
+        // 2026-10-10 跨窗口实时修复：复活撤回实例的路径此前不发事件，审批人收不到
+        // 实时推送（只有心跳兜底）。现在无论新建还是复活都发布事件，由监听器区分处理。
+        Long resumedWorkflowInstanceId = planWorkflowRuntimeService.reactivateWithdrawnWorkflowCurrentStep(
                 existingSnapshot == null ? null : existingSnapshot.getWorkflowInstanceId(),
                 request == null ? null : request.getComment());
-        if (!resumedWithdrawnWorkflow) {
-            eventPublisher.publish(new PlanSubmittedForApprovalEvent(
-                    saved.getId(),
-                    request.getWorkflowCode(),
-                    currentUserId,
-                    currentOrgId,
-                    request.getComment()
-            ));
-        }
+        eventPublisher.publish(new PlanSubmittedForApprovalEvent(
+                saved.getId(),
+                request.getWorkflowCode(),
+                currentUserId,
+                currentOrgId,
+                request.getComment(),
+                resumedWorkflowInstanceId
+        ));
         return saved;
     }
 
