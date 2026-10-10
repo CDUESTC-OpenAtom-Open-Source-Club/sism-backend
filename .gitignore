@@ -58,3 +58,4 @@ test-bcrypt.java
 # Local secret backups / runtime env (never commit)
 .env.backup-*
 .env.remote
+.mimosa/
