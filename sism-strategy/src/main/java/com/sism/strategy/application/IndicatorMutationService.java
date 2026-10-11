@@ -256,6 +256,33 @@ public class IndicatorMutationService {
                 """);
     }
 
+    /**
+     * 2026-10-10：该组织的异动审批实例清单（审批中心「异动审批」卡片数据源）。
+     * 含进行中与已完成（历史），按发起时间倒序。
+     */
+    public java.util.List<java.util.Map<String, Object>> listMutationApprovals(Long orgId) {
+        if (orgId == null) {
+            return java.util.List.of();
+        }
+        return jdbcTemplate.queryForList(
+                """
+                SELECT ai.id AS instance_id,
+                       ai.entity_id AS indicator_id,
+                       left(i.indicator_desc, 60) AS indicator_desc,
+                       ai.status,
+                       ai.created_at,
+                       ai.completed_at
+                FROM public.audit_instance ai
+                JOIN public.indicator i ON i.id = ai.entity_id
+                WHERE ai.entity_type = 'INDICATOR'
+                  AND COALESCE(i.is_deleted, false) = false
+                  AND (i.target_org_id = ? OR i.owner_org_id = ?)
+                ORDER BY ai.created_at DESC
+                LIMIT 50
+                """,
+                orgId, orgId);
+    }
+
     /** 全面锁死：该组织下任一指标在异动中，即视为锁死。 */
     public boolean isOrgLockedByMutation(Long orgId) {
         if (orgId == null) {

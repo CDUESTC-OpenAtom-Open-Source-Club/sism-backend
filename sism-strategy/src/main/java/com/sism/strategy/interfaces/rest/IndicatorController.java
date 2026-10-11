@@ -988,6 +988,14 @@ public class IndicatorController {
         return ResponseEntity.ok(ApiResponse.success("Success", instanceId));
     }
 
+    @org.springframework.web.bind.annotation.GetMapping("/mutation-approvals")
+    @Operation(summary = "异动审批实例清单", description = "按组织查异动审批链（审批中心卡片数据源，含进行中与已完成）")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> mutationApprovals(
+            @org.springframework.web.bind.annotation.RequestParam Long orgId) {
+        return ResponseEntity.ok(ApiResponse.success(indicatorMutationService.listMutationApprovals(orgId)));
+    }
+
     @org.springframework.web.bind.annotation.GetMapping("/{id}/mutation-history")
     @Operation(summary = "指标异动历史", description = "该指标全部异动快照（已更改 N 次）")
     @PreAuthorize("isAuthenticated()")
