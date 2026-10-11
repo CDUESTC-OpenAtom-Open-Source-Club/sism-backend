@@ -31,6 +31,38 @@ public interface NotificationProvider {
             String comment
     );
 
+    /**
+     * 2026-10-10 跨窗口实时修复：中间节点审批通过后，通知下一环节全部候选审批人
+     * （站内信 + WebSocket 实时推送）。此前中间节点推进不通知，下游窗口只能等心跳兜底。
+     */
+    ApprovalResultNotification createFlowAdvancedNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String businessName,
+            String nextStepName,
+            String approverName
+    );
+
+    /**
+     * 2026-10-10 跨窗口实时修复：中间节点审批通过后，通知提交人流程已推进
+     * （type=APPROVAL_NEXT_STEP），让提交人窗口秒级看到"待下一环节审批"。
+     */
+    ApprovalResultNotification createStepAdvancedNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String businessName,
+            String nextStepName,
+            String approverName
+    );
+
     record AlertNotification(
             Long notificationId,
             Long recipientUserId,

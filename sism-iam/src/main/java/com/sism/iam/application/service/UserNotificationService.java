@@ -358,6 +358,139 @@ public class UserNotificationService implements NotificationProvider {
         );
     }
 
+    /**
+     * 2026-10-10 跨窗口实时修复：中间节点审批通过后，通知下一环节全部候选审批人。
+     * type=APPROVAL_SUBMITTED（复用待办通知语义，前端域过滤/去重照常生效）。
+     */
+    @Transactional
+    @Override
+    public ApprovalResultNotification createFlowAdvancedNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String businessName,
+            String nextStepName,
+            String approverName
+    ) {
+        String resolvedBusinessName =
+                businessName == null || businessName.isBlank()
+                        ? (entityId == null ? "审批事项" : "业务对象#" + entityId)
+                        : businessName.trim();
+        String resolvedStepName =
+                nextStepName == null || nextStepName.isBlank() ? "下一审批环节" : nextStepName.trim();
+        String resolvedApproverName =
+                approverName == null || approverName.isBlank() ? "上一环节审批人" : approverName.trim();
+        return saveApprovalNotification(
+                recipientUserId, senderUserId, senderOrgId, approvalInstanceId,
+                entityType, entityId, TYPE_APPROVAL_SUBMITTED,
+                "计划审批待处理",
+                resolvedApproverName + "已审批通过“" + resolvedBusinessName + "”，当前待处理环节为“"
+                        + resolvedStepName + "”，请尽快审批。",
+                "/messages?approvalInstanceId=" + approvalInstanceId,
+                buildApprovalSubmissionMetadataJson(
+                        approvalInstanceId, entityType, entityId,
+                        resolvedBusinessName, resolvedStepName, resolvedApproverName)
+        );
+    }
+
+    /**
+     * 2026-10-10 跨窗口实时修复：中间节点审批通过后，通知提交人流程已推进
+     * （type=APPROVAL_NEXT_STEP），提交人窗口可秒级收敛到"待下一环节审批"。
+     */
+    @Transactional
+    @Override
+    public ApprovalResultNotification createStepAdvancedNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String businessName,
+            String nextStepName,
+            String approverName
+    ) {
+        String resolvedBusinessName =
+                businessName == null || businessName.isBlank()
+                        ? (entityId == null ? "审批事项" : "业务对象#" + entityId)
+                        : businessName.trim();
+        String resolvedStepName =
+                nextStepName == null || nextStepName.isBlank() ? "下一审批环节" : nextStepName.trim();
+        String resolvedApproverName =
+                approverName == null || approverName.isBlank() ? "审批人" : approverName.trim();
+        return saveApprovalNotification(
+                recipientUserId, senderUserId, senderOrgId, approvalInstanceId,
+                entityType, entityId, "APPROVAL_NEXT_STEP",
+                "审批流程已推进",
+                "您提交的“" + resolvedBusinessName + "”已由 " + resolvedApproverName
+                        + " 审批通过，当前环节推进至“" + resolvedStepName + "”。",
+                "/messages?approvalInstanceId=" + approvalInstanceId,
+                buildApprovalSubmissionMetadataJson(
+                        approvalInstanceId, entityType, entityId,
+                        resolvedBusinessName, resolvedStepName, resolvedApproverName)
+        );
+    }
+
+    /** 落库 + 邮件 + WebSocket 实时推送的通用收口（复刻 createApprovalResultNotification 尾部链路）。 */
+    private ApprovalResultNotification saveApprovalNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String notificationType,
+            String title,
+            String content,
+            String actionUrl,
+            String metadataJson
+    ) {
+        if (recipientUserId == null) {
+            throw new IllegalArgumentException("Recipient user ID is required");
+        }
+        String normalizedEntityType = entityType == null ? null : entityType.trim().toUpperCase();
+
+        UserNotification notification = new UserNotification();
+        notification.setRecipientUserId(recipientUserId);
+        notification.setSenderUserId(senderUserId);
+        notification.setSenderOrgId(senderOrgId);
+        notification.setNotificationType(notificationType);
+        notification.setTitle(title);
+        notification.setContent(content);
+        notification.setStatus(STATUS_UNREAD);
+        notification.setActionUrl(actionUrl);
+        notification.setRelatedEntityType(normalizedEntityType);
+        notification.setRelatedEntityId(entityId);
+        notification.setMetadataJson(metadataJson);
+        notification.validate();
+
+        UserNotification saved = userNotificationRepository.save(notification);
+        publishNotificationEmailIfPossible(saved);
+        applicationEventPublisher.publishEvent(new UserNotificationRealtimePushEvent(
+                saved.getRecipientUserId(),
+                saved.getSenderUserId(),
+                saved.getNotificationType(),
+                saved.getTitle(),
+                saved.getContent(),
+                normalizedEntityType,
+                entityId,
+                approvalInstanceId,
+                null
+        ));
+        return new ApprovalResultNotification(
+                saved.getId(),
+                saved.getRecipientUserId(),
+                approvalInstanceId,
+                normalizedEntityType,
+                entityId,
+                saved.getNotificationType(),
+                saved.getCreatedAt()
+        );
+    }
+
     @Transactional
     @Override
     public AlertNotification createAlertNotification(

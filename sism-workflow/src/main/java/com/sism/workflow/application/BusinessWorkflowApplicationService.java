@@ -266,6 +266,9 @@ public class BusinessWorkflowApplicationService {
                 resolvedComment
         );
         syncDingTalkTodosOnApproval(approved, currentStep, detailBeforeApproval);
+        // 2026-10-10 跨窗口实时修复：中间节点推进时通知提交人与下一环节审批人
+        // （站内信 + WebSocket 推送），此前中间环节推进零通知，各窗口只能等心跳兜底。
+        notifyNextStepOnApproval(approved, detailBeforeApproval, currentStepDef, userId);
 
         return workflowReadModelMapper.toInstanceResponse(approved);
     }
@@ -489,6 +492,64 @@ public class BusinessWorkflowApplicationService {
     }
 
     // ==================== 私有方法 ====================
+
+    /**
+     * 2026-10-10 跨窗口实时修复：中间节点审批通过、流程推进到下一环节时——
+     * a) 通知提交人（APPROVAL_NEXT_STEP），提交人窗口秒级收敛；
+     * b) 通知下一环节全部候选审批人（APPROVAL_SUBMITTED），审批人窗口秒级亮起"处理审批"。
+     * 终态审批已有 createApprovalResultNotification，不在此重复。
+     */
+    private void notifyNextStepOnApproval(
+            AuditInstance approved,
+            WorkflowInstanceDetailResponse detailSnapshot,
+            AuditStepDef approvedStepDef,
+            Long approverUserId) {
+        if (AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus())) {
+            return;
+        }
+        try {
+            Long senderOrgId = userProvider.getUserOrgId(approverUserId).orElse(null);
+            String businessName = firstNonBlank(
+                    detailSnapshot == null ? null : detailSnapshot.getPlanName(),
+                    approved.getEntityId() == null ? null : "业务对象#" + approved.getEntityId()
+            );
+            String approverName = approverResolver.resolveApproverName(approverUserId);
+            String nextStepName = approved.resolveCurrentPendingStep()
+                    .map(nextStep -> resolveStepDefinition(approved, nextStep).getStepName())
+                    .orElse("");
+
+            notificationProvider.createStepAdvancedNotification(
+                    approved.getRequesterId(),
+                    approverUserId,
+                    senderOrgId,
+                    approved.getId(),
+                    approved.getEntityType(),
+                    approved.getEntityId(),
+                    businessName,
+                    nextStepName,
+                    approverName
+            );
+
+            approved.resolveCurrentPendingStep().ifPresent(nextStep -> {
+                AuditStepDef nextStepDef = resolveStepDefinition(approved, nextStep);
+                approverResolver.resolveCandidates(nextStepDef, approved.getRequesterOrgId())
+                        .forEach(candidate -> notificationProvider.createFlowAdvancedNotification(
+                                candidate.getUserId(),
+                                approverUserId,
+                                senderOrgId,
+                                approved.getId(),
+                                approved.getEntityType(),
+                                approved.getEntityId(),
+                                businessName,
+                                nextStepDef.getStepName(),
+                                approverName
+                        ));
+            });
+        } catch (Exception ex) {
+            log.warn("Failed to notify next step approvers for instance {}: {}",
+                    approved.getId(), ex.getMessage());
+        }
+    }
 
     private void createApprovalResultNotification(
             AuditInstance instance,
