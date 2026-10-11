@@ -38,6 +38,16 @@ jobs:
       - name: Generate test coverage report
         run: mvn jacoco:report -B
 
+      - name: Package application jar
+        run: mvn package -DskipTests -B
+
+      - name: Upload backend jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: sism-main/target/sism-main-*.jar
+          retention-days: 14
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
