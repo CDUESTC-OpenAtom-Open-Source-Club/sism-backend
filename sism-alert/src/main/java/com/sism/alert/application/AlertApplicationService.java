@@ -165,11 +165,47 @@ public class AlertApplicationService {
         return saved;
     }
 
+
+    /** 异动锁判定：指标所属组织（target/owner）任一指标 IN_MUTATION 即视为锁死（与 strategy 同口径）。 */
+    private void assertIndicatorOrgNotLockedByMutation(Long indicatorId) {
+        try {
+            List<java.util.Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT target_org_id, owner_org_id FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false",
+                    indicatorId);
+            for (java.util.Map<String, Object> row : rows) {
+                for (String col : new String[]{"target_org_id", "owner_org_id"}) {
+                    Object v = row.get(col);
+                    if (!(v instanceof Number)) {
+                        continue;
+                    }
+                    long orgId = ((Number) v).longValue();
+                    if (orgId <= 0) {
+                        continue;
+                    }
+                    Integer count = jdbcTemplate.queryForObject(
+                            "SELECT COUNT(*) FROM public.indicator WHERE mutation_status = 'IN_MUTATION' AND COALESCE(is_deleted, false) = false AND (target_org_id = ? OR owner_org_id = ?)",
+                            Integer.class, orgId, orgId);
+                    if (count != null && count > 0) {
+                        throw new IllegalStateException(
+                                "上级正在对该部门的指标进行异动审批，期间暂不能调整鉴定等级，请稍后再试");
+                    }
+                }
+            }
+        } catch (IllegalStateException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            // 判定失败不阻断主流程（与锁死通知同口径：尽力而为）
+        }
+    }
+
     @Transactional
     public Optional<Alert> setManualAlertLevel(Long indicatorId, String severity, Long handledBy) {
         if (indicatorId == null || indicatorId <= 0) {
             throw new IllegalArgumentException("Indicator ID is required");
         }
+
+        // 2026-10-10 测试0927 第018条：异动审批期间全面锁死——被锁组织的指标禁止调整鉴定等级
+        assertIndicatorOrgNotLockedByMutation(indicatorId);
 
         AlertSeverity normalizedSeverity = AlertSeverity.normalize(severity);
         List<Alert> currentManualAlerts = alertRepository

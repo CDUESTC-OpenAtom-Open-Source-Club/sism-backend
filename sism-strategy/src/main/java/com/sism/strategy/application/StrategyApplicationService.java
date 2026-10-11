@@ -39,6 +39,7 @@ public class StrategyApplicationService {
     private final TaskRepository taskRepository;
     private final PlanRepository planRepository;
     private final BasicTaskWeightValidationService basicTaskWeightValidationService;
+    private final IndicatorMutationService indicatorMutationService;
 
     private static final String DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE =
             "当前任务已下发，不能重复导入或下发";
@@ -95,6 +96,12 @@ public class StrategyApplicationService {
         Indicator parent = null;
         Long resolvedTaskId = taskId;
 
+        if (ownerOrg != null) {
+            assertOrgNotLockedByMutation(ownerOrg.getId());
+        }
+        if (targetOrg != null) {
+            assertOrgNotLockedByMutation(targetOrg.getId());
+        }
         if (parentIndicatorId != null) {
             parent = indicatorRepository.findById(parentIndicatorId)
                     .orElseThrow(() -> new IllegalArgumentException("Parent indicator not found: " + parentIndicatorId));
@@ -133,6 +140,7 @@ public class StrategyApplicationService {
 
     @Transactional
     public Indicator submitIndicatorForReview(Indicator indicator) {
+        assertIndicatorOrgNotLockedByMutation(indicator);
         indicator.submitForReview();
         indicator = indicatorRepository.save(indicator);
         publishAndSaveEvents(indicator);
@@ -141,6 +149,7 @@ public class StrategyApplicationService {
 
     @Transactional
     public Indicator approveIndicator(Indicator indicator) {
+        assertIndicatorOrgNotLockedByMutation(indicator);
         indicator.approve();
         indicator = indicatorRepository.save(indicator);
         publishAndSaveEvents(indicator);
@@ -149,10 +158,33 @@ public class StrategyApplicationService {
 
     @Transactional
     public Indicator rejectIndicator(Indicator indicator) {
+        assertIndicatorOrgNotLockedByMutation(indicator);
         indicator.reject();
         indicator = indicatorRepository.save(indicator);
         publishAndSaveEvents(indicator);
         return indicator;
+    }
+
+    /**
+     * 2026-10-10 测试0927 第018条：异动审批期间全面锁死——被锁组织（任一指标 IN_MUTATION）
+     * 的指标禁止一切写操作（新建/编辑/删除/提审/审批/驳回/撤回/下发/鉴定等级）。
+     * 上报（plan_report）链在 sism-execution 已接同类锁。
+     */
+    private void assertOrgNotLockedByMutation(Long orgId) {
+        if (orgId != null && indicatorMutationService.isOrgLockedByMutation(orgId)) {
+            throw new IllegalStateException(
+                    "上级正在对该部门的指标进行异动审批，期间暂不能修改指标，请稍后再试");
+        }
+    }
+
+    private void assertIndicatorOrgNotLockedByMutation(Indicator indicator) {
+        if (indicator == null) {
+            return;
+        }
+        Long orgId = indicator.getTargetOrg() != null
+                ? indicator.getTargetOrg().getId()
+                : (indicator.getOwnerOrg() != null ? indicator.getOwnerOrg().getId() : null);
+        assertOrgNotLockedByMutation(orgId);
     }
 
     @Transactional
@@ -168,6 +200,15 @@ public class StrategyApplicationService {
         Long resolvedTargetOrgId = targetOrg != null
                 ? targetOrg.getId()
                 : indicator.getTargetOrg() != null ? indicator.getTargetOrg().getId() : null;
+
+        // 2026-10-10 测试0927 第018条落地：异动审批期间全面锁死——目标组织存在
+        // IN_MUTATION 指标时禁止下发（上报链此前已接同类锁，这里补齐下发入口；
+        // 单发与批量下发都汇聚本方法，单点校验全覆盖）。
+        if (resolvedTargetOrgId != null
+                && indicatorMutationService.isOrgLockedByMutation(resolvedTargetOrgId)) {
+            throw new IllegalStateException(
+                    "上级正在对该部门的指标进行异动审批，期间暂不能下发指标，请稍后再试");
+        }
 
         validatePlanBasicWeightBeforeDistribution(indicator, resolvedTargetOrgId);
 
@@ -220,6 +261,8 @@ public class StrategyApplicationService {
     public Indicator withdrawIndicator(Long id, String reason) {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
+        // 异动锁：被锁组织的指标禁止撤回（第018条）
+        assertIndicatorOrgNotLockedByMutation(indicator);
         indicator.withdraw();
         indicator = indicatorRepository.save(indicator);
         publishAndSaveEvents(indicator);
@@ -385,6 +428,9 @@ public class StrategyApplicationService {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
 
+        // 异动锁：被锁组织的指标禁止编辑（第018条）
+        assertIndicatorOrgNotLockedByMutation(indicator);
+
         ensurePlanNotDistributedForTask(indicator.getTaskId());
         if (taskId != null && !taskId.equals(indicator.getTaskId())) {
             ensurePlanNotDistributedForTask(taskId);
@@ -436,6 +482,8 @@ public class StrategyApplicationService {
     public void deleteIndicator(Long id) {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
+        // 异动锁：被锁组织的指标禁止删除（第018条）
+        assertIndicatorOrgNotLockedByMutation(indicator);
         ensurePlanNotDistributedForTask(indicator.getTaskId());
         indicator.archive();
         indicatorRepository.save(indicator);
