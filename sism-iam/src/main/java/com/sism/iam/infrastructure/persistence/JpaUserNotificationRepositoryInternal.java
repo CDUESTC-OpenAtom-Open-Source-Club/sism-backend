@@ -230,4 +230,22 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
                and n.status <> 'READ'
             """)
     int markAllAsRead(@Param("recipientUserId") Long recipientUserId, @Param("readAt") LocalDateTime readAt);
+
+    @Modifying
+    @Transactional
+    @Query("""
+            update UserNotification n
+               set n.status = 'READ',
+                   n.readAt = :readAt,
+                   n.updatedAt = :readAt
+             where n.recipientUserId = :recipientUserId
+               and n.notificationType = 'APPROVAL_SUBMITTED'
+               and n.status <> 'READ'
+               and n.actionUrl like :actionUrlPattern
+            """)
+    int markApprovalSubmittedNotificationsRead(
+            @Param("recipientUserId") Long recipientUserId,
+            @Param("actionUrlPattern") String actionUrlPattern,
+            @Param("readAt") LocalDateTime readAt
+    );
 }

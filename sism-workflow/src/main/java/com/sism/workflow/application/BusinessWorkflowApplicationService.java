@@ -269,6 +269,8 @@ public class BusinessWorkflowApplicationService {
         // 2026-10-10 跨窗口实时修复：中间节点推进时通知提交人与下一环节审批人
         // （站内信 + WebSocket 推送），此前中间环节推进零通知，各窗口只能等心跳兜底。
         notifyNextStepOnApproval(approved, detailBeforeApproval, currentStepDef, userId);
+        // 2026-09-27（main）：审批动作完成后将本人该实例的待审批通知标记已读留痕
+        markOwnSubmittedNotificationsRead(instance.getId(), userId);
 
         return workflowReadModelMapper.toInstanceResponse(approved);
     }
@@ -325,6 +327,7 @@ public class BusinessWorkflowApplicationService {
                 resolvedReason
         );
         dingTalkTodoProvider.completeInstanceTodos(rejected.getId());
+        markOwnSubmittedNotificationsRead(rejected.getId(), userId);
 
         return workflowReadModelMapper.toInstanceResponse(rejected);
     }
@@ -589,6 +592,20 @@ public class BusinessWorkflowApplicationService {
     }
 
     // ==================== 钉钉待办联动 ====================
+
+    /**
+     * 2026-09-27 消息留痕（用户拍板）：审批人通过/驳回后，把其在该实例上仍未读的
+     * 「待审批」通知标记为已读——消息保留在消息中心（已处理页签可见），仅状态归位。
+     * fail-safe：留痕失败不影响审批主流程。
+     */
+    private void markOwnSubmittedNotificationsRead(Long approvalInstanceId, Long approverUserId) {
+        try {
+            notificationProvider.markApprovalSubmittedNotificationsRead(approvalInstanceId, approverUserId);
+        } catch (Exception ex) {
+            log.warn("Failed to mark submitted notifications read for instance {} approver {}: {}",
+                    approvalInstanceId, approverUserId, ex.getMessage());
+        }
+    }
 
     /**
      * 审批通过后的钉钉待办联动：终态时清空整个实例的待办，

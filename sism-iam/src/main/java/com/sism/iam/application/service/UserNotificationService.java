@@ -7,7 +7,7 @@ import com.sism.iam.domain.user.User;
 import com.sism.iam.domain.notification.UserNotificationRepository;
 import com.sism.iam.domain.user.UserRepository;
 import com.sism.shared.domain.notification.NotificationProvider;
-import com.sism.shared.domain.notification.UserNotificationRealtimePushEvent;
+import com.sism.shared.domain.notification.RealtimeNotificationProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -47,6 +47,38 @@ public class UserNotificationService implements NotificationProvider {
     private final UserNotificationRepository userNotificationRepository;
     private final UserRepository userRepository;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final RealtimeNotificationProvider realtimeNotificationProvider;
+
+    /**
+     * 2026-09-27 细粒度异步刷新：持久化通知落库后，通过 WS 实时通道推送给在线收件人。
+     * 前端按 entityType/type 映射数据域，仅刷新受影响的视图；推送失败不影响业务事务。
+     */
+    private void publishRealtime(UserNotification notification, String stepName) {
+        try {
+            realtimeNotificationProvider.publish(
+                    notification.getRecipientUserId(),
+                    notification.getNotificationType(),
+                    notification.getTitle(),
+                    notification.getContent(),
+                    notification.getRelatedEntityType(),
+                    notification.getRelatedEntityId(),
+                    extractApprovalInstanceId(notification.getActionUrl()),
+                    stepName
+            );
+        } catch (Exception ex) {
+            log.warn("实时通知发布失败: id={}, type={}", notification.getId(), notification.getNotificationType(), ex);
+        }
+    }
+
+    private Long extractApprovalInstanceId(String actionUrl) {
+        if (actionUrl == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("approvalInstanceId=(\\d+)")
+                .matcher(actionUrl);
+        return matcher.find() ? Long.valueOf(matcher.group(1)) : null;
+    }
 
     public record ReminderResult(
             Long reminderId,
@@ -250,19 +282,7 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
-        // 2026-10-07：落库同时发实时推送事件（sism-main 监听后走 WebSocket），
-        // 审批人的「处理审批/查看审批」状态秒级收敛，不再依赖心跳或手动刷新
-        applicationEventPublisher.publishEvent(new UserNotificationRealtimePushEvent(
-                saved.getRecipientUserId(),
-                saved.getSenderUserId(),
-                saved.getNotificationType(),
-                saved.getTitle(),
-                saved.getContent(),
-                normalizedEntityType,
-                entityId,
-                approvalInstanceId,
-                resolvedStepName
-        ));
+        publishRealtime(saved, resolvedStepName);
         return new SubmissionNotificationResult(
                 saved.getId(),
                 saved.getRecipientUserId(),
@@ -271,6 +291,18 @@ public class UserNotificationService implements NotificationProvider {
                 entityId,
                 saved.getCreatedAt()
         );
+    }
+
+    @Transactional
+    @Override
+    public int markApprovalSubmittedNotificationsRead(Long approvalInstanceId, Long recipientUserId) {
+        if (approvalInstanceId == null || recipientUserId == null) {
+            return 0;
+        }
+        // actionUrl 由 createSubmissionNotification 统一生成为 /messages?approvalInstanceId={id}
+        String actionUrlPattern = "%/messages?approvalInstanceId=" + approvalInstanceId;
+        return userNotificationRepository.markApprovalSubmittedNotificationsRead(
+                recipientUserId, actionUrlPattern, LocalDateTime.now());
     }
 
     @Transactional
@@ -335,18 +367,7 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
-        // 2026-10-07：落库同时发实时推送事件（sism-main 监听后走 WebSocket）
-        applicationEventPublisher.publishEvent(new UserNotificationRealtimePushEvent(
-                saved.getRecipientUserId(),
-                saved.getSenderUserId(),
-                saved.getNotificationType(),
-                saved.getTitle(),
-                saved.getContent(),
-                normalizedEntityType,
-                entityId,
-                approvalInstanceId,
-                resolvedStepName
-        ));
+        publishRealtime(saved, resolvedStepName);
         return new ApprovalResultNotification(
                 saved.getId(),
                 saved.getRecipientUserId(),
@@ -383,16 +404,16 @@ public class UserNotificationService implements NotificationProvider {
                 nextStepName == null || nextStepName.isBlank() ? "下一审批环节" : nextStepName.trim();
         String resolvedApproverName =
                 approverName == null || approverName.isBlank() ? "上一环节审批人" : approverName.trim();
-        return saveApprovalNotification(
+        return saveAndPushApprovalNotification(
                 recipientUserId, senderUserId, senderOrgId, approvalInstanceId,
                 entityType, entityId, TYPE_APPROVAL_SUBMITTED,
                 "计划审批待处理",
                 resolvedApproverName + "已审批通过“" + resolvedBusinessName + "”，当前待处理环节为“"
                         + resolvedStepName + "”，请尽快审批。",
-                "/messages?approvalInstanceId=" + approvalInstanceId,
                 buildApprovalSubmissionMetadataJson(
                         approvalInstanceId, entityType, entityId,
-                        resolvedBusinessName, resolvedStepName, resolvedApproverName)
+                        resolvedBusinessName, resolvedStepName, resolvedApproverName),
+                resolvedStepName
         );
     }
 
@@ -421,21 +442,21 @@ public class UserNotificationService implements NotificationProvider {
                 nextStepName == null || nextStepName.isBlank() ? "下一审批环节" : nextStepName.trim();
         String resolvedApproverName =
                 approverName == null || approverName.isBlank() ? "审批人" : approverName.trim();
-        return saveApprovalNotification(
+        return saveAndPushApprovalNotification(
                 recipientUserId, senderUserId, senderOrgId, approvalInstanceId,
                 entityType, entityId, "APPROVAL_NEXT_STEP",
                 "审批流程已推进",
                 "您提交的“" + resolvedBusinessName + "”已由 " + resolvedApproverName
                         + " 审批通过，当前环节推进至“" + resolvedStepName + "”。",
-                "/messages?approvalInstanceId=" + approvalInstanceId,
                 buildApprovalSubmissionMetadataJson(
                         approvalInstanceId, entityType, entityId,
-                        resolvedBusinessName, resolvedStepName, resolvedApproverName)
+                        resolvedBusinessName, resolvedStepName, resolvedApproverName),
+                resolvedStepName
         );
     }
 
-    /** 落库 + 邮件 + WebSocket 实时推送的通用收口（复刻 createApprovalResultNotification 尾部链路）。 */
-    private ApprovalResultNotification saveApprovalNotification(
+    /** 落库 + 邮件 + WS 实时推送的通用收口（复用 main 的 publishRealtime 通道）。 */
+    private ApprovalResultNotification saveAndPushApprovalNotification(
             Long recipientUserId,
             Long senderUserId,
             Long senderOrgId,
@@ -445,8 +466,8 @@ public class UserNotificationService implements NotificationProvider {
             String notificationType,
             String title,
             String content,
-            String actionUrl,
-            String metadataJson
+            String metadataJson,
+            String stepName
     ) {
         if (recipientUserId == null) {
             throw new IllegalArgumentException("Recipient user ID is required");
@@ -461,7 +482,7 @@ public class UserNotificationService implements NotificationProvider {
         notification.setTitle(title);
         notification.setContent(content);
         notification.setStatus(STATUS_UNREAD);
-        notification.setActionUrl(actionUrl);
+        notification.setActionUrl("/messages?approvalInstanceId=" + approvalInstanceId);
         notification.setRelatedEntityType(normalizedEntityType);
         notification.setRelatedEntityId(entityId);
         notification.setMetadataJson(metadataJson);
@@ -469,17 +490,7 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
-        applicationEventPublisher.publishEvent(new UserNotificationRealtimePushEvent(
-                saved.getRecipientUserId(),
-                saved.getSenderUserId(),
-                saved.getNotificationType(),
-                saved.getTitle(),
-                saved.getContent(),
-                normalizedEntityType,
-                entityId,
-                approvalInstanceId,
-                null
-        ));
+        publishRealtime(saved, stepName);
         return new ApprovalResultNotification(
                 saved.getId(),
                 saved.getRecipientUserId(),

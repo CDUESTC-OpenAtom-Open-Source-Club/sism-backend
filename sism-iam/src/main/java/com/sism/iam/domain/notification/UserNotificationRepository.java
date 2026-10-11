@@ -63,6 +63,14 @@ public interface UserNotificationRepository {
 
     long markAllAsRead(Long recipientUserId);
 
+    /**
+     * 2026-09-27 消息留痕：审批人处理完成后，把其在该审批实例上仍未读的
+     * 「待审批」（APPROVAL_SUBMITTED）通知标记为已读。通知保留不删除。
+     *
+     * @return 标记的通知条数
+     */
+    int markApprovalSubmittedNotificationsRead(Long recipientUserId, String actionUrlPattern, LocalDateTime readAt);
+
     Optional<UserNotification> findLatestReminder(Long relatedEntityId, Long senderUserId);
 
     List<UserNotification> findLatestReminders(Collection<Long> relatedEntityIds, Long senderUserId);
