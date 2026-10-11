@@ -75,7 +75,7 @@ class IndicatorMutationServiceTest {
                 eq("INDICATOR_MUTATION"),
                 eq("指标异动审批中"),
                 eq("上级正在对该部门的指标进行异动审批，期间暂不能填报或提交，请稍后再试"),
-                eq("/indicators/" + INDICATOR_ID),
+                eq("/indicators/" + INDICATOR_ID + "/progress"),
                 eq(INDICATOR_ID),
                 any());
         verify(jdbcTemplate).update(
@@ -86,7 +86,7 @@ class IndicatorMutationServiceTest {
                 eq("INDICATOR_MUTATION"),
                 eq("指标异动审批中"),
                 eq("上级正在对该部门的指标进行异动审批，期间暂不能填报或提交，请稍后再试"),
-                eq("/indicators/" + INDICATOR_ID),
+                eq("/indicators/" + INDICATOR_ID + "/progress"),
                 eq(INDICATOR_ID),
                 any());
     }

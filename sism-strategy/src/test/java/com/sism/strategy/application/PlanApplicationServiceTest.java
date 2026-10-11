@@ -48,6 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.never;
@@ -413,9 +414,15 @@ class PlanApplicationServiceTest {
         );
         verify(jdbcTemplate).update(contains("SET status = 'PENDING'"), eq(18L));
         verify(jdbcTemplate).update(contains("UPDATE public.audit_instance"), eq(18L));
+        // 2026-10-10：复活路径也始终发布提交通知事件（跨窗口实时推送），
+        // 共 2 次：领域事件 PlanStatusChangedEvent + PlanSubmittedForApprovalEvent(resumed)
         ArgumentCaptor<DomainEvent> eventCaptor = ArgumentCaptor.forClass(DomainEvent.class);
-        verify(eventPublisher, times(1)).publish(eventCaptor.capture());
-        assertTrue(eventCaptor.getValue() instanceof PlanStatusChangedEvent);
+        verify(eventPublisher, times(2)).publish(eventCaptor.capture());
+        assertTrue(eventCaptor.getAllValues().get(0) instanceof PlanStatusChangedEvent);
+        assertTrue(eventCaptor.getAllValues().get(1)
+                instanceof com.sism.strategy.domain.plan.event.PlanSubmittedForApprovalEvent);
+        assertEquals(18L, ((com.sism.strategy.domain.plan.event.PlanSubmittedForApprovalEvent)
+                eventCaptor.getAllValues().get(1)).getResumedWorkflowInstanceId());
     }
 
     @Test
@@ -471,8 +478,12 @@ class PlanApplicationServiceTest {
         verify(jdbcTemplate).update(contains("INSERT INTO public.audit_step_instance"), eq(4L), eq(28L));
         verify(jdbcTemplate).update(contains("UPDATE public.audit_instance"), eq(28L));
         ArgumentCaptor<DomainEvent> eventCaptor = ArgumentCaptor.forClass(DomainEvent.class);
-        verify(eventPublisher, times(1)).publish(eventCaptor.capture());
-        assertTrue(eventCaptor.getValue() instanceof PlanStatusChangedEvent);
+        verify(eventPublisher, times(2)).publish(eventCaptor.capture());
+        assertTrue(eventCaptor.getAllValues().get(0) instanceof PlanStatusChangedEvent);
+        assertTrue(eventCaptor.getAllValues().get(1)
+                instanceof com.sism.strategy.domain.plan.event.PlanSubmittedForApprovalEvent);
+        assertEquals(28L, ((com.sism.strategy.domain.plan.event.PlanSubmittedForApprovalEvent)
+                eventCaptor.getAllValues().get(1)).getResumedWorkflowInstanceId());
     }
 
     @Test
@@ -594,6 +605,17 @@ class PlanApplicationServiceTest {
         );
         when(taskRepository.findByPlanId(21L)).thenReturn(List.of(task));
         lenient().when(indicatorRepository.findByTaskIds(List.of(21001L))).thenReturn(List.of(indicator));
+        // 2026-10-10：withdrawWorkflowCurrentStep 撤回前先抓原待审批人（撤回通知链）
+        lenient().when(jdbcTemplate.query(
+                contains("asi.status = 'PENDING'"),
+                any(org.springframework.jdbc.core.RowMapper.class),
+                eq(701L)
+        )).thenReturn(List.of(88L));
+        lenient().doAnswer(invocation -> null).when(jdbcTemplate).query(
+                anyString(),
+                any(org.springframework.jdbc.core.RowCallbackHandler.class),
+                eq(701L)
+        );
         when(jdbcTemplate.query(
                 contains("asi.status = 'APPROVED'"),
                 any(org.springframework.jdbc.core.RowMapper.class),

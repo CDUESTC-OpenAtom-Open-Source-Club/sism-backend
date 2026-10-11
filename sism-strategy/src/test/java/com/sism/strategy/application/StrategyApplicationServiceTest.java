@@ -55,6 +55,9 @@ class StrategyApplicationServiceTest {
     @Mock
     private BasicTaskWeightValidationService basicTaskWeightValidationService;
 
+    @Mock
+    private IndicatorMutationService indicatorMutationService;
+
     @Test
     @DisplayName("Should keep provided task id when creating indicator for functional to college flow")
     void shouldKeepProvidedTaskIdWhenCreatingIndicator() {
@@ -442,7 +445,8 @@ class StrategyApplicationServiceTest {
                 indicatorRepository,
                 taskRepository,
                 planRepository,
-                basicTaskWeightValidationService
+                basicTaskWeightValidationService,
+                indicatorMutationService
         );
     }
 
