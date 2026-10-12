@@ -297,7 +297,27 @@ public class IndicatorMutationService {
                   AND (target_org_id = ? OR owner_org_id = ?)
                 """,
                 Integer.class, orgId, orgId);
-        return count != null && count > 0;
+        if (count != null && count > 0) {
+            return true;
+        }
+        // 2026-10-11 客户确认的锁死口径：职能部门指标异动期间，二级学院全部锁死（不进不出）。
+        // 学院（type=academic）与异动无直接关联也锁——职能部门的指标会下发到多个学院，
+        // 学院是波及最大的一环，异动期间冻结全部学院侧写操作与收发。
+        String orgType = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(type::text, '') FROM public.sys_org WHERE id = ?",
+                String.class, orgId);
+        if ("academic".equalsIgnoreCase(orgType)) {
+            Integer anyMutation = jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM public.indicator
+                    WHERE mutation_status = 'IN_MUTATION'
+                      AND COALESCE(is_deleted, false) = false
+                    """,
+                    Integer.class);
+            return anyMutation != null && anyMutation > 0;
+        }
+        return false;
     }
 
     private void insertAuditLog(Long indicatorId,

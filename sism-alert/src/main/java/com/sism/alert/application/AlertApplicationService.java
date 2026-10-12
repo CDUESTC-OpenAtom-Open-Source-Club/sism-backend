@@ -189,6 +189,19 @@ public class AlertApplicationService {
                         throw new IllegalStateException(
                                 "上级正在对该部门的指标进行异动审批，期间暂不能调整鉴定等级，请稍后再试");
                     }
+                    // 2026-10-11 同口径学院级联锁：二级学院在任意异动审批期间全锁
+                    String orgType = jdbcTemplate.queryForObject(
+                            "SELECT COALESCE(type::text, '') FROM public.sys_org WHERE id = ?",
+                            String.class, orgId);
+                    if ("academic".equalsIgnoreCase(orgType)) {
+                        Integer anyMutation = jdbcTemplate.queryForObject(
+                                "SELECT COUNT(*) FROM public.indicator WHERE mutation_status = 'IN_MUTATION' AND COALESCE(is_deleted, false) = false",
+                                Integer.class);
+                        if (anyMutation != null && anyMutation > 0) {
+                            throw new IllegalStateException(
+                                    "上级正在对指标进行异动审批，期间暂不能调整学院指标鉴定等级，请稍后再试");
+                        }
+                    }
                 }
             }
         } catch (IllegalStateException ex) {
