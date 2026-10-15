@@ -29,6 +29,34 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
 
     @Override
     public Optional<BusinessSummary> getBusinessSummary(String entityType, Long entityId) {
+        // 2026-10-10：指标异动链（entityType=INDICATOR）补齐部门信息——
+        // 流转方向 = 发起方（指标归属组织）-> 目标方（指标 target_org），
+        // 此前该类型返回 empty，前端卡片只能显示「目标部门」占位词。
+        if ("INDICATOR".equalsIgnoreCase(entityType) && entityId != null) {
+            return jdbcTemplate.query(
+                    "SELECT owner_org_id, target_org_id, indicator_desc FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false",
+                    rs -> {
+                        if (!rs.next()) {
+                            return Optional.<BusinessSummary>empty();
+                        }
+                        long ownerOrgId = rs.getLong("owner_org_id");
+                        long targetOrgId = rs.getLong("target_org_id");
+                        String desc = rs.getString("indicator_desc");
+                        String displayName = desc != null && desc.length() > 40 ? desc.substring(0, 40) : desc;
+                        Long sourceId = ownerOrgId > 0 ? ownerOrgId : null;
+                        Long targetId = targetOrgId > 0 ? targetOrgId : null;
+                        return Optional.of(new BusinessSummary(
+                                null,
+                                displayName,
+                                sourceId,
+                                resolveOrgName(sourceId),
+                                targetId,
+                                resolveOrgName(targetId),
+                                displayName
+                        ));
+                    },
+                    entityId);
+        }
         if (!PLAN_ENTITY_TYPE.equalsIgnoreCase(entityType) || entityId == null) {
             return Optional.empty();
         }

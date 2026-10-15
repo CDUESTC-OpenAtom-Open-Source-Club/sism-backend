@@ -256,6 +256,33 @@ public class IndicatorMutationService {
                 """);
     }
 
+    /**
+     * 2026-10-10：该组织的异动审批实例清单（审批中心「异动审批」卡片数据源）。
+     * 含进行中与已完成（历史），按发起时间倒序。
+     */
+    public java.util.List<java.util.Map<String, Object>> listMutationApprovals(Long orgId) {
+        if (orgId == null) {
+            return java.util.List.of();
+        }
+        return jdbcTemplate.queryForList(
+                """
+                SELECT ai.id AS instance_id,
+                       ai.entity_id AS indicator_id,
+                       left(i.indicator_desc, 60) AS indicator_desc,
+                       ai.status,
+                       ai.created_at,
+                       ai.completed_at
+                FROM public.audit_instance ai
+                JOIN public.indicator i ON i.id = ai.entity_id
+                WHERE ai.entity_type = 'INDICATOR'
+                  AND COALESCE(i.is_deleted, false) = false
+                  AND (i.target_org_id = ? OR i.owner_org_id = ?)
+                ORDER BY ai.created_at DESC
+                LIMIT 50
+                """,
+                orgId, orgId);
+    }
+
     /** 全面锁死：该组织下任一指标在异动中，即视为锁死。 */
     public boolean isOrgLockedByMutation(Long orgId) {
         if (orgId == null) {
@@ -270,7 +297,27 @@ public class IndicatorMutationService {
                   AND (target_org_id = ? OR owner_org_id = ?)
                 """,
                 Integer.class, orgId, orgId);
-        return count != null && count > 0;
+        if (count != null && count > 0) {
+            return true;
+        }
+        // 2026-10-11 客户确认的锁死口径：职能部门指标异动期间，二级学院全部锁死（不进不出）。
+        // 学院（type=academic）与异动无直接关联也锁——职能部门的指标会下发到多个学院，
+        // 学院是波及最大的一环，异动期间冻结全部学院侧写操作与收发。
+        String orgType = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(type::text, '') FROM public.sys_org WHERE id = ?",
+                String.class, orgId);
+        if ("academic".equalsIgnoreCase(orgType)) {
+            Integer anyMutation = jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM public.indicator
+                    WHERE mutation_status = 'IN_MUTATION'
+                      AND COALESCE(is_deleted, false) = false
+                    """,
+                    Integer.class);
+            return anyMutation != null && anyMutation > 0;
+        }
+        return false;
     }
 
     private void insertAuditLog(Long indicatorId,
