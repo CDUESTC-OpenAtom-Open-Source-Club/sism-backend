@@ -27,7 +27,6 @@ public class IndicatorMutationService {
     private static final String MUTATION_STATUS_IN_MUTATION = "IN_MUTATION";
     private static final String INDICATOR_ENTITY_TYPE = "INDICATOR";
     private static final long STRATEGY_ORG_ID = 35L;
-    private static final long ROLE_VICE_PRESIDENT_ID = 4L;
 
     /** A3 锁死主动通知：标题/文案为会议定案口径。 */
     private static final String MUTATION_LOCK_NOTICE_TITLE = "指标异动审批中";
@@ -40,16 +39,16 @@ public class IndicatorMutationService {
     private final com.sism.shared.domain.user.UserProvider userProvider;
     private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
 
+    /**
+     * 2026-10-18 用户定案：异动发起权只属于战略发展部组织下的成员——
+     * 不开放给分管校领导等其他角色（分管校领导仅作为异动审批链的终审节点）。
+     */
     public boolean canInitiate(Long operatorUserId) {
         if (operatorUserId == null || operatorUserId <= 0) {
             return false;
         }
         Long orgId = userProvider.getUserOrgId(operatorUserId).orElse(null);
-        if (orgId != null && orgId == strategyOrgProperties.getStrategyOrgId()) {
-            return true;
-        }
-        List<Long> roleIds = userProvider.getUserRoleIds(operatorUserId);
-        return roleIds != null && roleIds.contains(ROLE_VICE_PRESIDENT_ID);
+        return orgId != null && orgId == strategyOrgProperties.getStrategyOrgId();
     }
 
     /** 发起异动：写快照 + 打异动标记 + 启动异动审批链。返回工作流实例 ID。 */
