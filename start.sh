@@ -12,7 +12,10 @@ HEALTH_URL="http://localhost:8080/api/v1/auth/health"
 MAX_RETRIES=30
 # Default JVM sizing for a 4GB single-host deployment (Java + PostgreSQL + Redis).
 # Override with APP_JAVA_OPTS or JAVA_OPTS when needed.
-DEFAULT_APP_JAVA_OPTS="-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError"
+# 2026-10-18：固定 JVM 时区为北京时间——全仓用 LocalDateTime.now() 写库，
+# 若跟随开发机时区（如 America/Los_Angeles），提交时间会比真实时间偏 15 小时，
+# 前端按北京时间渲染后会出现「刚提交却显示两天前 + 停留 2 天」。
+DEFAULT_APP_JAVA_OPTS="-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError -Duser.timezone=Asia/Shanghai"
 
 cleanup_backend_processes() {
     local pids=""
