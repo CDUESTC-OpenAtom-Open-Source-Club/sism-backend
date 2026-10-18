@@ -128,37 +128,36 @@ public class SecurityConfig {
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             // Authorization rules
-            .authorizeHttpRequests(auth -> auth
-                // Public endpoints - Authentication
-                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/register",
-                                 "/api/v1/auth/validate", "/api/v1/auth/logout",
-                                 "/api/v1/auth/refresh", "/api/v1/auth/health",
-                                 "/api/v1/auth/password-reset/**",
-                                 "/api/v1/auth/dingtalk/login",
-                                 "/api/v1/auth/dingtalk/status").permitAll()
-                .requestMatchers("/api/v1/announcements/public", "/api/v1/announcements/public/**").permitAll()
-                // Public endpoints - Health check
-                .requestMatchers("/api/v1/actuator/health", "/health", "/error").permitAll()
-                // Public endpoints - WebSocket
-                .requestMatchers("/ws/**").permitAll()
-                // Allow OPTIONS for CORS preflight
-                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+            // 条件性公开端点（Swagger/Actuator）必须配置在 anyRequest 之前，
+            // Spring Security 6 禁止在 anyRequest 之后追加 requestMatchers
+            .authorizeHttpRequests(auth -> {
+                auth
+                    // Public endpoints - Authentication
+                    .requestMatchers("/api/v1/auth/login", "/api/v1/auth/register",
+                                     "/api/v1/auth/validate", "/api/v1/auth/logout",
+                                     "/api/v1/auth/refresh", "/api/v1/auth/health",
+                                     "/api/v1/auth/password-reset/**",
+                                     "/api/v1/auth/dingtalk/login",
+                                     "/api/v1/auth/dingtalk/status").permitAll()
+                    .requestMatchers("/api/v1/announcements/public", "/api/v1/announcements/public/**").permitAll()
+                    // Public endpoints - Health check
+                    .requestMatchers("/api/v1/actuator/health", "/health", "/error").permitAll()
+                    // Public endpoints - WebSocket
+                    .requestMatchers("/ws/**").permitAll()
+                    // Allow OPTIONS for CORS preflight
+                    .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll();
+                if (publicDocsEnabled) {
+                    auth.requestMatchers("/swagger-ui/**", "/swagger-ui.html",
+                            "/api-docs/**", "/v3/api-docs/**").permitAll();
+                }
+                if (publicActuatorEnabled) {
+                    auth.requestMatchers("/actuator/**", "/api/v1/actuator/**").permitAll();
+                }
                 // All other requests require authentication
-                .anyRequest().authenticated()
-            )
+                auth.anyRequest().authenticated();
+            })
             // Add JWT filter before Spring Security's UsernamePasswordAuthenticationFilter
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
-
-        if (publicDocsEnabled) {
-            http.authorizeHttpRequests(auth -> auth
-                    .requestMatchers("/swagger-ui/**", "/swagger-ui.html",
-                            "/api-docs/**", "/v3/api-docs/**").permitAll());
-        }
-
-        if (publicActuatorEnabled) {
-            http.authorizeHttpRequests(auth -> auth
-                    .requestMatchers("/actuator/**", "/api/v1/actuator/**").permitAll());
-        }
 
         return http.build();
     }

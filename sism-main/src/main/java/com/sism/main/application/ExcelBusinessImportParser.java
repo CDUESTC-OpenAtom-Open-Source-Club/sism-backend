@@ -13,6 +13,7 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.ss.util.CellRangeAddress;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -109,7 +110,7 @@ public class ExcelBusinessImportParser {
             if (row == null || isRowBlank(row)) {
                 continue;
             }
-            Map<String, String> source = readSource(row, header.sourceHeaders());
+            Map<String, String> source = readSource(sheet, row, header.sourceHeaders());
             NormalizedImportRow normalized = normalize(source, header.fieldColumns(), type);
             List<String> errors = validate(normalized, type);
             List<String> warnings = validateWarnings(normalized);
@@ -189,12 +190,33 @@ public class ExcelBusinessImportParser {
         return headers;
     }
 
-    private Map<String, String> readSource(Row row, Map<Integer, String> headers) {
+    private Map<String, String> readSource(Sheet sheet, Row row, Map<Integer, String> headers) {
         Map<String, String> source = new LinkedHashMap<>();
         for (Map.Entry<Integer, String> header : headers.entrySet()) {
-            source.put(header.getValue(), cellText(row.getCell(header.getKey())));
+            int columnIndex = header.getKey();
+            String value = cellText(row.getCell(columnIndex));
+            // 合并单元格的值只存于区域左上角，从属行回填首行值（2026-10-18 修复：导出表「战略任务」列
+            // 与界面同构做了 rowSpan 合并，回导时从属行不再误报“战略任务不能为空”）
+            if (value.isBlank()) {
+                value = mergedRegionValue(sheet, row.getRowNum(), columnIndex);
+            }
+            source.put(header.getValue(), value);
         }
         return source;
+    }
+
+    /** 若 (rowNum, columnIndex) 落在某个合并区域内，返回区域左上角单元格文本；否则返回空串 */
+    private String mergedRegionValue(Sheet sheet, int rowNum, int columnIndex) {
+        for (int i = 0; i < sheet.getNumMergedRegions(); i++) {
+            CellRangeAddress region = sheet.getMergedRegion(i);
+            if (region.isInRange(rowNum, columnIndex)) {
+                Row firstRow = sheet.getRow(region.getFirstRow());
+                if (firstRow != null) {
+                    return cellText(firstRow.getCell(region.getFirstColumn()));
+                }
+            }
+        }
+        return "";
     }
 
     private NormalizedImportRow normalize(Map<String, String> source,
@@ -211,7 +233,9 @@ public class ExcelBusinessImportParser {
         String indicatorType = normalizeIndicatorType(value(source, aliases, "indicatorType"));
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
         String remark = clean(value(source, aliases, "remark"));
+        // 空白=未填，统一归一化为 null，避免下游 Long.valueOf("") 误解析（2026-10-18 修复确认导入失败）
         String indicatorIdRaw = clean(value(source, aliases, "indicatorId"));
+        String indicatorId = indicatorIdRaw.isEmpty() ? null : indicatorIdRaw;
         return new NormalizedImportRow(
                 department,
                 college,
@@ -224,7 +248,7 @@ public class ExcelBusinessImportParser {
                 weight,
                 remark,
                 null,
-                indicatorIdRaw
+                indicatorId
         );
     }
 
