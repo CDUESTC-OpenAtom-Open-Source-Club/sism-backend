@@ -696,26 +696,26 @@ public class UserNotificationService implements NotificationProvider {
         }
     }
 
-    private String resolveApprovalResultTitle(String entityType, boolean approved) {
-        String subject = switch (entityType == null ? "" : entityType) {
+    /**
+     * 2026-10-18 用户反馈：消息标题先讲清审批类型（上报审批/计划审批/异动审批），
+     * 再讲部门流向——「月报」等内部口径对用户不直观。
+     */
+    private String resolveApprovalSubject(String entityType) {
+        return switch (entityType == null ? "" : entityType) {
             case "PLAN" -> "计划审批";
-            case "PLAN_REPORT" -> "月报审批";
-            case "INDICATOR" -> "指标审批";
-            case "INDICATOR_DISTRIBUTION" -> "指标下发审批";
-            default -> "审批处理";
+            case "PLAN_REPORT" -> "上报审批";
+            case "INDICATOR" -> "异动审批";
+            case "INDICATOR_DISTRIBUTION" -> "下发审批";
+            default -> "审批";
         };
-        return subject + (approved ? "已通过" : "已驳回");
+    }
+
+    private String resolveApprovalResultTitle(String entityType, boolean approved) {
+        return resolveApprovalSubject(entityType) + (approved ? "已通过" : "已回退");
     }
 
     private String resolveApprovalSubmissionTitle(String entityType) {
-        String subject = switch (entityType == null ? "" : entityType) {
-            case "PLAN" -> "计划审批";
-            case "PLAN_REPORT" -> "月报审批";
-            case "INDICATOR" -> "指标审批";
-            case "INDICATOR_DISTRIBUTION" -> "指标下发审批";
-            default -> "审批待办";
-        };
-        return subject + "待处理";
+        return resolveApprovalSubject(entityType) + "待处理";
     }
 
     private static String buildApprovalResultMetadataJson(
