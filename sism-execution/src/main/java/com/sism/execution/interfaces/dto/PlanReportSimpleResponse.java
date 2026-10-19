@@ -29,6 +29,9 @@ public class PlanReportSimpleResponse {
     private String title;
     private Integer progress;
     private String status;
+    /** 2026-10-19：上报审批卡片要素——提交人ID/提交时间是数据库固定字段（markSubmitted 写入） */
+    private Long submittedBy;
+    private LocalDateTime submittedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private List<PlanReportIndicatorDetailResponse> indicatorDetails;
@@ -53,6 +56,8 @@ public class PlanReportSimpleResponse {
                 .title(report.getTitle())
                 .progress(report.getProgress())
                 .status(report.getStatus())
+                .submittedBy(report.getSubmittedBy())
+                .submittedAt(report.getSubmittedAt())
                 .createdAt(report.getCreatedAt())
                 .updatedAt(report.getUpdatedAt())
                 .indicatorDetails(indicatorDetailResponses)
