@@ -136,7 +136,9 @@ public class IndicatorMutationService {
                 indicatorId, response.getInstanceId());
 
         // A3 锁死主动通知：异动发起成功后，给被锁组织用户写一条站内消息
-        notifyLockedOrgUsers(indicatorId, operatorUserId);
+        // 2026-10-18 用户定案：异动发起不再向被锁组织发站内通知——
+        // 通知只随审批中心整体流程发送；锁死本身照常生效（见 assertIndicatorOrgNotLockedByMutation）。
+        log.info("[IndicatorMutation] 异动发起，锁死生效（不另发通知）: indicatorId={}", indicatorId);
         return response.getInstanceId();
     }
 

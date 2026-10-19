@@ -49,7 +49,7 @@ public class ExcelBusinessImportParser {
             Map.entry("indicatorName", List.of("核心指标", "指标名称", "指标内容")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "指标权重")),
-            Map.entry("remark", List.of("备注", "说明")),
+            Map.entry("remark", List.of("下发备注", "备注", "说明")),
             // D4（2026-09-18 定案）：导出表自带「内部ID」列，回导时精确关联 + 三类校验
             Map.entry("indicatorId", List.of("内部ID", "内部 ID", "指标ID", "指标 ID"))
     );
