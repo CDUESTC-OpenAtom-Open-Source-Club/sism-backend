@@ -172,7 +172,8 @@ class ApproveWorkflowUseCaseTest {
         when(approverResolver.resolveApproverOrgId(strategy, 44L, instance)).thenReturn(35L);
         when(auditInstanceRepository.save(any(AuditInstance.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        AuditInstance saved = approveWorkflowUseCase.approve(instance, 410L, "demo通过");
+        // 2026-10-20：仅当前节点审批人（224）可审批；此前用 410 越权通过（ISSUE-001）
+        AuditInstance saved = approveWorkflowUseCase.approve(instance, 224L, "demo通过");
 
         assertEquals(3, saved.getStepInstances().size());
         assertEquals(410L, saved.getStepInstances().get(2).getApproverId());

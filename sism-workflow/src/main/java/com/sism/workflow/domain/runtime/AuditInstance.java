@@ -128,6 +128,10 @@ public class AuditInstance extends AggregateRoot<Long> {
         AuditStepInstance current = resolveCurrentPendingStep()
                 .orElseThrow(() -> new IllegalStateException("No pending step available for approval"));
 
+        // 2026-10-20 安全修复（ISSUE-001 越权审批）：step.approverId 是被指派的审批人，
+        // 只有当前节点审批人本人可审批。此前直接覆盖 approverId，任何登录用户都能推进流程。
+        assertCurrentApprover(current, userId, "approve");
+
         current.setApproverId(userId);
         current.setStatus(STEP_STATUS_APPROVED);
         current.setComment(comment);
@@ -152,6 +156,8 @@ public class AuditInstance extends AggregateRoot<Long> {
 
         AuditStepInstance current = resolveCurrentPendingStep()
                 .orElseThrow(() -> new IllegalStateException("No pending step available for rejection"));
+        // 2026-10-20 安全修复（同 ISSUE-001）：仅当前节点审批人可驳回
+        assertCurrentApprover(current, userId, "reject");
         current.setApproverId(userId);
         current.setStatus(STEP_STATUS_REJECTED);
         current.setComment(comment);
@@ -333,6 +339,23 @@ public class AuditInstance extends AggregateRoot<Long> {
         stepInstance.setInstance(this);
         if (stepInstance.getCreatedAt() == null) {
             stepInstance.setCreatedAt(LocalDateTime.now());
+        }
+    }
+
+    /**
+     * 2026-10-20 安全修复：校验操作人是否为当前待办节点的被指派审批人。
+     * approverId 为 null 视为未指派（历史数据），放行以兼容存量实例。
+     */
+    private void assertCurrentApprover(AuditStepInstance current, Long userId, String action) {
+        Long assigned = current.getApproverId();
+        if (assigned == null) {
+            return;
+        }
+        if (userId == null || !assigned.equals(userId)) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "当前用户不是该节点的审批人，无权"
+                            + ("approve".equals(action) ? "审批" : "驳回")
+                            + "（当前审批人ID=" + assigned + "）");
         }
     }
 

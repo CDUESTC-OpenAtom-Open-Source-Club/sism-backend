@@ -223,7 +223,10 @@ public class WorkflowController {
             return ResponseEntity.ok(ApiResponse.error(404, "Approval instance not found"));
         }
         if (!currentUser.getId().equals(existingInstance.getRequesterId())) {
-            return ResponseEntity.ok(ApiResponse.error(403, "Only requester can cancel"));
+            // 2026-10-20 修复（ISSUE-002）：非发起人撤回必须以 HTTP 403 返回，
+            // 此前用 HTTP 200 + 业务码 403，前端按状态码判断会误认为成功。
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error(403, "Only requester can cancel"));
         }
         AuditInstance cancelled = workflowApplicationService.cancelAuditInstance(existingInstance);
         return ResponseEntity.ok(ApiResponse.success(workflowReadModelMapper.toInstanceResponse(cancelled)));
