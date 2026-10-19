@@ -33,7 +33,10 @@ JAVA_OPTS="${JAVA_OPTS} -Xlog:gc*:file=${JAVA_GC_LOG_DIR}/gc.log:time,uptime,lev
 JAVA_OPTS="${JAVA_OPTS} -Djava.security.egd=file:/dev/./urandom"
 # 显式锁定 JVM 时区为北京时间：jackson 的 spring.jackson.time-zone 只对 java.util.Date
 # 生效，LocalDateTime（全仓主力类型）不受其影响，必须由 JVM 时区兜底。
-JAVA_OPTS="${JAVA_OPTS} -Duser.timezone=${APP_TIMEZONE:-Asia/Shanghai}"
+# 2026-10-19：默认不指定，跟随容器/服务器时区；需要时通过 APP_TIMEZONE 覆盖
+if [ -n "${APP_TIMEZONE:-}" ]; then
+  JAVA_OPTS="${JAVA_OPTS} -Duser.timezone=${APP_TIMEZONE}"
+fi
 
 echo "Waiting for PostgreSQL at ${DB_HOST}:${DB_PORT}..."
 until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USERNAME}" >/dev/null 2>&1; do
