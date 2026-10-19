@@ -8,9 +8,9 @@ spring:
   application:
     name: sism-backend
   
-  # Jackson time handling: serialize as ISO-8601 with timezone, display follows Beijing time uniformly
+  # Jackson time handling: serialize as ISO-8601; 时区跟随服务器（不硬编码）
   jackson:
-    time-zone: Asia/Shanghai
+    # 2026-10-19 用户定案：不指定 time-zone，使用 JVM/服务器默认时区
     date-format: yyyy-MM-dd'T'HH:mm:ss
   
   # Database Configuration

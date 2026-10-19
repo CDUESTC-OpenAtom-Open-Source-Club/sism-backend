@@ -464,10 +464,11 @@ public class BusinessImportApplicationService {
             NormalizedImportRow normalized = row.normalized();
 
             // D4（2026-09-18 定案）：带「内部ID」的行按 ID 精确更新（任务归属不变，仅更新指标自身字段）
-            if (row.normalized().indicatorId() != null) {
-                Long linkedId = Long.valueOf(row.normalized().indicatorId());
+            // 2026-10-18 修复：与预览阶段统一走 parseIndicatorId（空白/非法=未填），不再裸调 Long.valueOf
+            Long linkedIndicatorId = parseIndicatorId(normalized.indicatorId());
+            if (linkedIndicatorId != null) {
                 Indicator linked = strategyApplicationService.updateIndicator(
-                        linkedId,
+                        linkedIndicatorId,
                         normalized.indicatorName(),
                         normalized.weight(),
                         null,

@@ -27,13 +27,14 @@ FROM eclipse-temurin:17-jre-alpine AS runtime
 
 # bash: backend-entrypoint.sh 是 bash 语法
 # postgresql-client: entrypoint 用 pg_isready 等待数据库就绪
-# tzdata: 提供 Asia/Shanghai 时区数据（alpine 默认不含）
+# tzdata: 提供时区数据（alpine 默认不含，缺了会导致 TZ 无法解析）
 RUN apk add --no-cache bash postgresql-client tzdata
 
-# 统一以北京时间运行：jackson 的 time-zone/date-format 只作用于 java.util.Date，
-# 对 LocalDateTime（全仓主力类型）无效；必须让 JVM 时区本身为 Asia/Shanghai，
-# 否则 LocalDateTime.now() 落 UTC，接口时间比北京时间少 8 小时。
-ENV TZ=Asia/Shanghai
+# 2026-10-19 用户定案：不硬编码时区——默认跟随容器/宿主服务器时区，
+# 部署到哪个时区就记录哪个时区的时间（跨地区部署自动适配）。
+# 需要固定时区时，由部署侧传 TZ 或 APP_TIMEZONE 环境变量覆盖。
+# 注意：jackson 的 time-zone/date-format 只作用于 java.util.Date，
+# 对 LocalDateTime（全仓主力类型）无效，故时区必须以 JVM 时区为准。
 
 WORKDIR /app
 

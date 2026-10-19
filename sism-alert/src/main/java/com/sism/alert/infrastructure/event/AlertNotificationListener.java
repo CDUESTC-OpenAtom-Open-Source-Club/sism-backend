@@ -76,6 +76,15 @@ public class AlertNotificationListener {
                 return;
             }
 
+            // 2026-10-18 用户定案：单指标鉴定调整不再向下级部门发消息——
+            // 通知只随审批中心整体流程（通过/退回/推进）按整个 Plan 发送。
+            // 手动鉴定告警的标记与 AlertApplicationService.MANUAL_ALERT_MARKER 一致。
+            if (alert.getDetailJson() != null
+                    && alert.getDetailJson().contains("STRATEGIC_TASK_MANUAL")) {
+                log.info("Skip manual strategic-task alert notification: alertId={}", alertId);
+                return;
+            }
+
             Indicator indicator = indicatorRepository.findById(alert.getIndicatorId()).orElse(null);
             String indicatorName = indicator == null ? null : indicator.getIndicatorDesc();
             Long targetOrgId = indicator == null || indicator.getTargetOrg() == null

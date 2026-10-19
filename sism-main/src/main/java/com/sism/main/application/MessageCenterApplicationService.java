@@ -824,17 +824,25 @@ public class MessageCenterApplicationService {
         Long approvalInstanceId = toLong(task.getInstanceId());
         Long entityId = task.getEntityId();
         String entityType = normalize(task.getEntityType());
+        // 2026-10-18 用户反馈：消息标题要先讲清是哪类审批（上报审批/计划审批等），
+        // 再讲是哪个部门到哪个部门；工作流侧的占位计划名（Plan 4039/业务对象#4039）对用户无意义。
+        String sourceOrg = firstNonBlank(task.getSourceOrgName(), task.getAssigneeName(), "相关部门");
+        String targetOrg = firstNonBlank(task.getTargetOrgName(), sourceOrg);
+        String flowLabel = sourceOrg.equals(targetOrg) ? sourceOrg : sourceOrg + "→" + targetOrg;
         String title = switch (entityType) {
-            case "PLAN" -> "有新的计划待审批";
-            case "PLAN_REPORT" -> "有新的月报待审批";
-            case "INDICATOR" -> "有新的指标待审批";
-            case "INDICATOR_DISTRIBUTION" -> "有新的指标下发待审批";
-            default -> "有新的审批事项待处理";
+            case "PLAN" -> "计划审批 · " + flowLabel;
+            case "PLAN_REPORT" -> "上报审批 · " + flowLabel;
+            case "INDICATOR" -> "异动审批 · " + flowLabel;
+            case "INDICATOR_DISTRIBUTION" -> "下发审批 · " + flowLabel;
+            default -> "审批事项 · " + flowLabel;
         };
         String applicant = firstNonBlank(task.getSourceOrgName(), task.getTargetOrgName(), task.getAssigneeName(), "相关部门");
         String stepName = firstNonBlank(task.getCurrentStepName(), task.getTaskName(), "当前审批环节");
         String businessName = firstNonBlank(task.getPlanName(), entityId == null ? null : "业务对象#" + entityId);
-        String summary = applicant + "提交了“" + businessName + "”，当前环节为“" + stepName + "”，请及时处理。";
+        if (businessName == null || businessName.matches("Plan\\s+\\d+") || businessName.matches("业务对象#\\d+")) {
+            businessName = targetOrg + "计划";
+        }
+        String summary = flowLabel + "：" + applicant + "提交了“" + businessName + "”，当前环节为“" + stepName + "”，请及时处理。";
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("flowCode", task.getFlowCode());
         metadata.put("flowName", task.getFlowName());

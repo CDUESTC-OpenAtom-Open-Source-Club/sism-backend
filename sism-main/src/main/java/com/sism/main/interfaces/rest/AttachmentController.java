@@ -95,11 +95,13 @@ public class AttachmentController {
         return isAdmin(currentUser) || Objects.equals(currentUser.id(), uploadedBy);
     }
 
+    /**
+     * 2026-10-19 用户定案：附件（上报资料）不设细粒度下载权限——
+     * 业务上只在部门之间流转，细分权限会阻塞正常查阅（如填报人看不到本部门上报材料）。
+     * 规则：任何已登录用户均可查看/下载；未登录仍在入口处拦截（401）。
+     */
     private boolean canAccessAttachment(UserIdentity currentUser, AttachmentResponse metadata) {
-        if (metadata == null || metadata.getUploadedBy() == null) {
-            return false;
-        }
-        return isAdmin(currentUser) || Objects.equals(currentUser.id(), metadata.getUploadedBy());
+        return currentUser != null && metadata != null;
     }
 
     private boolean isAdmin(UserIdentity currentUser) {
@@ -117,12 +119,13 @@ public class AttachmentController {
         if (principal instanceof com.sism.shared.application.dto.CurrentUser currentUser) {
             return new UserIdentity(
                     currentUser.getId(),
+                    currentUser.getOrgId(),
                     currentUser.getAuthorities() == null ? java.util.List.of() : currentUser.getAuthorities()
             );
         }
         return null;
     }
 
-    private record UserIdentity(Long id, Collection<? extends GrantedAuthority> authorities) {
+    private record UserIdentity(Long id, Long orgId, Collection<? extends GrantedAuthority> authorities) {
     }
 }
