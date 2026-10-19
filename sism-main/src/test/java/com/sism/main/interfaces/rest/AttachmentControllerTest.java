@@ -84,8 +84,10 @@ class AttachmentControllerTest {
     }
 
     @Test
-    @DisplayName("Should reject metadata access when current user is not owner or admin")
-    void shouldRejectMetadataAccessWhenNotOwnerOrAdmin() throws Exception {
+    @DisplayName("Should allow metadata access for any authenticated user (no fine-grained permission)")
+    void shouldAllowMetadataAccessForAnyAuthenticatedUser() throws Exception {
+        // 2026-10-19 用户定案：附件不设细粒度下载权限——部门之间流转材料，
+        // 细分权限会阻塞正常查阅（填报人看不到本部门上报资料）。任何登录用户均可访问。
         CurrentUser currentUser = regularUser(12L);
         Authentication authentication = authentication(currentUser);
         AttachmentResponse metadata = AttachmentResponse.builder()
@@ -102,9 +104,8 @@ class AttachmentControllerTest {
 
         ResponseEntity<ApiResponse<AttachmentResponse>> response = attachmentController.metadata(7L, authentication);
 
-        assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
+        assertEquals(HttpStatus.OK, response.getStatusCode());
         verify(attachmentApplicationService).getMetadata(7L);
-        verify(attachmentApplicationService, never()).loadAsResource(anyLong());
     }
 
     @Test
