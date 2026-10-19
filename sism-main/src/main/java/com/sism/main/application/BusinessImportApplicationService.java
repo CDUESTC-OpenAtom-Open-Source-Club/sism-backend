@@ -27,6 +27,7 @@ import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.task.domain.repository.TaskRepository;
 import com.sism.task.domain.task.StrategicTask;
 import com.sism.task.domain.task.TaskType;
+import com.sism.workflow.application.BusinessWorkflowApplicationService;
 import com.sism.workflow.application.WorkflowApplicationService;
 import com.sism.workflow.domain.definition.AuditFlowDef;
 import com.sism.workflow.domain.runtime.AuditInstance;
@@ -71,6 +72,8 @@ public class BusinessImportApplicationService {
     private final StrategyApplicationService strategyApplicationService;
     private final BasicTaskWeightValidationService basicTaskWeightValidationService;
     private final WorkflowApplicationService workflowApplicationService;
+    /** 2026-10-19：自动审批复用普通审批的节点通知（提交人推进 + 下一环节待审批 + 终态结果） */
+    private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final AuditInstanceRepository auditInstanceRepository;
     private final TransactionTemplate transactionTemplate;
     private final org.springframework.jdbc.core.JdbcTemplate importBatchJdbcTemplate;
@@ -634,10 +637,16 @@ public class BusinessImportApplicationService {
                 if (pending.isEmpty()) {
                     break;
                 }
-                current = workflowApplicationService.approveAuditInstance(
+                // 2026-10-19 用户定案：自动审批逐节点通知，与人工下发一致——
+                // 每步通知提交人推进 + 下一环节候选人待审批，终态通知结果。
+                AuditInstance approvedStep = businessWorkflowApplicationService.autoApproveCurrentStep(
                         current,
                         systemAdmin.getId(),
                         "系统自动审批通过：来源于导入批次，系统管理员统一处理，确认人 " + currentUser.getUsername());
+                if (approvedStep == null) {
+                    break;
+                }
+                current = approvedStep;
                 approvedSteps++;
             }
 

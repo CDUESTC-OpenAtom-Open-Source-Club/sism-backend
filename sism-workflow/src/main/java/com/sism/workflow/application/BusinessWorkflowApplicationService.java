@@ -227,6 +227,42 @@ public class BusinessWorkflowApplicationService {
     /**
      * 审批任务（可携带本节点鉴定进度等级，P1 上报链改造）
      */
+    /**
+     * 2026-10-19 用户定案：自动审批（导入一键下发）与人工审批走同一套通知。
+     * 每自动通过一个节点，都按普通审批的口径通知：
+     * a) 提交人收到「流程已推进」；
+     * b) 下一环节全部候选审批人收到「待审批」；
+     * c) 终态时通知提交人结果。
+     *
+     * 与 approveTask 的区别：跳过权限校验与鉴定等级投影（系统管理员模拟人工处理）。
+     * 返回 null 表示该实例已不在待审状态（无需再处理）。
+     */
+    @Transactional
+    public AuditInstance autoApproveCurrentStep(AuditInstance instance, Long systemAdminUserId, String comment) {
+        if (instance == null || !AuditInstance.STATUS_PENDING.equalsIgnoreCase(instance.getStatus())) {
+            return null;
+        }
+        AuditStepInstance currentStep = instance.resolveCurrentPendingStep().orElse(null);
+        if (currentStep == null) {
+            return null;
+        }
+        AuditStepDef currentStepDef = resolveStepDefinition(instance, currentStep);
+        WorkflowInstanceDetailResponse detailBeforeApproval =
+                workflowReadModelService.getInstanceDetail(String.valueOf(instance.getId()));
+
+        AuditInstance approved = workflowApplicationService.approveAuditInstance(
+                instance, systemAdminUserId, comment);
+
+        createApprovalResultNotification(
+                approved, systemAdminUserId, detailBeforeApproval, currentStepDef, true, comment);
+        syncDingTalkTodosOnApproval(approved, currentStep, detailBeforeApproval);
+        // 中间节点推进：通知提交人 + 下一环节候选人（终态时该方法内部自行跳过）
+        notifyNextStepOnApproval(approved, detailBeforeApproval, currentStepDef, systemAdminUserId);
+        markOwnSubmittedNotificationsRead(instance.getId(), systemAdminUserId);
+
+        return approved;
+    }
+
     @Transactional
     public WorkflowInstanceResponse approveTask(
             String taskId, ApprovalRequest request, Long userId, String appraisalLevel) {

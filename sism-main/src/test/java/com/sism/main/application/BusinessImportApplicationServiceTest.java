@@ -80,6 +80,8 @@ class BusinessImportApplicationServiceTest {
     @Mock
     private WorkflowApplicationService workflowApplicationService;
     @Mock
+    private com.sism.workflow.application.BusinessWorkflowApplicationService businessWorkflowApplicationService;
+    @Mock
     private AuditInstanceRepository auditInstanceRepository;
     @Mock
     private TransactionTemplate transactionTemplate;
@@ -100,6 +102,7 @@ class BusinessImportApplicationServiceTest {
                 strategyApplicationService,
                 basicTaskWeightValidationService,
                 workflowApplicationService,
+                businessWorkflowApplicationService,
                 auditInstanceRepository,
                 transactionTemplate,
                 importBatchJdbcTemplate);
