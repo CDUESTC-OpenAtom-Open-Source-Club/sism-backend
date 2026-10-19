@@ -60,46 +60,14 @@ class IndicatorMutationServiceTest {
     }
 
     @Test
-    @DisplayName("initiate 成功后应向被锁组织的在岗用户逐人写入锁死通知")
-    void initiate_shouldWriteLockNoticeToTargetOrgActiveUsers() {
+    @DisplayName("initiate 不再向被锁组织写站内通知（通知只随整体审批链发送）")
+    void initiate_shouldNotWriteLockNotice() {
         stubSuccessfulInitiation(List.of(TARGET_ORG_ID));
 
         service.initiate(INDICATOR_ID, Map.of("indicator_desc", "新描述"), OPERATOR_ID);
 
-        // 两个在岗用户各一条，标题/文案/归属字段为会议定案口径
-        verify(jdbcTemplate).update(
-                contains("INSERT INTO public.sys_user_notification"),
-                eq(501L),
-                eq(OPERATOR_ID),
-                eq(STRATEGY_ORG_ID),
-                eq("INDICATOR_MUTATION"),
-                eq("指标异动审批中"),
-                eq("上级正在对该部门的指标进行异动审批，期间暂不能填报或提交，请稍后再试"),
-                eq("/indicators/" + INDICATOR_ID + "/progress"),
-                eq(INDICATOR_ID),
-                any());
-        verify(jdbcTemplate).update(
-                contains("INSERT INTO public.sys_user_notification"),
-                eq(502L),
-                eq(OPERATOR_ID),
-                eq(STRATEGY_ORG_ID),
-                eq("INDICATOR_MUTATION"),
-                eq("指标异动审批中"),
-                eq("上级正在对该部门的指标进行异动审批，期间暂不能填报或提交，请稍后再试"),
-                eq("/indicators/" + INDICATOR_ID + "/progress"),
-                eq(INDICATOR_ID),
-                any());
-    }
-
-    @Test
-    @DisplayName("指标无 target_org_id 时不写锁死通知")
-    void initiate_shouldSkipLockNoticeWhenIndicatorHasNoTargetOrg() {
-        stubSuccessfulInitiation(List.of());
-
-        service.initiate(INDICATOR_ID, Map.of("indicator_desc", "新描述"), OPERATOR_ID);
-
         verify(jdbcTemplate, never()).update(
-                contains("sys_user_notification"), any(Object.class));
+                contains("INSERT INTO public.sys_user_notification"), any(Object[].class));
     }
 
     @SuppressWarnings("unchecked")
@@ -120,15 +88,7 @@ class IndicatorMutationServiceTest {
                 any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID)))
                 .thenReturn(WorkflowInstanceResponse.builder().instanceId("501").build());
 
-        when(jdbcTemplate.queryForList(contains("SELECT target_org_id"), eq(Long.class), eq(INDICATOR_ID)))
-                .thenReturn(targetOrgIds);
-
-        if (!targetOrgIds.isEmpty()) {
-            when(jdbcTemplate.query(
-                    contains("FROM public.sys_user u"),
-                    any(RowMapper.class),
-                    eq(TARGET_ORG_ID)))
-                    .thenReturn(List.of(501L, 502L));
-        }
+        // 2026-10-19：异动发起不再查询被锁组织用户（不写站内通知），
+        // 故不再为 target_org_id / 用户列表打桩。
     }
 }
