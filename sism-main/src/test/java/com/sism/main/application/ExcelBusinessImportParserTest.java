@@ -24,20 +24,23 @@ class ExcelBusinessImportParserTest {
         try (Workbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet("战略任务");
             Row header = sheet.createRow(0);
-            header.createCell(0).setCellValue("任务类型");
-            header.createCell(1).setCellValue("战略任务");
-            header.createCell(2).setCellValue("核心指标");
-            header.createCell(3).setCellValue("指标类型");
-            header.createCell(4).setCellValue("权重");
-            header.createCell(5).setCellValue("备注");
+            // 2026-10-19：序号列必填
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("任务类型");
+            header.createCell(2).setCellValue("战略任务");
+            header.createCell(3).setCellValue("核心指标");
+            header.createCell(4).setCellValue("指标类型");
+            header.createCell(5).setCellValue("权重");
+            header.createCell(6).setCellValue("备注");
 
             Row data = sheet.createRow(1);
-            data.createCell(0).setCellValue("发展性");
-            data.createCell(1).setCellValue("完善校院两级提案办理机制");
-            data.createCell(2).setCellValue("提案办理满意度");
-            data.createCell(3).setCellValue("定量");
-            data.createCell(4).setCellValue("25%");
-            data.createCell(5).setCellValue("按季度推进");
+            data.createCell(0).setCellValue(1);
+            data.createCell(1).setCellValue("发展性");
+            data.createCell(2).setCellValue("完善校院两级提案办理机制");
+            data.createCell(3).setCellValue("提案办理满意度");
+            data.createCell(4).setCellValue("定量");
+            data.createCell(5).setCellValue("25%");
+            data.createCell(6).setCellValue("按季度推进");
 
             var parsed = parser.parseSheet(sheet, ImportType.STRATEGIC_TASK);
 
@@ -45,6 +48,8 @@ class ExcelBusinessImportParserTest {
             assertEquals(1, parsed.rows().size());
             var row = parsed.rows().get(0);
             assertTrue(row.errors().isEmpty());
+            assertEquals(1, row.normalized().seq());
+            assertEquals(1, row.rowNo());
             assertEquals("发展性", row.normalized().taskType());
             assertEquals("完善校院两级提案办理机制", row.normalized().strategicTask());
             assertEquals("提案办理满意度", row.normalized().indicatorName());
@@ -60,18 +65,20 @@ class ExcelBusinessImportParserTest {
         try (Workbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet("指标下发");
             Row header = sheet.createRow(0);
-            header.createCell(0).setCellValue("责任学院");
-            header.createCell(1).setCellValue("父级核心指标");
-            header.createCell(2).setCellValue("子指标名称");
-            header.createCell(3).setCellValue("指标类型");
-            header.createCell(4).setCellValue("权重");
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("责任学院");
+            header.createCell(2).setCellValue("父级核心指标");
+            header.createCell(3).setCellValue("子指标名称");
+            header.createCell(4).setCellValue("指标类型");
+            header.createCell(5).setCellValue("权重");
 
             Row data = sheet.createRow(1);
-            data.createCell(0).setCellValue("计算机学院");
-            data.createCell(1).setCellValue("人才培养质量提升");
-            data.createCell(2).setCellValue("一流课程建设数");
-            data.createCell(3).setCellValue("定量");
-            data.createCell(4).setCellValue("0.2");
+            data.createCell(0).setCellValue(1);
+            data.createCell(1).setCellValue("计算机学院");
+            data.createCell(2).setCellValue("人才培养质量提升");
+            data.createCell(3).setCellValue("一流课程建设数");
+            data.createCell(4).setCellValue("定量");
+            data.createCell(5).setCellValue("0.2");
 
             var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
 
@@ -126,6 +133,35 @@ class ExcelBusinessImportParserTest {
             assertEquals("人力资源部师资队伍优化任务", row.normalized().parentStrategicTask());
             assertEquals("推进绩效薪酬制度改革方案落地", row.normalized().parentIndicator());
             assertEquals("推进绩效薪酬制度改革方案落地", row.normalized().indicatorName());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("Should reject workbook without required sequence column")
+    void shouldRejectWorkbookWithoutSequenceColumn() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("战略任务");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("任务类型");
+            header.createCell(1).setCellValue("战略任务");
+            header.createCell(2).setCellValue("核心指标");
+            header.createCell(3).setCellValue("指标类型");
+            header.createCell(4).setCellValue("权重");
+
+            Row data = sheet.createRow(1);
+            data.createCell(0).setCellValue("发展性");
+            data.createCell(1).setCellValue("完善校院两级提案办理机制");
+            data.createCell(2).setCellValue("提案办理满意度");
+            data.createCell(3).setCellValue("定量");
+            data.createCell(4).setCellValue("25%");
+
+            // 2026-10-19：解析期的用户可见错误改为 IllegalStateException（message 透传给前端）
+            var ex = org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> parser.parseSheet(sheet, ImportType.STRATEGIC_TASK));
+            assertTrue(ex.getMessage().contains("序号"));
         } catch (Exception ex) {
             throw new AssertionError(ex);
         }

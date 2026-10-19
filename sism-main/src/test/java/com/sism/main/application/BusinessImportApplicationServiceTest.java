@@ -41,6 +41,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -124,6 +125,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 fixture.currentUser());
 
         var result = service.commit(
@@ -158,6 +160,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 reporterOnly);
 
         var result = service.commit(
@@ -189,6 +192,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 fixture.currentUser());
 
         CurrentUser reporterOnly = reporterOnlyUser(fixture);
@@ -245,6 +249,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 fixture.currentUser());
 
         var result = service.commit(
@@ -295,6 +300,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 fixture.currentUser());
 
         var result = service.commit(
@@ -316,37 +322,6 @@ class BusinessImportApplicationServiceTest {
     }
 
     // ==================== #83 批次二：行为基线（固化现状，重构回归网） ====================
-
-    @Test
-    @DisplayName("D4: strategic preview flags linked indicator from another cycle as error row")
-    void shouldFlagCrossYearLinkedIndicatorInStrategicPreview() {
-        Fixture fixture = fixture();
-        StrategicTask task2025 = crossYearTask(fixture);
-        Indicator crossYearIndicator = crossYearIndicator(fixture, task2025.getId());
-        when(organizationRepository.findById(fixture.functionalOrg().getId()))
-                .thenReturn(Optional.of(fixture.functionalOrg()));
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L,
-                PlanLevel.STRAT_TO_FUNC,
-                fixture.functionalOrg().getId(),
-                fixture.functionalOrg().getId()))
-                .thenReturn(Optional.empty());
-        when(indicatorRepository.findById(2001L)).thenReturn(Optional.of(crossYearIndicator));
-        when(taskRepository.findById(task2025.getId())).thenReturn(Optional.of(task2025));
-
-        var preview = service.previewStrategicTasks(
-                strategicWorkbookWithInternalId("cross-year-strategic.xlsx", "2001"),
-                2026L,
-                fixture.functionalOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertEquals(1, preview.rows().size());
-        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
-        assertTrue(preview.rows().get(0).errors().stream()
-                .anyMatch(msg -> msg.contains("属于其他考核年度")));
-        assertTrue(preview.blocking());
-    }
 
     @Test
     @DisplayName("D4: distribution commit rejects parent indicator from another cycle")
@@ -374,6 +349,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 fixture.currentUser());
 
         var blocked = assertThrows(IllegalArgumentException.class, () -> service.commit(
@@ -390,6 +366,148 @@ class BusinessImportApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("2026-10-19: sequence map match updates target, out-of-range sequence creates new")
+    void shouldApplySequenceMapMatchAndCreateOutOfRange() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        stubCommitDependencies(fixture, false);
+        // 既有子指标（id=5001，属于本学院范围）
+        Indicator existingChild = existingChildIndicator(fixture, 5001L);
+        Plan plan = planWithId(900L, fixture);
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.functionalOrg().getId(), fixture.college().getId()))
+                .thenReturn(Optional.of(plan));
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
+        when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
+                .thenReturn(List.of(existingChild));
+        when(indicatorRepository.findById(5001L)).thenReturn(Optional.of(existingChild));
+        when(strategyApplicationService.updateIndicator(
+                anyLong(), anyString(), any(), any(), any(), any(), anyLong(),
+                any(SysOrg.class), any(SysOrg.class)))
+                .thenAnswer(invocation -> {
+                    Indicator target = existingChild;
+                    target.setIndicatorDesc(invocation.getArgument(1));
+                    return target;
+                });
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("sequence-map.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                Map.of(1, 5001L),
+                fixture.currentUser());
+
+        assertEquals(ImportAction.UPDATE, preview.rows().get(0).action());
+        assertEquals(ImportAction.CREATE, preview.rows().get(1).action());
+
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(preview.confirmToken(), ConflictMode.APPEND, false, "确认导入"),
+                fixture.currentUser());
+
+        assertEquals("COMMITTED", result.status());
+        assertEquals(1, result.updatedCount());
+        assertEquals(1, result.createdCount());
+        assertEquals(0, result.deletedCount());
+    }
+
+    @Test
+    @DisplayName("2026-10-19: sequence map target missing flags row error")
+    void shouldFlagRowErrorWhenSequenceMapTargetMissing() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        Plan plan = planWithId(900L, fixture);
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.functionalOrg().getId(), fixture.college().getId()))
+                .thenReturn(Optional.of(plan));
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
+        when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
+                .thenReturn(List.of());
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("sequence-map-missing.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                Map.of(1, 9999L),
+                fixture.currentUser());
+
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                .anyMatch(msg -> msg.contains("已变化")));
+        assertTrue(preview.blocking());
+    }
+
+    @Test
+    @DisplayName("2026-10-19: UPDATE mode soft-deletes existing indicators not covered by file")
+    void shouldSoftDeleteUncoveredIndicatorsOnUpdateMode() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        stubCommitDependencies(fixture, false);
+        Indicator coveredChild = existingChildIndicator(fixture, 5001L);
+        Indicator uncoveredChild = existingChildIndicator(fixture, 5002L);
+        Plan plan = planWithId(900L, fixture);
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.functionalOrg().getId(), fixture.college().getId()))
+                .thenReturn(Optional.of(plan));
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
+        when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
+                .thenReturn(List.of(coveredChild, uncoveredChild));
+        when(indicatorRepository.findById(5001L)).thenReturn(Optional.of(coveredChild));
+        when(strategyApplicationService.updateIndicator(
+                anyLong(), anyString(), any(), any(), any(), any(), anyLong(),
+                any(SysOrg.class), any(SysOrg.class)))
+                .thenReturn(coveredChild);
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("update-cover.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                Map.of(1, 5001L),
+                fixture.currentUser());
+
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(preview.confirmToken(), ConflictMode.UPDATE, false, "确认导入（覆盖）"),
+                fixture.currentUser());
+
+        assertEquals("COMMITTED", result.status());
+        assertEquals(1, result.deletedCount());
+        // 未覆盖的 5002 被软删除（打删除标记保存）
+        verify(indicatorRepository).save(eq(uncoveredChild));
+        assertEquals(Boolean.TRUE, uncoveredChild.getIsDeleted());
+        assertEquals(Boolean.FALSE, coveredChild.getIsDeleted());
+    }
+
+    private Plan planWithId(Long planId, Fixture fixture) {
+        Plan plan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(planId);
+        return plan;
+    }
+
+    private Indicator existingChildIndicator(Fixture fixture, Long indicatorId) {
+        Indicator indicator = Indicator.create(
+                "子指标A",
+                fixture.functionalOrg(),
+                fixture.college(),
+                "定量");
+        indicator.setId(indicatorId);
+        indicator.setTaskId(fixture.childTask().getId());
+        indicator.setParentIndicatorId(fixture.parentIndicator().getId());
+        indicator.setIsDeleted(false);
+        return indicator;
+    }
+
+    @Test
     @DisplayName("P6: successful commit persists import_batch audit row")
     void shouldPersistImportBatchAuditRowOnCommit() {
         Fixture fixture = fixture();
@@ -402,6 +520,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 fixture.currentUser());
 
         var result = service.commit(
@@ -442,6 +561,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.functionalOrg().getId(),
                 null,
+                Map.of(),
                 fixture.currentUser());
 
         var result = service.commit(
@@ -478,37 +598,6 @@ class BusinessImportApplicationServiceTest {
         indicator.setId(2001L);
         indicator.setTaskId(taskId);
         return indicator;
-    }
-
-    private MockMultipartFile strategicWorkbookWithInternalId(String fileName, String internalId) {
-        try (Workbook workbook = new XSSFWorkbook();
-             ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
-            Sheet sheet = workbook.createSheet("核心指标下发");
-            Row header = sheet.createRow(0);
-            header.createCell(0).setCellValue("职能部门");
-            header.createCell(1).setCellValue("战略任务");
-            header.createCell(2).setCellValue("核心指标");
-            header.createCell(3).setCellValue("指标类型");
-            header.createCell(4).setCellValue("权重");
-            header.createCell(5).setCellValue("内部ID");
-
-            Row first = sheet.createRow(1);
-            first.createCell(0).setCellValue("人力资源部");
-            first.createCell(1).setCellValue("基础任务");
-            first.createCell(2).setCellValue("父级核心指标A");
-            first.createCell(3).setCellValue("定量");
-            first.createCell(4).setCellValue(30);
-            first.createCell(5).setCellValue(internalId);
-
-            workbook.write(outputStream);
-            return new MockMultipartFile(
-                    "file",
-                    fileName,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    outputStream.toByteArray());
-        } catch (Exception ex) {
-            throw new AssertionError(ex);
-        }
     }
 
     private void stubPreviewDependencies(Fixture fixture) {
@@ -549,8 +638,6 @@ class BusinessImportApplicationServiceTest {
                 .thenReturn(Optional.of(fixture.parentTask()));
         when(taskRepository.findByPlanIdAndCycleId(900L, 2026L))
                 .thenReturn(List.of(fixture.childTask()));
-        when(indicatorRepository.findByTaskId(fixture.childTask().getId()))
-                .thenReturn(List.of());
 
         AtomicLong indicatorIds = new AtomicLong(3000L);
         when(strategyApplicationService.createIndicator(
@@ -627,25 +714,29 @@ class BusinessImportApplicationServiceTest {
              ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("指标下发");
             Row header = sheet.createRow(0);
-            header.createCell(0).setCellValue("学院");
-            header.createCell(1).setCellValue("父级核心指标");
-            header.createCell(2).setCellValue("子指标名称");
-            header.createCell(3).setCellValue("指标类型");
-            header.createCell(4).setCellValue("权重");
+            // 2026-10-19：序号列必填（1、2、3…），缺失将被解析器拦截
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("学院");
+            header.createCell(2).setCellValue("父级核心指标");
+            header.createCell(3).setCellValue("子指标名称");
+            header.createCell(4).setCellValue("指标类型");
+            header.createCell(5).setCellValue("权重");
 
             Row first = sheet.createRow(1);
-            first.createCell(0).setCellValue("马克思主义学院");
-            first.createCell(1).setCellValue("父级核心指标A");
-            first.createCell(2).setCellValue("子指标A");
-            first.createCell(3).setCellValue("定量");
-            first.createCell(4).setCellValue(30);
+            first.createCell(0).setCellValue(1);
+            first.createCell(1).setCellValue("马克思主义学院");
+            first.createCell(2).setCellValue("父级核心指标A");
+            first.createCell(3).setCellValue("子指标A");
+            first.createCell(4).setCellValue("定量");
+            first.createCell(5).setCellValue(30);
 
             Row second = sheet.createRow(2);
-            second.createCell(0).setCellValue("马克思主义学院");
-            second.createCell(1).setCellValue("父级核心指标A");
-            second.createCell(2).setCellValue("子指标B");
-            second.createCell(3).setCellValue("定量");
-            second.createCell(4).setCellValue(40);
+            second.createCell(0).setCellValue(2);
+            second.createCell(1).setCellValue("马克思主义学院");
+            second.createCell(2).setCellValue("父级核心指标A");
+            second.createCell(3).setCellValue("子指标B");
+            second.createCell(4).setCellValue("定量");
+            second.createCell(5).setCellValue(40);
 
             workbook.write(outputStream);
             return new MockMultipartFile(

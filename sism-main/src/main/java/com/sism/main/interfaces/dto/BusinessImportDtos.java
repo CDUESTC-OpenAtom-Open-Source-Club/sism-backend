@@ -47,6 +47,10 @@ public final class BusinessImportDtos {
     }
 
     public record NormalizedImportRow(
+            // 2026-10-19 用户定案：「序号」列必填（1、2、3…短编号），是导入时标定行身份的唯一用户可见编号；
+            // 系统在预览时把它还原为内部ID（数据库主键）做唯一性匹配——同名指标各按各的序号归属。
+            // 「内部ID」列从导入导出表移除，不再解析。
+            Integer seq,
             String department,
             String college,
             String taskType,
@@ -57,12 +61,11 @@ public final class BusinessImportDtos {
             String indicatorType,
             BigDecimal weight,
             String remark,
-            Long parentIndicatorId,
-            // D4（2026-09-18 定案）：战略任务导入支持「内部ID」列精确关联（原始串，空白=未填）
-            String indicatorId
+            Long parentIndicatorId
     ) {
         public Map<String, Object> toMap() {
             return Map.ofEntries(
+                    Map.entry("seq", seq == null ? "" : seq),
                     Map.entry("department", department == null ? "" : department),
                     Map.entry("college", college == null ? "" : college),
                     Map.entry("taskType", taskType == null ? "" : taskType),
@@ -73,8 +76,7 @@ public final class BusinessImportDtos {
                     Map.entry("indicatorType", indicatorType == null ? "" : indicatorType),
                     Map.entry("weight", weight == null ? "" : weight),
                     Map.entry("remark", remark == null ? "" : remark),
-                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId),
-                    Map.entry("indicatorId", indicatorId == null ? "" : indicatorId)
+                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId)
             );
         }
     }
@@ -137,6 +139,8 @@ public final class BusinessImportDtos {
             int createdCount,
             int updatedCount,
             int skippedCount,
+            // 2026-10-19：真覆盖模式软删除的旧指标数（不在文件覆盖集合中的既有指标）
+            int deletedCount,
             ImportWorkflowResult workflow
     ) {
     }

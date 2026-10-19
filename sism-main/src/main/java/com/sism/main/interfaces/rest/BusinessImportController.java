@@ -40,6 +40,8 @@ public class BusinessImportController {
             @RequestParam Long cycleId,
             @RequestParam Long targetOrgId,
             @RequestParam(required = false) String sheetName,
+            // 2026-10-19：序号→内部ID 映射（JSON 形如 {"1":2001,"2":2002}，前端按导出同款排序生成）
+            @RequestParam(required = false) String sequenceMap,
             @AuthenticationPrincipal CurrentUser currentUser) {
         return ResponseEntity.ok(ApiResponse.success(
                 businessImportApplicationService.previewStrategicTasks(
@@ -47,7 +49,30 @@ public class BusinessImportController {
                         cycleId,
                         targetOrgId,
                         sheetName,
+                        parseSequenceMap(sequenceMap),
                         currentUser)));
+    }
+
+    /** 解析 sequenceMap 参数（{"1":2001,...}）；缺失或非法返回空 Map（服务层退回名称匹配兜底） */
+    private java.util.Map<Integer, Long> parseSequenceMap(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return java.util.Map.of();
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(raw);
+            java.util.Map<Integer, Long> map = new java.util.HashMap<>();
+            node.fields().forEachRemaining(entry -> {
+                try {
+                    map.put(Integer.valueOf(entry.getKey()), entry.getValue().asLong());
+                } catch (NumberFormatException ignored) {
+                    // 跳过非法键
+                }
+            });
+            return map;
+        } catch (Exception ex) {
+            return java.util.Map.of();
+        }
     }
 
     @PostMapping("/strategic-tasks/{batchId}/commit")
@@ -70,6 +95,7 @@ public class BusinessImportController {
             @RequestParam Long targetCollegeOrgId,
             @RequestParam(required = false) Long sourceOrgId,
             @RequestParam(required = false) String sheetName,
+            @RequestParam(required = false) String sequenceMap,
             @AuthenticationPrincipal CurrentUser currentUser) {
         return ResponseEntity.ok(ApiResponse.success(
                 businessImportApplicationService.previewDistribution(
@@ -78,6 +104,7 @@ public class BusinessImportController {
                         targetCollegeOrgId,
                         sourceOrgId,
                         sheetName,
+                        parseSequenceMap(sequenceMap),
                         currentUser)));
     }
 

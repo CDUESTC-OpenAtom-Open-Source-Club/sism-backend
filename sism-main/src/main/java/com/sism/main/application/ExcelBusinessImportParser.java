@@ -50,8 +50,8 @@ public class ExcelBusinessImportParser {
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "指标权重")),
             Map.entry("remark", List.of("下发备注", "备注", "说明")),
-            // D4（2026-09-18 定案）：导出表自带「内部ID」列，回导时精确关联 + 三类校验
-            Map.entry("indicatorId", List.of("内部ID", "内部 ID", "指标ID", "指标 ID"))
+            // 2026-10-19 用户定案：「序号」列必填（1、2、3…短编号），导入时还原为内部ID做唯一性匹配
+            Map.entry("seq", List.of("序号", "序 号"))
     );
 
     private static final Map<String, List<String>> DISTRIBUTION_ALIASES = Map.ofEntries(
@@ -61,7 +61,8 @@ public class ExcelBusinessImportParser {
             Map.entry("indicatorName", List.of("子指标名称", "指标名称", "学院指标")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "子指标权重")),
-            Map.entry("remark", List.of("备注", "说明"))
+            Map.entry("remark", List.of("备注", "说明")),
+            Map.entry("seq", List.of("序号", "序 号"))
     );
 
     private static final List<DateTimeFormatter> DATE_TIME_FORMATTERS = List.of(
@@ -88,17 +89,24 @@ public class ExcelBusinessImportParser {
         try (InputStream inputStream = file.getInputStream();
              Workbook workbook = WorkbookFactory.create(inputStream)) {
             Sheet sheet = resolveSheet(workbook, sheetName)
-                    .orElseThrow(() -> new IllegalArgumentException("Excel 文件中没有可解析的工作表"));
+                    .orElseThrow(() -> new IllegalStateException("Excel 文件中没有可解析的工作表"));
             return parseSheet(sheet, type);
         } catch (Exception ex) {
-            throw new IllegalArgumentException("Excel 解析失败: " + ex.getMessage(), ex);
+            // 2026-10-19：解析失败的用户提示需要透传（IllegalStateException 的 message 不被全局处理器吞掉）
+            throw new IllegalStateException("Excel 解析失败: " + ex.getMessage(), ex);
         }
     }
 
     ParsedWorkbook parseSheet(Sheet sheet, ImportType type) {
         Map<String, List<String>> aliases = aliasesFor(type);
         HeaderMatch header = findHeader(sheet, aliases)
-                .orElseThrow(() -> new IllegalArgumentException("未识别到有效表头"));
+                .orElseThrow(() -> new IllegalStateException("未识别到有效表头，请使用最新导出的表格或下载模板"));
+
+        // 2026-10-19 用户定案：序号列必填——没有序号列的文件直接拦截（格式规范才能导入）
+        if (!header.fieldColumns().containsKey("seq")) {
+            throw new IllegalStateException(
+                    "导入文件缺少「序号」列（1、2、3…），请使用最新导出的表格或下载最新模板后重试");
+        }
 
         List<FieldMapping> mappings = header.fieldColumns().entrySet().stream()
                 .map(entry -> new FieldMapping(header.sourceHeaders().get(entry.getValue()), entry.getKey(), "HIGH"))
@@ -114,8 +122,11 @@ public class ExcelBusinessImportParser {
             NormalizedImportRow normalized = normalize(source, header.fieldColumns(), type);
             List<String> errors = validate(normalized, type);
             List<String> warnings = validateWarnings(normalized);
+            // 2026-10-19：预览行的行号展示为用户填写的「序号」（1、2、3…）；序号非法时退回物理行号便于定位
+            Integer seqValue = normalized.seq();
+            int displayNo = (seqValue != null && seqValue > 0) ? seqValue : rowIndex + 1;
             rows.add(new ImportRowPreview(
-                    rowIndex + 1,
+                    displayNo,
                     errors.isEmpty() ? ImportAction.CREATE : ImportAction.ERROR,
                     "",
                     normalized,
@@ -233,10 +244,9 @@ public class ExcelBusinessImportParser {
         String indicatorType = normalizeIndicatorType(value(source, aliases, "indicatorType"));
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
         String remark = clean(value(source, aliases, "remark"));
-        // 空白=未填，统一归一化为 null，避免下游 Long.valueOf("") 误解析（2026-10-18 修复确认导入失败）
-        String indicatorIdRaw = clean(value(source, aliases, "indicatorId"));
-        String indicatorId = indicatorIdRaw.isEmpty() ? null : indicatorIdRaw;
+        Integer seq = parsePositiveInt(value(source, aliases, "seq"));
         return new NormalizedImportRow(
+                seq,
                 department,
                 college,
                 taskType,
@@ -247,18 +257,30 @@ public class ExcelBusinessImportParser {
                 indicatorType,
                 weight,
                 remark,
-                null,
-                indicatorId
+                null
         );
+    }
+
+    /** 解析正整数（序号列）；空白或非正整数返回 null，由 validate 给出明确错误 */
+    private Integer parsePositiveInt(String raw) {
+        String cleaned = clean(raw);
+        if (cleaned.isEmpty() || !cleaned.matches("\\d+")) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(cleaned);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private List<String> validate(NormalizedImportRow row, ImportType type) {
         List<String> errors = new ArrayList<>();
+        // 2026-10-19 用户定案：序号必填且为正整数（1、2、3…），用于唯一性匹配
+        if (row.seq() == null) {
+            errors.add("序号不能为空或不合法（应为 1、2、3… 的正整数），请使用最新导出的表格或模板");
+        }
         if (type == ImportType.STRATEGIC_TASK) {
-            // D4（2026-09-18 定案）：「内部ID」列填写时必须为数字，格式错误前置拦截
-            if (!isBlank(row.indicatorId()) && !row.indicatorId().trim().matches("\\d+")) {
-                errors.add("内部ID 格式不正确（应为数字），请直接复制导出表中的内部ID列");
-            }
             if (isBlank(row.taskType())) {
                 errors.add("任务类型不能为空或无法识别");
             }
