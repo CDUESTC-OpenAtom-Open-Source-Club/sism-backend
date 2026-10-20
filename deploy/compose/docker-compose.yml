@@ -28,6 +28,10 @@ services:
           - backend
           - backend.dns.podman
     environment:
+      # 2026-10-20 修复（P6 停留时长多 8 小时）：容器默认 UTC，与服务器 CST 差 8 小时，
+      # 导致按容器时间计算的停留时长比实际多 8 小时。默认跟随宿主 CST，可用 TZ 覆盖。
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}?stringtype=unspecified
