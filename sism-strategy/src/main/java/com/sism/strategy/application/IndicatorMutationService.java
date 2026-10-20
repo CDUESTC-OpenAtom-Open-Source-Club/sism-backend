@@ -115,12 +115,17 @@ public class IndicatorMutationService {
         for (Map.Entry<String, Object> entry : changes.entrySet()) {
             String field = entry.getKey();
             Object value = entry.getValue();
-            if ("indicator_desc".equals(field)) {
+            if ("indicator_desc".equals(field)
+                    || "weight_percent".equals(field)
+                    || "remark".equals(field)) {
                 after.put(field, value);
-                changedFields.put(field, Map.of("before", before.get(field), "after", value));
-            } else if ("weight_percent".equals(field) || "remark".equals(field)) {
-                after.put(field, value);
-                changedFields.put(field, Map.of("before", before.get(field), "after", value));
+                // 2026-10-20 修复 NPE：Map.of 不接受 null 值，而指标原备注/原内容可能为空
+                //（错误日志定位：IndicatorMutationService:123 NullPointerException）。
+                // 改用 HashMap 允许 null，保证"首次填写备注"这类异动可正常发起。
+                Map<String, Object> diff = new LinkedHashMap<>();
+                diff.put("before", before.get(field));
+                diff.put("after", value);
+                changedFields.put(field, diff);
             }
         }
         if (changedFields.isEmpty()) {

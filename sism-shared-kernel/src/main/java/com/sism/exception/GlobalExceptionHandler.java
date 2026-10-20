@@ -228,7 +228,12 @@ public class GlobalExceptionHandler {
         log.warn("Illegal argument: message={}, requestId={}, context=[{}]",
                 e.getMessage(), requestId, requestContext, e);
 
-        ApiResponse<Void> response = ApiResponse.error(1001, MESSAGE_INVALID_REQUEST);
+        // 2026-10-20：业务性参数错误（如「权重合计必须为100」）需把原因透传给用户，
+        // 不能统一吞成「请求参数不合法」，否则用户与排查者都看不到真实原因。
+        String message = e.getMessage() == null || e.getMessage().isBlank()
+                ? MESSAGE_INVALID_REQUEST
+                : e.getMessage();
+        ApiResponse<Void> response = ApiResponse.error(1001, message);
 
         return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)
