@@ -64,6 +64,23 @@ public interface NotificationProvider {
     );
 
     /**
+     * 2026-10-20 用户定案（复盘 P1）：导入自动下发时系统管理员代批了本该由
+     * 战略部负责人 / 分管校领导处理的节点。给该节点候选人写一条**留痕通知**——
+     * 必须落库到消息中心（可查证是谁审核的），但不发右上角实时弹窗打断用户。
+     */
+    ApprovalResultNotification createSystemAutoApprovedNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String businessName,
+            String stepName,
+            String operatorName
+    );
+
+    /**
      * 2026-09-27 用户拍板：审批处理完成后消息留痕——
      * 将该审批实例上指定审批人仍未读的「待审批」通知标记为已读。
      * 通知保留在消息中心（不删除），仅从未读转为已读留痕。

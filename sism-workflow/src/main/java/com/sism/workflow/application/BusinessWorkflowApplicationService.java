@@ -258,11 +258,71 @@ public class BusinessWorkflowApplicationService {
         createApprovalResultNotification(
                 approved, systemAdminUserId, detailBeforeApproval, currentStepDef, true, comment);
         syncDingTalkTodosOnApproval(approved, currentStep, detailBeforeApproval);
-        // 中间节点推进：通知提交人 + 下一环节候选人（终态时该方法内部自行跳过）
-        notifyNextStepOnApproval(approved, detailBeforeApproval, currentStepDef, systemAdminUserId);
+        // 2026-10-20 用户定案（复盘 P1）：自动审批不调用 notifyNextStepOnApproval。
+        // 该方法会给「下一环节候选人」发「请尽快审批」——但自动审批会在同一瞬间把
+        // 下一节点也批掉，通知发出时已过期，只会造成"点进去没活了"的困惑。
+        // 改为给被代批节点的候选人写「系统代批留痕」通知（落库可查证，不弹窗）。
+        notifySystemAutoApprovedStep(
+                approved, detailBeforeApproval, currentStep, currentStepDef, systemAdminUserId);
         markOwnSubmittedNotificationsRead(instance.getId(), systemAdminUserId);
 
         return approved;
+    }
+
+    /**
+     * 2026-10-20 用户定案（复盘 P1）：导入自动下发时系统管理员代批了本该由
+     * 战略部负责人 / 分管校领导处理的节点。给该节点候选人写留痕通知——
+     * 消息中心可查证「谁在什么时候代批了哪个节点」，但不发实时弹窗。
+     */
+    private void notifySystemAutoApprovedStep(
+            AuditInstance approved,
+            WorkflowInstanceDetailResponse detailSnapshot,
+            AuditStepInstance handledStep,
+            AuditStepDef handledStepDef,
+            Long systemAdminUserId) {
+        if (handledStep == null || handledStepDef == null) {
+            return;
+        }
+        if (handledStepDef.isSubmitStep()) {
+            return;
+        }
+        try {
+            Long senderOrgId = userProvider.getUserOrgId(systemAdminUserId).orElse(null);
+            String businessName = firstNonBlank(
+                    detailSnapshot == null ? null : detailSnapshot.getPlanName(),
+                    approved.getEntityId() == null ? null : "业务对象#" + approved.getEntityId());
+            String stepName = firstNonBlank(
+                    handledStepDef.getStepName(), handledStep.getStepName(), "审批环节");
+            String operatorName = approverResolver.resolveApproverName(systemAdminUserId);
+
+            Long assignedApproverId = handledStep.getApproverId();
+            if (assignedApproverId != null && !assignedApproverId.equals(systemAdminUserId)) {
+                notificationProvider.createSystemAutoApprovedNotification(
+                        assignedApproverId, systemAdminUserId, senderOrgId,
+                        approved.getId(), approved.getEntityType(), approved.getEntityId(),
+                        businessName, stepName, operatorName);
+                return;
+            }
+            approverResolver.resolveCandidates(handledStepDef, approved.getRequesterOrgId())
+                    .stream()
+                    .map(candidate -> candidate.getUserId())
+                    .filter(userId -> userId != null && !userId.equals(systemAdminUserId))
+                    .distinct()
+                    .forEach(userId -> {
+                        try {
+                            notificationProvider.createSystemAutoApprovedNotification(
+                                    userId, systemAdminUserId, senderOrgId,
+                                    approved.getId(), approved.getEntityType(), approved.getEntityId(),
+                                    businessName, stepName, operatorName);
+                        } catch (Exception ex) {
+                            log.warn("Failed to write auto-approved notice for user {}: {}",
+                                    userId, ex.getMessage());
+                        }
+                    });
+        } catch (Exception ex) {
+            log.warn("Failed to write auto-approved notice for instance {}: {}",
+                    approved.getId(), ex.getMessage());
+        }
     }
 
     @Transactional

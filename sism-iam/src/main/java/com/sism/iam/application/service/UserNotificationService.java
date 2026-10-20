@@ -418,6 +418,47 @@ public class UserNotificationService implements NotificationProvider {
     }
 
     /**
+     * 2026-10-20 用户定案（复盘 P1）：系统代批留痕。
+     * 落库到消息中心（可查证谁审核、什么时候），但不发右上角实时弹窗。
+     */
+    @Transactional
+    @Override
+    public ApprovalResultNotification createSystemAutoApprovedNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String businessName,
+            String stepName,
+            String operatorName
+    ) {
+        String resolvedBusinessName =
+                businessName == null || businessName.isBlank()
+                        ? (entityId == null ? "审批事项" : "业务对象#" + entityId)
+                        : businessName.trim();
+        String resolvedStepName =
+                stepName == null || stepName.isBlank() ? "审批环节" : stepName.trim();
+        String resolvedOperator =
+                operatorName == null || operatorName.isBlank() ? "系统管理员" : operatorName.trim();
+
+        return saveAndPushApprovalNotification(
+                recipientUserId, senderUserId, senderOrgId, approvalInstanceId,
+                entityType, entityId, TYPE_APPROVAL_APPROVED,
+                "审批节点已由系统代为通过",
+                "导入批次触发的自动下发中，“" + resolvedBusinessName + "”的“"
+                        + resolvedStepName + "”节点已由" + resolvedOperator
+                        + "代为通过。此记录仅作留痕，无需处理。",
+                buildApprovalSubmissionMetadataJson(
+                        approvalInstanceId, entityType, entityId,
+                        resolvedBusinessName, resolvedStepName, resolvedOperator),
+                resolvedStepName,
+                false   // 不推右上角弹窗，只落库
+        );
+    }
+
+    /**
      * 2026-10-10 跨窗口实时修复：中间节点审批通过后，通知提交人流程已推进
      * （type=APPROVAL_NEXT_STEP），提交人窗口可秒级收敛到"待下一环节审批"。
      */
@@ -469,6 +510,29 @@ public class UserNotificationService implements NotificationProvider {
             String metadataJson,
             String stepName
     ) {
+        return saveAndPushApprovalNotification(
+                recipientUserId, senderUserId, senderOrgId, approvalInstanceId,
+                entityType, entityId, notificationType, title, content, metadataJson, stepName, true);
+    }
+
+    /**
+     * 2026-10-20：realtime=false 时只落库（消息中心可查证），不发右上角实时弹窗。
+     * 用于「系统代批留痕」——记录必须有，但不需要打断用户。
+     */
+    private ApprovalResultNotification saveAndPushApprovalNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String notificationType,
+            String title,
+            String content,
+            String metadataJson,
+            String stepName,
+            boolean realtime
+    ) {
         if (recipientUserId == null) {
             throw new IllegalArgumentException("Recipient user ID is required");
         }
@@ -490,7 +554,9 @@ public class UserNotificationService implements NotificationProvider {
 
         UserNotification saved = userNotificationRepository.save(notification);
         publishNotificationEmailIfPossible(saved);
-        publishRealtime(saved, stepName);
+        if (realtime) {
+            publishRealtime(saved, stepName);
+        }
         return new ApprovalResultNotification(
                 saved.getId(),
                 saved.getRecipientUserId(),
