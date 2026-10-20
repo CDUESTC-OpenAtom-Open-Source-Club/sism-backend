@@ -267,7 +267,7 @@ class BusinessImportApplicationServiceTest {
         assertNotNull(result.workflow());
         assertEquals("BLOCKED", result.workflow().status());
         assertEquals(7001L, result.workflow().instanceId());
-        assertEquals("当前任务已下发，不能重复导入或下发", result.workflow().message());
+        assertEquals("该部门计划已下发，不能再通过导入修改。如需新增或调整指标，请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批", result.workflow().message());
         verify(transactionTemplate, never()).execute(any());
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(anyLong(), anyLong());
         verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
@@ -315,7 +315,7 @@ class BusinessImportApplicationServiceTest {
         assertEquals("COMMIT_BLOCKED", result.status());
         assertNotNull(result.workflow());
         assertEquals("BLOCKED", result.workflow().status());
-        assertEquals("当前任务已下发，不能重复导入或下发", result.workflow().message());
+        assertEquals("该部门计划已下发，不能再通过导入修改。如需新增或调整指标，请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批", result.workflow().message());
         verify(transactionTemplate, never()).execute(any());
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(anyLong(), anyLong());
         verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());

@@ -988,6 +988,23 @@ public class IndicatorController {
         return ResponseEntity.ok(ApiResponse.success("Success", instanceId));
     }
 
+    /**
+     * 2026-10-20 用户定案：已下发计划新增指标后，立即为新建指标发起异动审批。
+     * 前端新增行保存成功且当前计划已下发时调用。
+     */
+    @org.springframework.transaction.annotation.Transactional
+    @org.springframework.web.bind.annotation.PostMapping("/{id}/mutation-for-create")
+    @Operation(summary = "已下发计划新增指标后发起异动审批",
+            description = "仅战略发展部；为新建指标打异动标记并启动 PLAN_MUTATION_STRATEGY")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<String>> initiateMutationForCreate(
+            @PathVariable Long id,
+            @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
+        Long operator = currentUser == null ? null : currentUser.getId();
+        String instanceId = indicatorMutationService.initiateForCreatedIndicator(id, operator);
+        return ResponseEntity.ok(ApiResponse.success("异动审批已发起", instanceId));
+    }
+
     @org.springframework.web.bind.annotation.GetMapping("/mutation-approvals")
     @Operation(summary = "异动审批实例清单", description = "按组织查异动审批链（审批中心卡片数据源，含进行中与已完成）")
     @PreAuthorize("isAuthenticated()")

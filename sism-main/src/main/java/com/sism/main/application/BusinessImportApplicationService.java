@@ -182,7 +182,9 @@ public class BusinessImportApplicationService {
                     autoSubmitAndApprove,
                     workflowCode,
                     currentPlan.map(Plan::getAuditInstanceId).orElse(null),
-                    "当前任务已下发，不能重复导入或下发");
+                    // 2026-10-20 用户定案：文案明确原因与替代路径，避免用户反复尝试导入
+                    "该部门计划已下发，不能再通过导入修改。如需新增或调整指标，"
+                            + "请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批");
         }
 
         CommitCounters counters;

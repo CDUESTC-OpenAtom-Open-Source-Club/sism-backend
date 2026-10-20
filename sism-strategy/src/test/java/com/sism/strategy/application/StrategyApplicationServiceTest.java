@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -68,11 +69,6 @@ class StrategyApplicationServiceTest {
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(61L);
 
-        StrategicTask task = createTask(901L, 7001L, targetOrg, ownerOrg);
-        Plan plan = createPlan(7001L, PlanStatus.DRAFT);
-
-        when(taskRepository.findById(901L)).thenReturn(Optional.of(task));
-        when(planRepository.findById(7001L)).thenReturn(Optional.of(plan));
         when(indicatorRepository.save(any(Indicator.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -139,23 +135,19 @@ class StrategyApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("Should block creating indicator when task plan is already distributed")
-    void shouldBlockCreatingIndicatorWhenTaskPlanDistributed() {
+    @DisplayName("Should allow creating indicator even when task plan is distributed (2026-10-20: 新增走异动链)")
+    void shouldAllowCreatingIndicatorWhenTaskPlanDistributed() {
         StrategyApplicationService service = createService();
 
         SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
         ownerOrg.setId(41L);
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(61L);
-        StrategicTask task = createTask(903L, 7002L, targetOrg, ownerOrg);
-        Plan plan = createPlan(7002L, PlanStatus.DISTRIBUTED);
+        when(indicatorRepository.save(any(Indicator.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
-        when(taskRepository.findById(903L)).thenReturn(Optional.of(task));
-        when(planRepository.findById(7002L)).thenReturn(Optional.of(plan));
-
-        DistributedPlanMutationBlockedException exception = assertThrows(
-                DistributedPlanMutationBlockedException.class,
-                () -> service.createIndicator(
+        // 2026-10-20 用户定案：已下发计划允许战略部新增指标（走异动审批链），不再抛异常
+        Indicator created = service.createIndicator(
                         "复制指标",
                         ownerOrg,
                         targetOrg,
@@ -166,11 +158,10 @@ class StrategyApplicationServiceTest {
                         1,
                         "备注",
                         0
-                )
-        );
+                );
 
-        assertEquals("当前任务已下发，不能重复导入或下发", exception.getMessage());
-        verify(indicatorRepository, never()).save(any());
+        assertNotNull(created);
+        verify(indicatorRepository).save(any(Indicator.class));
     }
 
     @Test
@@ -343,7 +334,7 @@ class StrategyApplicationServiceTest {
 
     @Test
     @DisplayName("Should block updating indicator when current task plan is already distributed")
-    void shouldBlockUpdatingIndicatorWhenCurrentTaskPlanDistributed() {
+    void shouldAllowUpdatingIndicatorWhenCurrentTaskPlanDistributed() {
         StrategyApplicationService service = createService();
 
         SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
@@ -357,26 +348,25 @@ class StrategyApplicationServiceTest {
         Plan plan = createPlan(7003L, PlanStatus.DISTRIBUTED);
 
         when(indicatorRepository.findById(401L)).thenReturn(Optional.of(indicator));
-        when(taskRepository.findById(904L)).thenReturn(Optional.of(task));
-        when(planRepository.findById(7003L)).thenReturn(Optional.of(plan));
+        when(indicatorRepository.save(any(Indicator.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
-        DistributedPlanMutationBlockedException exception = assertThrows(
-                DistributedPlanMutationBlockedException.class,
-                () -> service.updateIndicator(
-                        401L,
-                        "更新指标",
-                        BigDecimal.valueOf(30),
-                        null,
-                        null,
-                        null,
-                        null,
-                        null,
-                        null
-                )
+        // 2026-10-20 用户定案：已下发计划允许修改指标（走异动草稿 + 发起异动时校验），
+        // 不再在此处抛 DistributedPlanMutationBlockedException
+        Indicator updated = service.updateIndicator(
+                401L,
+                "更新指标",
+                BigDecimal.valueOf(30),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
         );
 
-        assertEquals("当前任务已下发，不能重复导入或下发", exception.getMessage());
-        verify(indicatorRepository, never()).save(any());
+        assertNotNull(updated);
+        verify(indicatorRepository).save(any(Indicator.class));
     }
 
     @Test

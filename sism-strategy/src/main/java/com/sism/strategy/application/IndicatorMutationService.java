@@ -70,6 +70,75 @@ public class IndicatorMutationService {
     }
 
     /**
+     * 2026-10-20 用户定案：已下发计划新增指标也必须走异动审批链。
+     * 做法：先按普通新增落库（状态 DRAFT），随即以「新增」语义发起异动审批——
+     * 把该指标标记为 IN_MUTATION 并启动 PLAN_MUTATION_STRATEGY，
+     * 审批通过后指标才真正生效；驳回/撤回时由审批链回滚（归档该指标）。
+     *
+     * 与修改型异动的区别：新增没有 before 值，快照里 before 记为 "(新增)"，
+     * 审批链节点与修改型完全一致（填报人修改 → 战略部负责人 → 分管校领导终审）。
+     */
+    @Transactional
+    public String initiateForCreatedIndicator(Long indicatorId, Long operatorUserId) {
+        if (indicatorId == null || indicatorId <= 0) {
+            throw new IllegalArgumentException("指标 ID 不能为空");
+        }
+        if (!canInitiate(operatorUserId)) {
+            throw new SecurityException("仅战略发展部可发起指标异动");
+        }
+
+        Map<String, Object> current = jdbcTemplate.queryForMap(
+                """
+                SELECT id, indicator_desc, weight_percent, remark, status, mutation_status
+                FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false
+                """,
+                indicatorId);
+        if (current.get("mutation_status") != null) {
+            throw new IllegalStateException("该指标已有异动在审批中");
+        }
+
+        Map<String, Object> before = new LinkedHashMap<>();
+        before.put("indicator_desc", "(新增)");
+        before.put("weight_percent", "(新增)");
+        before.put("remark", "(新增)");
+        Map<String, Object> after = new LinkedHashMap<>();
+        after.put("indicator_desc", current.get("indicator_desc"));
+        after.put("weight_percent", current.get("weight_percent"));
+        after.put("remark", current.get("remark"));
+        Map<String, Object> changedFields = new LinkedHashMap<>();
+        changedFields.put("indicator_desc", Map.of("before", "(新增)", "after",
+                String.valueOf(current.get("indicator_desc"))));
+
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId);
+
+        jdbcTemplate.update(
+                """
+                UPDATE public.indicator
+                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                MUTATION_STATUS_IN_MUTATION, indicatorId);
+
+        // 新增场景同样要求权重闭合（新增后合计必须仍为 100）
+        assertPlanBasicWeightStillClosed(indicatorId);
+
+        StartWorkflowRequest request = new StartWorkflowRequest();
+        request.setWorkflowCode("PLAN_MUTATION_STRATEGY");
+        request.setBusinessEntityId(indicatorId);
+        request.setBusinessEntityType(INDICATOR_ENTITY_TYPE);
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put("indicatorId", indicatorId);
+        variables.put("initiatedBy", operatorUserId);
+        variables.put("mutationType", "CREATE");
+        request.setVariables(variables);
+        var response = businessWorkflowApplicationService.startWorkflow(
+                request, operatorUserId, strategyOrgProperties.getStrategyOrgId());
+        log.info("[IndicatorMutation] 新增指标异动已发起: indicatorId={}, instanceId={}",
+                indicatorId, response.getInstanceId());
+        return response.getInstanceId();
+    }
+
+    /**
      * 2026-10-20：异动后校验基础性权重闭合（合计=100）。
      * 指标所属计划/目标部门由 task→plan 反查；校验失败抛 IllegalStateException，
      * 由 @Transactional 回滚本次权重变更（不会留下"改了一半"的数据）。

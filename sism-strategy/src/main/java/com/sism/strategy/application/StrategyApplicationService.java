@@ -39,8 +39,17 @@ public class StrategyApplicationService {
     private final TaskRepository taskRepository;
     private final PlanRepository planRepository;
     private final BasicTaskWeightValidationService basicTaskWeightValidationService;
+    /** 导入/下发入口专用：已下发计划不能重复导入或再次下发 */
     private static final String DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE =
             "当前任务已下发，不能重复导入或下发";
+
+    /**
+     * 2026-10-20 用户定案：战略部对已下发计划新增指标允许走异动链，
+     * 因此新增/编辑路径不再因计划已下发而直接拦截；此文案仅用于仍需拦截的场景
+     * （学院子指标下发到已下发计划等），且明确说明原因与后续操作。
+     */
+    private static final String DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE_FOR_CREATE =
+            "该计划已下发，新增指标需通过异动审批：请在战略任务管理页双击指标字段修改后点击「发起异动」，或联系战略发展部处理";
 
     @Transactional
     public Indicator createIndicator(String indicatorDesc, SysOrg ownerOrg, SysOrg targetOrg, String indicatorType) {
@@ -101,9 +110,10 @@ public class StrategyApplicationService {
             parent = indicatorRepository.findById(parentIndicatorId)
                     .orElseThrow(() -> new IllegalArgumentException("Parent indicator not found: " + parentIndicatorId));
             resolvedTaskId = resolveTaskIdForChildIndicator(taskId, cycleId, parent, ownerOrg, targetOrg);
-        } else {
-            ensurePlanNotDistributedForTask(taskId);
         }
+        // 2026-10-20 用户定案：已下发计划允许战略部继续新增指标（走异动审批链），
+        // 因此这里不再调用 ensurePlanNotDistributedForTask 拦截；
+        // 导入路径的「不能重复导入」守卫保留在导入服务内（BusinessImportApplicationService）。
 
         Indicator indicator = Indicator.create(indicatorDesc, ownerOrg, targetOrg, indicatorType);
 
@@ -388,10 +398,9 @@ public class StrategyApplicationService {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
 
-        ensurePlanNotDistributedForTask(indicator.getTaskId());
-        if (taskId != null && !taskId.equals(indicator.getTaskId())) {
-            ensurePlanNotDistributedForTask(taskId);
-        }
+        // 2026-10-20 用户定案：已下发计划的指标修改不再在此拦截——
+        // 界面修改走异动草稿（点「发起异动」统一校验权重并走审批链），
+        // 该接口本身保留给审批通过后的落库与内部调用。
 
         if (indicatorDesc != null) {
             String normalizedDesc = indicatorDesc.trim();
@@ -498,7 +507,10 @@ public class StrategyApplicationService {
                 targetOrg.getId()
         );
         if (PlanStatus.fromRaw(downstreamPlan.getStatus()) == PlanStatus.DISTRIBUTED) {
-            throw new DistributedPlanMutationBlockedException(DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE);
+            // 学院子指标下发：目标学院计划已下发时仍拦截（这是"下发"动作，非"新增指标"），
+            // 文案明确告知原因与后续操作路径，避免与"重复导入"混淆。
+            throw new DistributedPlanMutationBlockedException(
+                    DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE_FOR_CREATE);
         }
 
         String taskName = firstNonBlank(
