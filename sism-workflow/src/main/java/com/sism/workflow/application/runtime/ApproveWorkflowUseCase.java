@@ -36,7 +36,14 @@ public class ApproveWorkflowUseCase {
      */
     @Transactional
     public AuditInstance approve(AuditInstance instance, Long userId, String comment, String appraisalLevel) {
-        instance.approve(userId, comment, appraisalLevel);
+        return approve(instance, userId, comment, appraisalLevel, false);
+    }
+
+    /** 2026-10-20：系统管理员代批（导入自动下发），跳过节点审批人校验。 */
+    @Transactional
+    public AuditInstance approve(AuditInstance instance, Long userId, String comment,
+                                 String appraisalLevel, boolean systemOverride) {
+        instance.approve(userId, comment, appraisalLevel, systemOverride);
 
         // 如果还在审批中，尝试创建下一个步骤
         if (AuditInstance.STATUS_PENDING.equals(instance.getStatus())) {

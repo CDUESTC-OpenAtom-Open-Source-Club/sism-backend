@@ -50,7 +50,21 @@ public class IndicatorMutationService {
             return false;
         }
         Long orgId = userProvider.getUserOrgId(operatorUserId).orElse(null);
-        return orgId != null && orgId == strategyOrgProperties.getStrategyOrgId();
+        if (orgId == null || orgId != strategyOrgProperties.getStrategyOrgId()) {
+            return false;
+        }
+        // 2026-10-20 修复：分管校领导账号同样挂在战略发展部（org 35），仅按组织判断会放行。
+        // 按用户定案「只有战略发展部这个组织下的成员才能发起异动」——校领导只是异动审批链
+        // 的终审节点，不具备发起权，因此排除 ROLE_VICE_PRESIDENT。
+        List<String> roleCodes = jdbcTemplate.queryForList("""
+                SELECT r.role_code
+                FROM public.sys_user_role ur
+                JOIN public.sys_role r ON r.id = ur.role_id
+                WHERE ur.user_id = ?
+                """, String.class, operatorUserId);
+        boolean isVicePresident = roleCodes.stream()
+                .anyMatch(code -> "ROLE_VICE_PRESIDENT".equalsIgnoreCase(String.valueOf(code).trim()));
+        return !isVicePresident;
     }
 
     /**

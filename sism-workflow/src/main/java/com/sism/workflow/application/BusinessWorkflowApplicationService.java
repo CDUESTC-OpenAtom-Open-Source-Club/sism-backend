@@ -250,7 +250,9 @@ public class BusinessWorkflowApplicationService {
         WorkflowInstanceDetailResponse detailBeforeApproval =
                 workflowReadModelService.getInstanceDetail(String.valueOf(instance.getId()));
 
-        AuditInstance approved = workflowApplicationService.approveAuditInstance(
+        // 2026-10-20：走系统代批通道——自动审批以 admin 身份推进，
+        // 节点被指派人可能是业务账号（如战略部负责人），不能按普通审批人校验拦截。
+        AuditInstance approved = workflowApplicationService.approveAuditInstanceAsSystem(
                 instance, systemAdminUserId, comment);
 
         createApprovalResultNotification(

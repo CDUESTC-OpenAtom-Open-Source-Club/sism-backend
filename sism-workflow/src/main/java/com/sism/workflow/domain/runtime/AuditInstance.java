@@ -116,6 +116,15 @@ public class AuditInstance extends AggregateRoot<Long> {
      * @param appraisalLevel 本节点鉴定等级 AHEAD/NORMAL/DELAYED，可为空（非鉴定场景）
      */
     public void approve(Long userId, String comment, String appraisalLevel) {
+        approve(userId, comment, appraisalLevel, false);
+    }
+
+    /**
+     * 2026-10-20：系统管理员代批通道（导入自动下发使用）。
+     * systemOverride=true 时跳过"必须是当前节点被指派审批人"的校验，
+     * 但仍要求流程处于审批中，且审批意见里会记录代批人，留痕不丢。
+     */
+    public void approve(Long userId, String comment, String appraisalLevel, boolean systemOverride) {
         if (!STATUS_PENDING.equals(status)) {
             throw new IllegalStateException("Cannot approve: workflow is not in review");
         }
@@ -130,7 +139,10 @@ public class AuditInstance extends AggregateRoot<Long> {
 
         // 2026-10-20 安全修复（ISSUE-001 越权审批）：step.approverId 是被指派的审批人，
         // 只有当前节点审批人本人可审批。此前直接覆盖 approverId，任何登录用户都能推进流程。
-        assertCurrentApprover(current, userId, "approve");
+        // systemOverride=true 用于系统管理员代批（导入自动下发），属受控例外。
+        if (!systemOverride) {
+            assertCurrentApprover(current, userId, "approve");
+        }
 
         current.setApproverId(userId);
         current.setStatus(STEP_STATUS_APPROVED);

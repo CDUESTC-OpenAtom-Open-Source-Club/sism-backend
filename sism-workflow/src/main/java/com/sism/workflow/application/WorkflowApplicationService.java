@@ -99,6 +99,11 @@ public class WorkflowApplicationService {
         return approveWorkflowUseCase.approve(instance, userId, comment, appraisalLevel);
     }
 
+    /** 2026-10-20：系统管理员代批通道（导入自动下发）。 */
+    public AuditInstance approveAuditInstanceAsSystem(AuditInstance instance, Long userId, String comment) {
+        return approveWorkflowUseCase.approve(instance, userId, comment, null, true);
+    }
+
     public AuditInstance rejectAuditInstance(AuditInstance instance, Long userId, String comment) {
         return rejectWorkflowUseCase.reject(instance, userId, comment);
     }
