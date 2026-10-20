@@ -48,7 +48,8 @@ public class ExcelBusinessImportParser {
             Map.entry("strategicTask", List.of("战略任务", "任务名称", "任务内容")),
             Map.entry("indicatorName", List.of("核心指标", "指标名称", "指标内容")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
-            Map.entry("weight", List.of("权重", "指标权重")),
+            // 2026-10-20：导出/模板表头带格式提示「权重（可填 10 / 10% / 0.1）」，需兼容识别
+            Map.entry("weight", List.of("权重", "指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
             Map.entry("remark", List.of("下发备注", "备注", "说明")),
             // 2026-10-19 用户定案：「序号」列必填（1、2、3…短编号），导入时还原为内部ID做唯一性匹配
             Map.entry("seq", List.of("序号", "序 号"))
@@ -60,7 +61,7 @@ public class ExcelBusinessImportParser {
             Map.entry("parentIndicator", List.of("父级核心指标", "上级指标", "来源指标")),
             Map.entry("indicatorName", List.of("子指标名称", "指标名称", "学院指标")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
-            Map.entry("weight", List.of("权重", "子指标权重")),
+            Map.entry("weight", List.of("权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
             Map.entry("remark", List.of("备注", "说明")),
             Map.entry("seq", List.of("序号", "序 号"))
     );

@@ -196,7 +196,12 @@ class IndicatorControllerTest {
             Object userNotificationService = null;
             return constructor.newInstance(
                     new com.sism.strategy.application.IndicatorMutationService(
-                            jdbcTemplate, null, null, null),
+                            jdbcTemplate,
+                            // 2026-10-20：异动新增权重闭合校验依赖（本测试不触发异动，传 null）
+                            null,
+                            null,
+                            null,
+                            null),
                     strategyApplicationService,
                     batchIndicatorDistributionApplicationService,
                     organizationRepository,

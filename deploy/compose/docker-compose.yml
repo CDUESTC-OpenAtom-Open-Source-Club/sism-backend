@@ -53,6 +53,8 @@ services:
     volumes:
       - backend_uploads:/root/.sism/uploads
       - backend_exports:/app/exports
+      # 2026-10-20：错误日志落文件，挂到宿主便于直接查看（/opt/sism-stack/production/logs）
+      - backend_logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/v1/actuator/health | grep '\"status\":\"UP\"'"]
       interval: 15s
@@ -81,6 +83,7 @@ volumes:
   postgres_data:
   backend_uploads:
   backend_exports:
+  backend_logs:
 
 networks:
   default:

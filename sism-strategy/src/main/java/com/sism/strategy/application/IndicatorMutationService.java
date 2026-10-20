@@ -35,6 +35,8 @@ public class IndicatorMutationService {
     private static final String MUTATION_LOCK_NOTICE_TYPE = "INDICATOR_MUTATION";
 
     private final JdbcTemplate jdbcTemplate;
+    /** 2026-10-20：异动同样必须满足基础性权重合计=100 的闭合校验 */
+    private final BasicTaskWeightValidationService basicTaskWeightValidationService;
     private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final com.sism.shared.domain.user.UserProvider userProvider;
     private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
@@ -49,6 +51,31 @@ public class IndicatorMutationService {
         }
         Long orgId = userProvider.getUserOrgId(operatorUserId).orElse(null);
         return orgId != null && orgId == strategyOrgProperties.getStrategyOrgId();
+    }
+
+    /**
+     * 2026-10-20：异动后校验基础性权重闭合（合计=100）。
+     * 指标所属计划/目标部门由 task→plan 反查；校验失败抛 IllegalStateException，
+     * 由 @Transactional 回滚本次权重变更（不会留下"改了一半"的数据）。
+     */
+    private void assertPlanBasicWeightStillClosed(Long indicatorId) {
+        Long planId = jdbcTemplate.query(
+                """
+                SELECT t.plan_id
+                FROM public.indicator i
+                JOIN public.sys_task t ON t.task_id = i.task_id
+                WHERE i.id = ?
+                """,
+                rs -> rs.next() ? rs.getLong(1) : null,
+                indicatorId);
+        Long targetOrgId = jdbcTemplate.query(
+                "SELECT target_org_id FROM public.indicator WHERE id = ?",
+                rs -> rs.next() ? rs.getLong(1) : null,
+                indicatorId);
+        if (planId == null || targetOrgId == null) {
+            return;
+        }
+        basicTaskWeightValidationService.validatePlanBasicWeight(planId, targetOrgId);
     }
 
     /** 发起异动：写快照 + 打异动标记 + 启动异动审批链。返回工作流实例 ID。 */
@@ -120,6 +147,10 @@ public class IndicatorMutationService {
                 MUTATION_STATUS_IN_MUTATION,
                 indicatorId
         );
+
+        // 2026-10-20 用户定案：异动与下发共用同一闭合口径——
+        // 基础性指标权重合计必须为 100，异动后不达标则不允许发起（抛异常回滚本次变更）。
+        assertPlanBasicWeightStillClosed(indicatorId);
 
         // 启动异动审批链（填报人修改 → 战略部负责人 → 分管校领导终审）
         StartWorkflowRequest request = new StartWorkflowRequest();

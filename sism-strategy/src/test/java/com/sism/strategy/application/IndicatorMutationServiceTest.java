@@ -42,6 +42,9 @@ class IndicatorMutationServiceTest {
     private JdbcTemplate jdbcTemplate;
 
     @Mock
+    private BasicTaskWeightValidationService basicTaskWeightValidationService;
+
+    @Mock
     private BusinessWorkflowApplicationService businessWorkflowApplicationService;
 
     @Mock
@@ -53,6 +56,8 @@ class IndicatorMutationServiceTest {
     void setUp() {
         service = new IndicatorMutationService(
                 jdbcTemplate,
+                // 2026-10-20：异动新增权重闭合校验依赖
+                basicTaskWeightValidationService,
                 businessWorkflowApplicationService,
                 userProvider,
                 new StrategyOrgProperties()

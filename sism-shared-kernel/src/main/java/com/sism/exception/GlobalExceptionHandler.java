@@ -224,8 +224,9 @@ public class GlobalExceptionHandler {
         String requestId = getOrGenerateRequestId();
         String requestContext = getRequestContext();
 
+        // 2026-10-20：参数异常也落堆栈，便于定位是哪个字段/哪次调用
         log.warn("Illegal argument: message={}, requestId={}, context=[{}]",
-                e.getMessage(), requestId, requestContext);
+                e.getMessage(), requestId, requestContext, e);
 
         ApiResponse<Void> response = ApiResponse.error(1001, MESSAGE_INVALID_REQUEST);
 
@@ -242,8 +243,9 @@ public class GlobalExceptionHandler {
         String requestId = getOrGenerateRequestId();
         String requestContext = getRequestContext();
 
+        // 2026-10-20：业务态异常同样落堆栈到 error 日志，便于人工追查（此前只有 message）
         log.warn("Illegal state: message={}, requestId={}, context=[{}]",
-                e.getMessage(), requestId, requestContext);
+                e.getMessage(), requestId, requestContext, e);
 
         // 业务态非法（如指标异动锁死填报）的提示语需要透传给用户，不能吞成通用文案
         String message = e.getMessage() == null || e.getMessage().isBlank()
