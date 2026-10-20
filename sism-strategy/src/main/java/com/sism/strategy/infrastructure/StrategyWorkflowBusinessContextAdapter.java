@@ -100,23 +100,6 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
                 entityId);
     }
 
-    /**
-     * P5 指标异动：组织下存在异动中的指标时全面锁死填报/提交。
-     */
-    @Override
-    public boolean isOrgLockedByMutation(Long orgId) {
-        if (orgId == null) {
-            return false;
-        }
-        Integer count = jdbcTemplate.queryForObject(
-                """
-                SELECT COUNT(*)
-                FROM public.indicator
-                WHERE mutation_status = 'IN_MUTATION'
-                  AND COALESCE(is_deleted, false) = false
-                  AND (target_org_id = ? OR owner_org_id = ?)
-                """,
-                Integer.class, orgId, orgId);
-        return count != null && count > 0;
-    }
+    // 2026-10-20 用户定案：异动期间不再锁死填报/提交。
+    // 原 isOrgLockedByMutation 实现已移除，接口 default 返回 false（不锁）。
 }

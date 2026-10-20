@@ -76,8 +76,6 @@ public class ReportApplicationService {
     @Transactional
     public PlanReport createReport(String reportMonth, Long reportOrgId,
                                    ReportOrgType reportOrgType, Long planId, Long createdBy) {
-        // P5 全面锁死：该组织存在异动审批中的指标时，禁止建草稿（含驳回后重开/新月份新轮次）
-        assertOrgNotLockedByMutation(reportOrgId);
         String normalizedMonth = normalizeReportMonth(reportMonth);
         assertEarliestUnfilledMonth(reportMonth, normalizedMonth, reportOrgId, reportOrgType, planId);
         Optional<PlanReport> existingReport = planReportRepository.findLatestByMonthlyScope(
@@ -155,8 +153,6 @@ public class ReportApplicationService {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report", reportId));
 
-        // P5 全面锁死：任何修改发生前先检查异动锁
-        assertOrgNotLockedByMutation(report.getReportOrgId());
         validatePendingProgress(indicatorId, progress);
         report.markCreatedByIfAbsent(operatorUserId);
         report.updateContent(content, summary, progress, issues, nextPlan);
@@ -181,8 +177,6 @@ public class ReportApplicationService {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report", reportId));
 
-        // P5 全面锁死：任何修改发生前先检查异动锁
-        assertOrgNotLockedByMutation(report.getReportOrgId());
         report.markCreatedByIfAbsent(operatorUserId);
         report.updateContent(content, summary, progress, issues, nextPlan);
         if (title != null) {
@@ -243,35 +237,10 @@ public class ReportApplicationService {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report not found with id: " + reportId));
 
-        // P5 全面锁死：该组织存在异动审批中的指标时，禁止提交填报
-        final Long lockedOrgId = report.getReportOrgId() == null ? null : Long.valueOf(report.getReportOrgId());
-        boolean locked = lockedOrgId != null && workflowBusinessContextPorts.stream()
-                .anyMatch(port -> port.isOrgLockedByMutation(lockedOrgId));
-        if (locked) {
-            throw new IllegalStateException(
-                    "上级正在对该部门的指标进行异动审批，期间暂不能提交填报，请稍后再试");
-        }
-
         report.submit(userId);
         report = planReportRepository.save(report);
         publishAndSaveEvents(report);
         return enrichReportMetadata(report);
-    }
-
-    /**
-     * P5 全面锁死（会议定案）：被锁组织的填报「建草稿、改草稿」全部禁止。
-     * 异动审批期间该组织任一指标处于 IN_MUTATION 即视为锁死。
-     */
-    private void assertOrgNotLockedByMutation(Long reportOrgId) {
-        if (reportOrgId == null) {
-            return;
-        }
-        boolean locked = workflowBusinessContextPorts.stream()
-                .anyMatch(port -> port.isOrgLockedByMutation(reportOrgId));
-        if (locked) {
-            throw new IllegalStateException(
-                    "上级正在对该部门的指标进行异动审批，期间暂不能填报或修改，请稍后再试");
-        }
     }
 
     @Transactional

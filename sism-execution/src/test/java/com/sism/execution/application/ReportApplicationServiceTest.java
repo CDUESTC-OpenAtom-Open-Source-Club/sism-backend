@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
@@ -717,54 +718,52 @@ class ReportApplicationServiceTest {
     }
 
     @Test
-    void createReport_shouldRejectWhenOrgLockedByMutation() {
-        when(workflowBusinessContextPort.isOrgLockedByMutation(39L)).thenReturn(true);
-        ReportApplicationService lockedService = newService(List.of(workflowBusinessContextPort));
+    void createReport_shouldNotBeBlockedByOrgMutationLock() {
+        // 2026-10-20 用户定案：异动期间不再锁死填报/导入等模块（人为处理）。
+        // 即使组织存在异动中指标，建草稿也应正常进行。
+        ReportApplicationService service = newService(List.of(workflowBusinessContextPort));
 
-        assertThatThrownBy(() -> lockedService.createReport("202603", 39L, ReportOrgType.FUNC_DEPT, 111L, 7001L))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("上级正在对该部门的指标进行异动审批，期间暂不能填报或修改，请稍后再试");
-
-        verify(planReportRepository, never()).save(any(PlanReport.class));
+        assertThatCode(() -> service.createReport("202603", 39L, ReportOrgType.FUNC_DEPT, 111L, 7001L))
+                .doesNotThrowAnyException();
     }
 
     @Test
-    void updateReport_shouldRejectWhenOrgLockedByMutation() {
+    void updateReport_shouldNotBeBlockedByOrgMutationLock() {
+        // 2026-10-20 定案：异动期间不再锁死填报修改
         PlanReport report = PlanReport.createDraft("202603", 39L, ReportOrgType.FUNC_DEPT, 111L);
         report.setId(60L);
+        Indicator indicator = new Indicator();
+        indicator.setId(2001L);
+        indicator.setProgress(20);
         when(planReportRepository.findById(60L)).thenReturn(Optional.of(report));
-        when(workflowBusinessContextPort.isOrgLockedByMutation(39L)).thenReturn(true);
-        ReportApplicationService lockedService = newService(List.of(workflowBusinessContextPort));
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(indicatorRepository.findById(2001L)).thenReturn(Optional.of(indicator));
+        ReportApplicationService service = newService(List.of(workflowBusinessContextPort));
 
-        assertThatThrownBy(() -> lockedService.updateReport(
+        assertThatCode(() -> service.updateReport(
                 60L, "指标 A", 2001L, "内容", "摘要", 45, "问题", "计划", 8001L))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("上级正在对该部门的指标进行异动审批，期间暂不能填报或修改，请稍后再试");
-
-        verify(planReportRepository, never()).save(any(PlanReport.class));
-        verify(planReportIndicatorRepository, never())
-                .upsertDraftIndicator(any(), any(), any(), any(), any(), any());
+                .doesNotThrowAnyException();
     }
 
     @Test
-    void updateReportBatch_shouldRejectWhenOrgLockedByMutation() {
+    void updateReportBatch_shouldNotBeBlockedByOrgMutationLock() {
+        // 2026-10-20 定案：异动期间不再锁死批量修改
         PlanReport report = PlanReport.createDraft("202603", 39L, ReportOrgType.FUNC_DEPT, 111L);
         report.setId(61L);
+        Indicator indicator = new Indicator();
+        indicator.setId(2010L);
+        indicator.setProgress(20);
         when(planReportRepository.findById(61L)).thenReturn(Optional.of(report));
-        when(workflowBusinessContextPort.isOrgLockedByMutation(39L)).thenReturn(true);
-        ReportApplicationService lockedService = newService(List.of(workflowBusinessContextPort));
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(indicatorRepository.findById(2010L)).thenReturn(Optional.of(indicator));
+        ReportApplicationService service = newService(List.of(workflowBusinessContextPort));
 
         UpdatePlanReportIndicatorDetailRequest detail = new UpdatePlanReportIndicatorDetailRequest();
         detail.setIndicatorId(2010L);
         detail.setProgress(45);
 
-        assertThatThrownBy(() -> lockedService.updateReportBatch(
+        assertThatCode(() -> service.updateReportBatch(
                 61L, "标题", "内容", "摘要", 45, "问题", "计划", 8002L, List.of(detail)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("上级正在对该部门的指标进行异动审批，期间暂不能填报或修改，请稍后再试");
-
-        verify(planReportRepository, never()).save(any(PlanReport.class));
-        verify(planReportIndicatorRepository, never())
-                .upsertDraftIndicator(any(), any(), any(), any(), any(), any());
+                .doesNotThrowAnyException();
     }
 }

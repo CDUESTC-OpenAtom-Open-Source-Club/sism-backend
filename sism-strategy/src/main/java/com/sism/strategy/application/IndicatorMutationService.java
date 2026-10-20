@@ -17,7 +17,9 @@ import java.util.Map;
  * - 原地修改（ID 不变），不复制副本
  * - 每次变更写 audit_log 快照（before_json/after_json/changed_fields）供「已更改 N 次」与历史版本
  * - 异动只能由战略发展部发起（分管校领导终审，PLAN_MUTATION_STRATEGY 三级链）
- * - 异动审批期间全面锁死该组织填报/提交（isOrgLockedByMutation）
+ * - 2026-10-20 用户定案：异动期间不再锁死其他模块（填报/导入/下发全部放开，人为处理）。
+ *   原「全面锁死」口径（isOrgLockedByMutation）已移除——它曾导致战略部对任意部门的
+ *   导入被无关异动拦截（线上实例：保卫处指标异动锁死后勤资产处导入）。
  */
 @Slf4j
 @Service
@@ -332,43 +334,6 @@ public class IndicatorMutationService {
                 LIMIT 50
                 """,
                 orgId, orgId);
-    }
-
-    /** 全面锁死：该组织下任一指标在异动中，即视为锁死。 */
-    public boolean isOrgLockedByMutation(Long orgId) {
-        if (orgId == null) {
-            return false;
-        }
-        Integer count = jdbcTemplate.queryForObject(
-                """
-                SELECT COUNT(*)
-                FROM public.indicator
-                WHERE mutation_status = 'IN_MUTATION'
-                  AND COALESCE(is_deleted, false) = false
-                  AND (target_org_id = ? OR owner_org_id = ?)
-                """,
-                Integer.class, orgId, orgId);
-        if (count != null && count > 0) {
-            return true;
-        }
-        // 2026-10-11 客户确认的锁死口径：职能部门指标异动期间，二级学院全部锁死（不进不出）。
-        // 学院（type=academic）与异动无直接关联也锁——职能部门的指标会下发到多个学院，
-        // 学院是波及最大的一环，异动期间冻结全部学院侧写操作与收发。
-        String orgType = jdbcTemplate.queryForObject(
-                "SELECT COALESCE(type::text, '') FROM public.sys_org WHERE id = ?",
-                String.class, orgId);
-        if ("academic".equalsIgnoreCase(orgType)) {
-            Integer anyMutation = jdbcTemplate.queryForObject(
-                    """
-                    SELECT COUNT(*)
-                    FROM public.indicator
-                    WHERE mutation_status = 'IN_MUTATION'
-                      AND COALESCE(is_deleted, false) = false
-                    """,
-                    Integer.class);
-            return anyMutation != null && anyMutation > 0;
-        }
-        return false;
     }
 
     private void insertAuditLog(Long indicatorId,

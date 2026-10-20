@@ -439,14 +439,14 @@ class StrategyApplicationServiceTest {
     }
 
     private StrategyApplicationService createService() {
+        // 2026-10-20：异动锁移除后 StrategyApplicationService 不再依赖 IndicatorMutationService
         return new StrategyApplicationService(
                 eventPublisher,
                 eventStore,
                 indicatorRepository,
                 taskRepository,
                 planRepository,
-                basicTaskWeightValidationService,
-                indicatorMutationService
+                basicTaskWeightValidationService
         );
     }
 
