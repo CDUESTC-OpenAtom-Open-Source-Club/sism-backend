@@ -191,7 +191,7 @@ class AuditInstanceTest {
 
         assertEquals(AuditInstance.STATUS_PENDING, instance.getStatus());
         assertEquals(AuditInstance.STEP_STATUS_APPROVED, withdrawnStep.getStatus());
-        assertEquals("系统自动完成提交流程节点", withdrawnStep.getComment());
+        assertEquals("提交人重新提交（未填写说明）", withdrawnStep.getComment());
         assertNotNull(withdrawnStep.getApprovedAt());
         assertEquals(AuditInstance.STEP_STATUS_PENDING, waitingApproval.getStatus());
         assertEquals(2, instance.resolveCurrentPendingStep().orElseThrow().getStepNo());
@@ -231,7 +231,7 @@ class AuditInstanceTest {
 
         assertEquals(AuditInstance.STATUS_PENDING, instance.getStatus());
         assertEquals(AuditInstance.STEP_STATUS_APPROVED, returnedSubmit.getStatus());
-        assertEquals("系统自动完成提交流程节点", returnedSubmit.getComment());
+        assertEquals("提交人重新提交（未填写说明）", returnedSubmit.getComment());
         assertEquals(AuditInstance.STEP_STATUS_PENDING, waitingApproval.getStatus());
         assertEquals(4, instance.resolveCurrentPendingStep().orElseThrow().getStepNo());
     }

@@ -65,6 +65,8 @@ public class SubmissionStepAutoCompletePolicy {
         if (submitComment != null && !submitComment.trim().isEmpty()) {
             return submitComment.trim();
         }
-        return "系统自动完成提交流程节点";
+        // 2026-10-20 修复（复盘图14）：原默认文案「系统自动完成提交流程节点」会让
+        // 驳回后的重新提交看起来像系统自动动作，误导审批人。改为明确表达是提交人重新提交。
+        return "提交人重新提交（未填写说明）";
     }
 }

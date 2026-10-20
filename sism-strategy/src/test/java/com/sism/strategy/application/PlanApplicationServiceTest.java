@@ -409,7 +409,7 @@ class PlanApplicationServiceTest {
         assertTrue(Boolean.TRUE.equals(response.getCanWithdraw()));
         verify(jdbcTemplate).update(
                 contains("SET status = 'APPROVED'"),
-                eq("系统自动完成提交流程节点"),
+                eq("提交人重新提交（未填写说明）"),
                 anyLong()
         );
         verify(jdbcTemplate).update(contains("SET status = 'PENDING'"), eq(18L));
@@ -472,7 +472,7 @@ class PlanApplicationServiceTest {
         assertEquals(PlanStatus.PENDING.value(), response.getStatus());
         verify(jdbcTemplate).update(
                 contains("SET status = 'APPROVED'"),
-                eq("系统自动完成提交流程节点"),
+                eq("提交人重新提交（未填写说明）"),
                 eq(81L)
         );
         verify(jdbcTemplate).update(contains("INSERT INTO public.audit_step_instance"), eq(4L), eq(28L));

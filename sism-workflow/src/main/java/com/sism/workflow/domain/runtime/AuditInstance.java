@@ -262,7 +262,8 @@ public class AuditInstance extends AggregateRoot<Long> {
 
         if (isRequesterSubmitStep(withdrawnStep)) {
             withdrawnStep.setStatus(STEP_STATUS_APPROVED);
-            withdrawnStep.setComment("系统自动完成提交流程节点");
+            // 2026-10-20 修复（复盘图14）：同上，避免"系统自动"误导
+            withdrawnStep.setComment("提交人重新提交（未填写说明）");
             withdrawnStep.setApprovedAt(LocalDateTime.now());
 
             Optional<AuditStepInstance> waitingReplayStep = stepInstances.stream()

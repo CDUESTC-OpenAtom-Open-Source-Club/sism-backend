@@ -310,7 +310,8 @@ class PlanWorkflowRuntimeService {
         if (submitComment != null && !submitComment.trim().isEmpty()) {
             return submitComment.trim();
         }
-        return "系统自动完成提交流程节点";
+        // 2026-10-20 修复（复盘图14）：避免"系统自动"误导，明确为提交人动作
+        return "提交人重新提交（未填写说明）";
     }
 
     private WorkflowInstanceContext loadWorkflowInstanceContext(Long workflowInstanceId) {
