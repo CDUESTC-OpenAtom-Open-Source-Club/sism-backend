@@ -96,9 +96,10 @@ public class StrategyApplicationService {
         Indicator parent = null;
         Long resolvedTaskId = taskId;
 
-        if (ownerOrg != null) {
-            assertOrgNotLockedByMutation(ownerOrg.getId());
-        }
+        // 2026-10-20 修复（线上问题：战略部往后勤资产处导入被无关异动锁拦住）：
+        // 异动锁只应锁「被异动的目标部门」。此前对 ownerOrg（战略发展部 35）也做锁检查，
+        // 而战略部名下任一指标进入异动审批即满足 owner_org_id=35，导致往其他部门的
+        // 导入/新建全被锁死。改为仅校验 targetOrg；ownerOrg（发起方）不再锁。
         if (targetOrg != null) {
             assertOrgNotLockedByMutation(targetOrg.getId());
         }
