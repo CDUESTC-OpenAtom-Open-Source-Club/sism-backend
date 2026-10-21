@@ -1005,6 +1005,25 @@ public class IndicatorController {
         return ResponseEntity.ok(ApiResponse.success("异动审批已发起", instanceId));
     }
 
+    /**
+     * 2026-10-21 用户定案：一次异动可同时调整多条指标——多条字段攒改与新增指标
+     * 整批一次提交；后端先全部应用再统一校验权重合计，任一失败整批回滚。
+     * item 结构：{id, create?, indicator_desc?, weight_percent?, remark?}
+     */
+    @org.springframework.transaction.annotation.Transactional
+    @org.springframework.web.bind.annotation.PostMapping("/mutations/batch")
+    @Operation(summary = "批量发起指标异动",
+            description = "仅战略发展部；多条指标攒改与新增指标整批提交，权重合计校验整批一次，任一失败整批回滚")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<String>>> initiateMutationBatch(
+            @org.springframework.web.bind.annotation.RequestBody
+            java.util.List<java.util.Map<String, Object>> items,
+            @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
+        Long operator = currentUser == null ? null : currentUser.getId();
+        java.util.List<String> instanceIds = indicatorMutationService.initiateBatch(items, operator);
+        return ResponseEntity.ok(ApiResponse.success("Success", instanceIds));
+    }
+
     @org.springframework.web.bind.annotation.GetMapping("/mutation-approvals")
     @Operation(summary = "异动审批实例清单", description = "按组织查异动审批链（审批中心卡片数据源，含进行中与已完成）")
     @PreAuthorize("isAuthenticated()")

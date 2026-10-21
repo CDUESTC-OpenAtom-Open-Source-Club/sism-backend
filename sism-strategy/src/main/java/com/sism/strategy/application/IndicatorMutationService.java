@@ -8,6 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -136,6 +137,192 @@ public class IndicatorMutationService {
         log.info("[IndicatorMutation] 新增指标异动已发起: indicatorId={}, instanceId={}",
                 indicatorId, response.getInstanceId());
         return response.getInstanceId();
+    }
+
+    /**
+     * 2026-10-21 用户定案：一次异动可同时调整多条指标——多条字段攒改与新增指标
+     * 整批一次提交：先全部应用（原地落库 + 打异动标记），再统一做基础性权重合计
+     * =100 校验，最后逐条启动审批链；任一失败整批回滚（@Transactional）。
+     * item 结构：{id: 指标ID, create?: true 表示新增指标,
+     *           indicator_desc?/weight_percent?/remark?: 变更值}
+     */
+    @Transactional
+    public List<String> initiateBatch(List<Map<String, Object>> items, Long operatorUserId) {
+        if (items == null || items.isEmpty()) {
+            throw new IllegalArgumentException("异动内容为空：至少提供一条指标的变更");
+        }
+        if (!canInitiate(operatorUserId)) {
+            throw new SecurityException("仅战略发展部可发起指标异动");
+        }
+        List<String> instanceIds = new ArrayList<>();
+        Long weightCheckAnchor = null;
+        for (Map<String, Object> item : items) {
+            Long indicatorId = toLongId(item.get("id"));
+            if (indicatorId == null || indicatorId <= 0) {
+                throw new IllegalArgumentException("异动条目缺少有效指标 ID");
+            }
+            if (weightCheckAnchor == null) {
+                weightCheckAnchor = indicatorId;
+            }
+            boolean create = Boolean.TRUE.equals(item.get("create"));
+            if (create) {
+                markCreatedIndicatorInMutation(indicatorId, operatorUserId);
+                continue;
+            }
+            Map<String, Object> changes = new LinkedHashMap<>();
+            for (String field : new String[] {"indicator_desc", "weight_percent", "remark"}) {
+                if (item.containsKey(field)) {
+                    changes.put(field, item.get(field));
+                }
+            }
+            if (changes.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "异动内容为空：指标 " + indicatorId + " 未提供有效变更字段");
+            }
+            applyAndMarkInMutation(indicatorId, changes, operatorUserId);
+        }
+        // 统一权重闭合校验：整批应用后校验一次（任一指标即可反查到所属计划）
+        if (weightCheckAnchor != null) {
+            assertPlanBasicWeightStillClosed(weightCheckAnchor);
+        }
+        // 全部通过后逐条启动审批链
+        for (Map<String, Object> item : items) {
+            Long indicatorId = toLongId(item.get("id"));
+            boolean create = Boolean.TRUE.equals(item.get("create"));
+            instanceIds.add(startMutationWorkflow(indicatorId, operatorUserId,
+                    create ? "CREATE" : "MODIFY"));
+        }
+        return instanceIds;
+    }
+
+    /** 新增指标进入异动：写「(新增)」快照 + 打异动标记（不含权重校验与审批启动）。 */
+    private void markCreatedIndicatorInMutation(Long indicatorId, Long operatorUserId) {
+        Map<String, Object> current = jdbcTemplate.queryForMap(
+                """
+                SELECT id, indicator_desc, weight_percent, remark, status, mutation_status
+                FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false
+                """,
+                indicatorId);
+        if (current.get("mutation_status") != null) {
+            throw new IllegalStateException("该指标已有异动在审批中");
+        }
+
+        Map<String, Object> before = new LinkedHashMap<>();
+        before.put("indicator_desc", "(新增)");
+        before.put("weight_percent", "(新增)");
+        before.put("remark", "(新增)");
+        Map<String, Object> after = new LinkedHashMap<>();
+        after.put("indicator_desc", current.get("indicator_desc"));
+        after.put("weight_percent", current.get("weight_percent"));
+        after.put("remark", current.get("remark"));
+        Map<String, Object> changedFields = new LinkedHashMap<>();
+        changedFields.put("indicator_desc", Map.of("before", "(新增)", "after",
+                String.valueOf(current.get("indicator_desc"))));
+
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId);
+
+        jdbcTemplate.update(
+                """
+                UPDATE public.indicator
+                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                MUTATION_STATUS_IN_MUTATION, indicatorId);
+    }
+
+    /** 修改指标进入异动：写 before/after 快照 + 原地应用变更 + 打异动标记（不含权重校验与审批启动）。 */
+    private void applyAndMarkInMutation(Long indicatorId, Map<String, Object> changes,
+                                        Long operatorUserId) {
+        Map<String, Object> current = jdbcTemplate.queryForMap(
+                """
+                SELECT id, indicator_desc, weight_percent, remark, status, mutation_status
+                FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false
+                """,
+                indicatorId);
+        String status = String.valueOf(current.get("status"));
+        if (!"DISTRIBUTED".equalsIgnoreCase(status)) {
+            throw new IllegalStateException("仅已下发（稳定态）的指标可发起异动");
+        }
+        if (current.get("mutation_status") != null) {
+            throw new IllegalStateException("该指标已有异动在审批中");
+        }
+
+        Map<String, Object> before = new LinkedHashMap<>();
+        before.put("indicator_desc", current.get("indicator_desc"));
+        before.put("weight_percent", current.get("weight_percent"));
+        before.put("remark", current.get("remark"));
+
+        Map<String, Object> after = new LinkedHashMap<>(before);
+        Map<String, Object> changedFields = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : changes.entrySet()) {
+            String field = entry.getKey();
+            Object value = entry.getValue();
+            if ("indicator_desc".equals(field)
+                    || "weight_percent".equals(field)
+                    || "remark".equals(field)) {
+                after.put(field, value);
+                Map<String, Object> diff = new LinkedHashMap<>();
+                diff.put("before", before.get(field));
+                diff.put("after", value);
+                changedFields.put(field, diff);
+            }
+        }
+        if (changedFields.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "异动内容为空：至少提供一个有效变更字段（indicator_desc/weight_percent/remark）");
+        }
+
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId);
+
+        jdbcTemplate.update(
+                """
+                UPDATE public.indicator
+                SET indicator_desc = COALESCE(?, indicator_desc),
+                    weight_percent = COALESCE(?, weight_percent),
+                    remark = COALESCE(?, remark),
+                    mutation_status = ?,
+                    mutation_started_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                after.get("indicator_desc"),
+                toBigDecimal(after.get("weight_percent")),
+                after.get("remark"),
+                MUTATION_STATUS_IN_MUTATION,
+                indicatorId
+        );
+    }
+
+    /** 启动单条指标的异动审批链（PLAN_MUTATION_STRATEGY，填报人修改 → 战略部负责人 → 分管校领导终审）。 */
+    private String startMutationWorkflow(Long indicatorId, Long operatorUserId, String mutationType) {
+        StartWorkflowRequest request = new StartWorkflowRequest();
+        request.setWorkflowCode("PLAN_MUTATION_STRATEGY");
+        request.setBusinessEntityId(indicatorId);
+        request.setBusinessEntityType(INDICATOR_ENTITY_TYPE);
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put("indicatorId", indicatorId);
+        variables.put("initiatedBy", operatorUserId);
+        variables.put("mutationType", mutationType);
+        request.setVariables(variables);
+        var response = businessWorkflowApplicationService.startWorkflow(
+                request, operatorUserId, strategyOrgProperties.getStrategyOrgId());
+        log.info("[IndicatorMutation] 批量异动已发起: indicatorId={}, mutationType={}, instanceId={}",
+                indicatorId, mutationType, response.getInstanceId());
+        return response.getInstanceId();
+    }
+
+    private Long toLongId(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     /**
