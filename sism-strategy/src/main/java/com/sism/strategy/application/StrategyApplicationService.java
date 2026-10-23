@@ -16,6 +16,7 @@ import com.sism.task.domain.task.TaskType;
 import com.sism.task.domain.repository.TaskRepository;
 import org.hibernate.Hibernate;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -30,6 +31,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class StrategyApplicationService {
@@ -45,14 +47,6 @@ public class StrategyApplicationService {
     /** 导入/下发入口专用：已下发计划不能重复导入或再次下发 */
     private static final String DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE =
             "当前任务已下发，不能重复导入或下发";
-
-    /**
-     * 2026-10-20 用户定案：战略部对已下发计划新增指标允许走异动链，
-     * 因此新增/编辑路径不再因计划已下发而直接拦截；此文案仅用于仍需拦截的场景
-     * （学院子指标下发到已下发计划等），且明确说明原因与后续操作。
-     */
-    private static final String DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE_FOR_CREATE =
-            "该计划已下发，新增指标需通过异动审批：请在战略任务管理页双击指标字段修改后点击「发起异动」，或联系战略发展部处理";
 
     @Transactional
     public Indicator createIndicator(String indicatorDesc, SysOrg ownerOrg, SysOrg targetOrg, String indicatorType) {
@@ -549,10 +543,13 @@ public class StrategyApplicationService {
                 targetOrg.getId()
         );
         if (PlanStatus.fromRaw(downstreamPlan.getStatus()) == PlanStatus.DISTRIBUTED) {
-            // 学院子指标下发：目标学院计划已下发时仍拦截（这是"下发"动作，非"新增指标"），
-            // 文案明确告知原因与后续操作路径，避免与"重复导入"混淆。
-            throw new DistributedPlanMutationBlockedException(
-                    DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE_FOR_CREATE);
+            // 2026-10-23 用户定案：学院子指标也允许在已下发计划上新增，与职能部门侧口径一致——
+            // 新增先落库（DRAFT），由调用方把新指标计入「待发起异动」，
+            // 点「发起异动」后统一走 PLAN_MUTATION_STRATEGY 审批，通过才正式生效。
+            // 原「下发动作」拦截保留在导入/重复下发路径（见 ensurePlanNotDistributedForTask），
+            // 这里只是「新增一条子指标」，不再直接拒绝。
+            log.info("[Strategy] 向已下发学院计划新增子指标，转入异动审批口径: planId={}, ownerOrgId={}, targetOrgId={}",
+                    downstreamPlan.getId(), ownerOrg.getId(), targetOrg.getId());
         }
 
         String taskName = firstNonBlank(
