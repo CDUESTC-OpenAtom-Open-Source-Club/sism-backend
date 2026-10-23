@@ -19,9 +19,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +33,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -58,6 +63,9 @@ class StrategyApplicationServiceTest {
 
     @Mock
     private IndicatorMutationService indicatorMutationService;
+
+    @Mock
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     @DisplayName("Should keep provided task id when creating indicator for functional to college flow")
@@ -398,6 +406,75 @@ class StrategyApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("Should allow revoking a never-submitted draft indicator on a distributed plan（取消异动必须能真删）")
+    void shouldAllowRevokingNeverSubmittedDraftOnDistributedPlan() {
+        StrategyApplicationService service = createService();
+        Indicator indicator = buildDraftIndicatorOnDistributedPlan(402L);
+        when(indicatorRepository.findById(402L)).thenReturn(Optional.of(indicator));
+        Map<String, Object> probe = new HashMap<>();
+        probe.put("mutation_status", null);
+        probe.put("has_history", false);
+        when(jdbcTemplate.queryForList(contains("has_history"), eq(402L))).thenReturn(List.of(probe));
+
+        service.deleteIndicator(402L);
+
+        assertTrue(Boolean.TRUE.equals(indicator.getIsDeleted()));
+        verify(indicatorRepository).save(indicator);
+    }
+
+    @Test
+    @DisplayName("Should still block revoking a draft indicator that already entered the approval chain")
+    void shouldStillBlockRevokingDraftIndicatorWithMutationHistory() {
+        StrategyApplicationService service = createService();
+        Indicator indicator = buildDraftIndicatorOnDistributedPlan(403L);
+        when(indicatorRepository.findById(403L)).thenReturn(Optional.of(indicator));
+        Map<String, Object> probe = new HashMap<>();
+        probe.put("mutation_status", null);
+        probe.put("has_history", true);
+        when(jdbcTemplate.queryForList(contains("has_history"), eq(403L))).thenReturn(List.of(probe));
+
+        assertThrows(
+                DistributedPlanMutationBlockedException.class,
+                () -> service.deleteIndicator(403L)
+        );
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Should still block revoking an indicator that is currently in mutation")
+    void shouldStillBlockRevokingIndicatorInMutation() {
+        StrategyApplicationService service = createService();
+        Indicator indicator = buildDraftIndicatorOnDistributedPlan(404L);
+        when(indicatorRepository.findById(404L)).thenReturn(Optional.of(indicator));
+        Map<String, Object> probe = new HashMap<>();
+        probe.put("mutation_status", "IN_MUTATION");
+        probe.put("has_history", false);
+        when(jdbcTemplate.queryForList(contains("has_history"), eq(404L))).thenReturn(List.of(probe));
+
+        assertThrows(
+                DistributedPlanMutationBlockedException.class,
+                () -> service.deleteIndicator(404L)
+        );
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    /** 2026-10-22：已下发计划上的草稿指标（新增行落库后形态），连带守卫所需的 task/plan 打桩 */
+    private Indicator buildDraftIndicatorOnDistributedPlan(Long id) {
+        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
+        ownerOrg.setId(41L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(61L);
+        Indicator indicator = Indicator.create("刚新增的指标", ownerOrg, targetOrg, "定量");
+        indicator.setId(id);
+        indicator.setTaskId(905L);
+        StrategicTask task = createTask(905L, 7004L, targetOrg, ownerOrg);
+        Plan plan = createPlan(7004L, PlanStatus.DISTRIBUTED);
+        when(taskRepository.findById(905L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(7004L)).thenReturn(Optional.of(plan));
+        return indicator;
+    }
+
+    @Test
     @DisplayName("D2: 父指标已软删时，其子指标应作为根指标返回（容忍显示）")
     void shouldTreatOrphanChildAsRootWhenParentDeleted() {
         Indicator aliveParent = new Indicator();
@@ -430,13 +507,15 @@ class StrategyApplicationServiceTest {
 
     private StrategyApplicationService createService() {
         // 2026-10-20：异动锁移除后 StrategyApplicationService 不再依赖 IndicatorMutationService
+        // 2026-10-22：新增 jdbcTemplate 依赖，「可撤销未提交新增」判定要直查异动标记与快照
         return new StrategyApplicationService(
                 eventPublisher,
                 eventStore,
                 indicatorRepository,
                 taskRepository,
                 planRepository,
-                basicTaskWeightValidationService
+                basicTaskWeightValidationService,
+                jdbcTemplate
         );
     }
 

@@ -18,6 +18,7 @@ import org.hibernate.Hibernate;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,6 +40,8 @@ public class StrategyApplicationService {
     private final TaskRepository taskRepository;
     private final PlanRepository planRepository;
     private final BasicTaskWeightValidationService basicTaskWeightValidationService;
+    /** 2026-10-22：「可撤销未提交新增」判定需要直查 mutation_status 与异动快照 */
+    private final JdbcTemplate jdbcTemplate;
     /** 导入/下发入口专用：已下发计划不能重复导入或再次下发 */
     private static final String DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE =
             "当前任务已下发，不能重复导入或下发";
@@ -448,10 +451,49 @@ public class StrategyApplicationService {
     public void deleteIndicator(Long id) {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
-        ensurePlanNotDistributedForTask(indicator.getTaskId());
+        try {
+            ensurePlanNotDistributedForTask(indicator.getTaskId());
+        } catch (DistributedPlanMutationBlockedException ex) {
+            // 2026-10-22：已下发计划里「新增行」刚落库、从未提交过异动审批的草稿指标
+            // 允许直接撤销——「取消异动」/删除草稿必须能真正删掉，
+            // 否则按钮永远 409 失败并把指标留成孤儿（还计入权重合计卡死后续异动）。
+            // 已进入过审批链（有异动快照）或正在审批中的指标维持原守卫。
+            if (!isRevocablePendingCreate(indicator)) {
+                throw ex;
+            }
+        }
         indicator.archive();
         indicatorRepository.save(indicator);
         publishAndSaveEvents(indicator);
+    }
+
+    /**
+     * 2026-10-22：判断指标是否为「可撤销的未提交新增」——同时满足：
+     * ① 仍为草稿状态（DRAFT，从未转正/下发）；
+     * ② 当前没有异动标记（不在审批中）；
+     * ③ 从未写过异动快照（audit_log 无记录，即从未提交过异动审批）。
+     * 用于在「已下发计划禁止直接删除」守卫下放行「撤销一次尚未提交的新增」。
+     */
+    private boolean isRevocablePendingCreate(Indicator indicator) {
+        if (indicator.getStatus() != IndicatorStatus.DRAFT || indicator.getId() == null) {
+            return false;
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                """
+                SELECT i.mutation_status,
+                       EXISTS (
+                           SELECT 1 FROM public.audit_log a
+                           WHERE a.entity_type = 'INDICATOR' AND a.entity_id = i.id
+                       ) AS has_history
+                FROM public.indicator i
+                WHERE i.id = ?
+                """,
+                indicator.getId());
+        if (rows.isEmpty()) {
+            return false;
+        }
+        Map<String, Object> row = rows.get(0);
+        return row.get("mutation_status") == null && !Boolean.TRUE.equals(row.get("has_history"));
     }
 
     private Long resolveTaskIdForChildIndicator(

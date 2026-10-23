@@ -456,10 +456,45 @@ public class BusinessWorkflowApplicationService {
         return workflowReadModelMapper.toInstanceResponse(instance);
     }
 
+    /**
+     * 把前端传来的 taskId 解析成审批实例。
+     *
+     * 2026-10-22 修复（异动驳回打错实例）：
+     * 原实现先按「步骤实例 ID」查（findByStepInstanceId），查不到才按「实例 ID」查。
+     * 但前端审批中心传的一律是**实例 ID**（PlanApprovalDetailItem.instanceId），
+     * 而 audit_step_instance.id 与 audit_instance.id 是两套自增序列，极易撞号——
+     * 线上实例：驳回实例 25 时，恰好存在 id=25 的步骤（属于早已撤回的实例 10），
+     * 于是驳回打到了实例 10，报「Cannot reject: workflow is not in review」，
+     * 用户看到的就是「填了驳回原因、点了确认，却没驳回成功」。
+     *
+     * 现在的顺序：先按实例 ID 精确匹配，命中且仍可处理即返回；否则再按步骤实例 ID
+     * 反查（真正的「按待办任务 ID 审批」场景），最后兜底 workflowTask。
+     * 这样实例 ID 永远优先，撞号时不会误伤别的实例。
+     */
     private AuditInstance resolveAuditInstanceForTask(String taskId) {
         Long numericTaskId = parseRequiredLong(taskId, "taskId");
-        return auditInstanceRepository.findByStepInstanceId(numericTaskId)
-                .or(() -> auditInstanceRepository.findById(numericTaskId))
+
+        // 1) 实例 ID 优先：前端审批中心传的就是它。
+        //    只认仍在审批中的实例，避免把已结束实例当成可操作对象；
+        //    但也绝不能在「实例存在但已结束」时改去按步骤 ID 查——那正是撞号误伤的来源。
+        Optional<AuditInstance> byInstanceId = auditInstanceRepository.findById(numericTaskId);
+        Optional<AuditInstance> activeByInstanceId = byInstanceId
+                .filter(instance -> AuditInstance.STATUS_PENDING.equals(instance.getStatus()));
+        if (activeByInstanceId.isPresent()) {
+            return activeByInstanceId.get();
+        }
+
+        // 2) 再按步骤实例 ID 反查（真正的「按待办任务 ID 审批」场景）
+        Optional<AuditInstance> byStepInstanceId = auditInstanceRepository.findByStepInstanceId(numericTaskId)
+                .filter(instance -> AuditInstance.STATUS_PENDING.equals(instance.getStatus()));
+        if (byStepInstanceId.isPresent()) {
+            return byStepInstanceId.get();
+        }
+
+        // 3) 都不是进行中的实例时，按原顺序兜底，让下游给出准确错误（如「不在审批中」），
+        //    而不是静默跳到另一个实例上
+        return byInstanceId
+                .or(() -> auditInstanceRepository.findByStepInstanceId(numericTaskId))
                 .or(() -> workflowTaskRepository.findById(numericTaskId)
                         .flatMap(workflowTask -> {
                             String workflowId = workflowTask.getWorkflowId();
@@ -826,7 +861,12 @@ public class BusinessWorkflowApplicationService {
     }
 
     private void endMutationIfTerminal(AuditInstance instance) {
-        if (instance == null || !"INDICATOR".equalsIgnoreCase(instance.getEntityType())) {
+        if (instance == null) {
+            return;
+        }
+        // 2026-10-21：任务改名异动（TASK）与指标异动（INDICATOR）共用终态解锁口径
+        String entityType = instance.getEntityType();
+        if (!"INDICATOR".equalsIgnoreCase(entityType) && !"TASK".equalsIgnoreCase(entityType)) {
             return;
         }
         boolean terminal = !"PENDING".equalsIgnoreCase(instance.getStatus());

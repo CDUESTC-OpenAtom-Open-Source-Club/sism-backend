@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -19,11 +20,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -34,6 +41,7 @@ import static org.mockito.Mockito.when;
 class IndicatorMutationServiceTest {
 
     private static final Long INDICATOR_ID = 2001L;
+    private static final Long TASK_ID = 3001L;
     private static final Long OPERATOR_ID = 9L;
     private static final Long STRATEGY_ORG_ID = 35L;
     private static final Long TARGET_ORG_ID = 41003L;
@@ -50,6 +58,9 @@ class IndicatorMutationServiceTest {
     @Mock
     private UserProvider userProvider;
 
+    @Mock
+    private com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
+
     private IndicatorMutationService service;
 
     @BeforeEach
@@ -60,7 +71,9 @@ class IndicatorMutationServiceTest {
                 basicTaskWeightValidationService,
                 businessWorkflowApplicationService,
                 userProvider,
-                new StrategyOrgProperties()
+                new StrategyOrgProperties(),
+                // 2026-10-21：任务改名异动留痕
+                taskMutationHistoryService
         );
     }
 
@@ -79,6 +92,11 @@ class IndicatorMutationServiceTest {
     private void stubSuccessfulInitiation(List<Long> targetOrgIds) {
         when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
 
+        // 2026-10-21：发起权收紧为「必须是填报人」，角色查询需返回 ROLE_REPORTER
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+
         Map<String, Object> indicatorRow = new HashMap<>();
         indicatorRow.put("id", INDICATOR_ID);
         indicatorRow.put("indicator_desc", "旧描述");
@@ -86,6 +104,8 @@ class IndicatorMutationServiceTest {
         indicatorRow.put("remark", null);
         indicatorRow.put("status", "DISTRIBUTED");
         indicatorRow.put("mutation_status", null);
+        // 2026-10-22：异动资格改按所属计划状态判定（不再是单条指标状态）
+        indicatorRow.put("plan_status", "DISTRIBUTED");
         when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
                 .thenReturn(indicatorRow);
 
@@ -95,5 +115,308 @@ class IndicatorMutationServiceTest {
 
         // 2026-10-19：异动发起不再查询被锁组织用户（不写站内通知），
         // 故不再为 target_org_id / 用户列表打桩。
+    }
+
+    @Test
+    @DisplayName("批量异动中的任务改名条目：写任务快照、打异动标记，并以 TASK 实体启动同一审批链")
+    void initiateBatch_shouldStartTaskMutationWithTaskEntityType() {
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+        // canInitiate 的角色查询：非分管校领导即可发起
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+
+        Map<String, Object> taskRow = new HashMap<>();
+        taskRow.put("task_id", TASK_ID);
+        taskRow.put("name", "旧任务名");
+        taskRow.put("plan_id", 4040L);
+        taskRow.put("mutation_status", null);
+        taskRow.put("plan_status", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.sys_task t"), eq(TASK_ID)))
+                .thenReturn(taskRow);
+
+        when(businessWorkflowApplicationService.startWorkflow(
+                any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID)))
+                .thenReturn(WorkflowInstanceResponse.builder().instanceId("601").build());
+
+        List<String> instanceIds = service.initiateBatch(
+                List.of(Map.of("id", TASK_ID, "entity_type", "TASK", "name", "新任务名")),
+                OPERATOR_ID);
+
+        assertEquals(List.of("601"), instanceIds);
+        // 任务改名必须留痕（「已更改 N 次」数据源），并带上本次异动批次号
+        verify(taskMutationHistoryService)
+                .recordRename(eq(TASK_ID), eq("旧任务名"), eq("新任务名"), eq(OPERATOR_ID), any(String.class));
+        // 任务被打上异动标记
+        verify(jdbcTemplate).update(
+                contains("UPDATE public.sys_task"), eq("新任务名"), eq("IN_MUTATION"), eq(TASK_ID));
+
+        // 审批实例的实体类型必须是 TASK（前端据此取任务变更历史）
+        ArgumentCaptor<StartWorkflowRequest> captor =
+                ArgumentCaptor.forClass(StartWorkflowRequest.class);
+        verify(businessWorkflowApplicationService)
+                .startWorkflow(captor.capture(), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+        StartWorkflowRequest request = captor.getValue();
+        assertEquals("PLAN_MUTATION_STRATEGY", request.getWorkflowCode());
+        assertEquals("TASK", request.getBusinessEntityType());
+        assertEquals(TASK_ID, request.getBusinessEntityId());
+        assertEquals(TASK_ID, request.getVariables().get("taskId"));
+        // 任务异动不涉及权重，不应触发权重闭合校验
+        verifyNoInteractions(basicTaskWeightValidationService);
+    }
+
+    @Test
+    @DisplayName("批量异动中的删除条目：只写 before 快照并打标记、不立即软删除；删除批次同样做闭合校验")
+    void initiateBatch_shouldMarkIndicatorForDeletionWithoutArchiving() {
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", INDICATOR_ID);
+        row.put("indicator_desc", "待删除指标");
+        row.put("weight_percent", new java.math.BigDecimal("40.00"));
+        row.put("remark", "备注");
+        row.put("status", "DISTRIBUTED");
+        row.put("mutation_status", null);
+        // 2026-10-22：异动资格改按所属计划状态判定
+        row.put("plan_status", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
+                .thenReturn(row);
+
+        when(businessWorkflowApplicationService.startWorkflow(
+                any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID)))
+                .thenReturn(WorkflowInstanceResponse.builder().instanceId("701").build());
+
+        // 2026-10-22 修复「只删不补」缺口后，删除条目也要走（计划、目标部门）反查
+        when(jdbcTemplate.query(
+                contains("SELECT t.plan_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(4040L);
+        when(jdbcTemplate.query(
+                contains("SELECT target_org_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(TARGET_ORG_ID);
+
+        List<String> instanceIds = service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "delete", true)),
+                OPERATOR_ID);
+
+        assertEquals(List.of("701"), instanceIds);
+        // 提交阶段只打异动标记，绝不能直接归档（审批通过后才删）
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status = ?"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+        verify(jdbcTemplate, never()).update(
+                contains("SET is_deleted = true"), any(), any());
+
+        // 删除条目同样作为权重校验入口：合计按「剔除待删指标」口径校验（=100 通过）。
+        // 校验通过后照常启动审批链；不满足时由下一个用例覆盖报错提示。
+        ArgumentCaptor<java.util.Set<Long>> excludedCaptor =
+                ArgumentCaptor.forClass(java.util.Set.class);
+        verify(basicTaskWeightValidationService).validatePlanBasicWeight(
+                eq(4040L), eq(TARGET_ORG_ID), excludedCaptor.capture());
+        assertTrue(excludedCaptor.getValue().contains(INDICATOR_ID));
+
+        ArgumentCaptor<StartWorkflowRequest> captor =
+                ArgumentCaptor.forClass(StartWorkflowRequest.class);
+        verify(businessWorkflowApplicationService)
+                .startWorkflow(captor.capture(), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+        StartWorkflowRequest request = captor.getValue();
+        assertEquals("PLAN_MUTATION_STRATEGY", request.getWorkflowCode());
+        assertEquals("INDICATOR", request.getBusinessEntityType());
+        assertEquals("DELETE", request.getVariables().get("mutationType"));
+    }
+
+    @Test
+    @DisplayName("只删不补的批次被拒绝：明确提示同批次调整其他指标权重补齐（修复删除后卡死后续异动）")
+    void initiateBatch_shouldRejectDeleteOnlyBatchWhenWeightCannotStayClosed() {
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", INDICATOR_ID);
+        row.put("indicator_desc", "待删除指标");
+        row.put("weight_percent", new java.math.BigDecimal("40.00"));
+        row.put("remark", "备注");
+        row.put("status", "DISTRIBUTED");
+        row.put("mutation_status", null);
+        row.put("plan_status", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
+                .thenReturn(row);
+
+        when(jdbcTemplate.query(
+                contains("SELECT t.plan_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(4040L);
+        when(jdbcTemplate.query(
+                contains("SELECT target_org_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(TARGET_ORG_ID);
+
+        // 模拟「剔除待删指标后合计=60」的闭合校验失败
+        doThrow(new IllegalStateException("基础性任务指标权重合计必须为100，当前为60"))
+                .when(basicTaskWeightValidationService)
+                .validatePlanBasicWeight(eq(4040L), eq(TARGET_ORG_ID), any());
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> service.initiateBatch(
+                        List.of(Map.of("id", INDICATOR_ID, "delete", true)),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("请在同批次内调整其他指标权重补齐到100"));
+        // 校验未通过：不得启动审批链
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+    }
+
+    @Test
+    @DisplayName("发起权只给填报人：负责人和校领导都不能发起异动")
+    void canInitiate_shouldOnlyAllowReporter() {        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+
+        // 填报人：可以发起
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+        assertTrue(service.canInitiate(OPERATOR_ID));
+
+        // 战略发展部负责人：不能发起（否则等于自己发起自己审批）
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_STRATEGY_DEPT_HEAD"));
+        assertFalse(service.canInitiate(OPERATOR_ID));
+
+        // 分管校领导：不能发起（只是终审节点）
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_VICE_PRESIDENT"));
+        assertFalse(service.canInitiate(OPERATOR_ID));
+
+        // 非战略部组织：不能发起（组织校验先于角色校验，此处无需角色桩）
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(99L));
+        assertFalse(service.canInitiate(OPERATOR_ID));
+    }
+
+    @Test
+    @DisplayName("异动资格按计划判定：计划已下发时，指标本身是 DRAFT 也能发起（新增指标即此形态）")
+    void initiateBatch_shouldAllowDraftIndicatorWhenPlanIsDistributed() {
+        stubReporter();
+        // 新增行落库的指标：status=DRAFT，但所属计划已下发
+        stubIndicatorRow("DRAFT", "DISTRIBUTED");
+        stubWorkflowStart("801");
+
+        List<String> instanceIds = service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "create", true)),
+                OPERATOR_ID);
+
+        assertEquals(List.of("801"), instanceIds);
+    }
+
+    @Test
+    @DisplayName("异动资格按计划判定：计划未下发时，指标即便是 DISTRIBUTED 也拒绝")
+    void initiateBatch_shouldRejectWhenPlanIsNotDistributed() {
+        stubReporter();
+        stubIndicatorRow("DISTRIBUTED", "DRAFT");
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> service.initiateBatch(
+                        List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述")),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("仅已下发（稳定态）的计划"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("同批次「删一条 + 增一条」：待删除指标从权重合计中排除，不会被算成 110")
+    void initiateBatch_shouldExcludePendingDeletesFromWeightValidation() {
+        stubReporter();
+        Long deleteId = INDICATOR_ID;
+        Long createId = 2002L;
+
+        Map<String, Object> deleteRow = indicatorRow("DISTRIBUTED", "DISTRIBUTED");
+        deleteRow.put("weight_percent", new java.math.BigDecimal("10.00"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(deleteId)))
+                .thenReturn(deleteRow);
+
+        Map<String, Object> createRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        createRow.put("id", createId);
+        createRow.put("weight_percent", new java.math.BigDecimal("10.00"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(createId)))
+                .thenReturn(createRow);
+
+        // 权重锚点查询：两个指标都归属同一（计划 4040、部门 41003）
+        // 注意用 ResultSetExtractor 显式匹配——query(String, RowMapper, Object...) 的同名重载
+        // 会让 lambda 推断歧义，导致 thenReturn 命中 List 版本而编译失败。
+        when(jdbcTemplate.query(
+                contains("SELECT t.plan_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(4040L);
+        when(jdbcTemplate.query(
+                contains("SELECT target_org_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(TARGET_ORG_ID);
+        stubWorkflowStart("901", "902");
+
+        service.initiateBatch(
+                List.of(
+                        Map.of("id", deleteId, "delete", true),
+                        Map.of("id", createId, "create", true)),
+                OPERATOR_ID);
+
+        // 关键：校验时把待删除的指标显式排除，否则 10（待删）+ 10（新增）= 20 会被算进 110
+        ArgumentCaptor<java.util.Set<Long>> excludedCaptor =
+                ArgumentCaptor.forClass(java.util.Set.class);
+        verify(basicTaskWeightValidationService).validatePlanBasicWeight(
+                eq(4040L), eq(TARGET_ORG_ID), excludedCaptor.capture());
+        assertTrue(excludedCaptor.getValue().contains(deleteId));
+        assertFalse(excludedCaptor.getValue().contains(createId));
+    }
+
+    private void stubReporter() {
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+    }
+
+    private Map<String, Object> indicatorRow(String indicatorStatus, String planStatus) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", INDICATOR_ID);
+        row.put("indicator_desc", "测试指标");
+        row.put("weight_percent", new java.math.BigDecimal("10.00"));
+        row.put("remark", null);
+        row.put("status", indicatorStatus);
+        row.put("mutation_status", null);
+        row.put("plan_status", planStatus);
+        return row;
+    }
+
+    private void stubIndicatorRow(String indicatorStatus, String planStatus) {
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
+                .thenReturn(indicatorRow(indicatorStatus, planStatus));
+    }
+
+    private void stubWorkflowStart(String... instanceIds) {
+        WorkflowInstanceResponse[] responses = java.util.Arrays.stream(instanceIds)
+                .map(id -> WorkflowInstanceResponse.builder().instanceId(id).build())
+                .toArray(WorkflowInstanceResponse[]::new);
+        var stub = when(businessWorkflowApplicationService.startWorkflow(
+                any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID)));
+        org.mockito.stubbing.OngoingStubbing<WorkflowInstanceResponse> ongoing = stub;
+        for (WorkflowInstanceResponse response : responses) {
+            ongoing = ongoing.thenReturn(response);
+        }
     }
 }

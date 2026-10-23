@@ -28,13 +28,23 @@ public class BasicTaskWeightValidationService {
     private final PlanRepository planRepository;
 
     public void validatePlanBasicWeight(Long planId, Long targetOrgId) {
+        validatePlanBasicWeight(planId, targetOrgId, Set.of());
+    }
+
+    /**
+     * 2026-10-22：批量异动里「删一条 + 加一条」时，被删指标在审批通过前仍留在表里
+     * （删除要等审批通过才归档），若把它计入合计就会出现 100+10=110 的假超标。
+     * 因此校验时把同批次待删除的指标显式排除，等价于「这批异动生效后的权重快照」。
+     */
+    public void validatePlanBasicWeight(Long planId, Long targetOrgId, Set<Long> excludedIndicatorIds) {
         if (planId == null || targetOrgId == null) {
             return;
         }
+        Set<Long> excluded = excludedIndicatorIds == null ? Set.of() : excludedIndicatorIds;
 
         java.util.Optional<Plan> plan = planRepository.findById(planId);
         if (plan.map(Plan::getPlanLevel).filter(PlanLevel.FUNC_TO_COLLEGE::equals).isPresent()) {
-            validateFuncToCollegeIndicators(plan.get(), targetOrgId);
+            validateFuncToCollegeIndicators(plan.get(), targetOrgId, excluded);
             return;
         }
 
@@ -55,6 +65,7 @@ public class BasicTaskWeightValidationService {
 
         BigDecimal totalWeight = indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
+                .filter(indicator -> !excluded.contains(indicator.getId()))
                 .filter(indicator -> indicator.getParentIndicatorId() == null)
                 .filter(indicator -> indicator.getTargetOrg() != null)
                 .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
@@ -69,13 +80,13 @@ public class BasicTaskWeightValidationService {
         }
     }
 
-    private void validateFuncToCollegeIndicators(Long planId, Long targetOrgId) {
+    private void validateFuncToCollegeIndicators(Long planId, Long targetOrgId, Set<Long> excluded) {
         Plan plan = planRepository.findById(planId)
                 .orElseThrow(() -> new IllegalArgumentException("Plan not found: " + planId));
-        validateFuncToCollegeIndicators(plan, targetOrgId);
+        validateFuncToCollegeIndicators(plan, targetOrgId, excluded);
     }
 
-    private void validateFuncToCollegeIndicators(Plan plan, Long targetOrgId) {
+    private void validateFuncToCollegeIndicators(Plan plan, Long targetOrgId, Set<Long> excluded) {
         if (plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
             throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
         }
@@ -97,6 +108,7 @@ public class BasicTaskWeightValidationService {
 
         BigDecimal totalWeight = indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
+                .filter(indicator -> !excluded.contains(indicator.getId()))
                 .filter(indicator -> indicator.getParentIndicatorId() != null)
                 .filter(indicator -> indicator.getOwnerOrg() != null)
                 .filter(indicator -> plan.getCreatedByOrgId().equals(indicator.getOwnerOrg().getId()))

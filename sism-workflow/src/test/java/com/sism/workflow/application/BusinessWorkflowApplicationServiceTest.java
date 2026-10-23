@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -340,6 +341,66 @@ class BusinessWorkflowApplicationServiceTest {
 
         assertEquals("133", response.getInstanceId());
         verify(workflowApplicationService).approveAuditInstance(instance, 9L, "同意", null);
+    }
+
+    /**
+     * 2026-10-22 回归：实例 ID 与步骤实例 ID 撞号时，绝不能驳回到别的实例上。
+     *
+     * 线上故障：驳回实例 25（异动链，负责人节点待审），而 audit_step_instance 里恰好
+     * 也存在 id=25 的步骤（属于早已撤回的实例 10）。旧实现先按步骤 ID 查，
+     * 于是驳回打到了实例 10，报「Cannot reject: workflow is not in review」，
+     * 用户看到「填了原因、点了确认、却没驳回成功」。
+     */
+    @Test
+    void rejectTask_shouldPreferInstanceIdOverCollidingStepInstanceId() {
+        // 目标实例：25，仍在审批中，负责人节点待审
+        AuditInstance target = new AuditInstance();
+        target.setId(25L);
+        target.setStatus(AuditInstance.STATUS_PENDING);
+        target.setFlowDefId(5L);
+        target.setRequesterOrgId(35L);
+
+        com.sism.workflow.domain.runtime.AuditStepInstance pendingStep =
+                new com.sism.workflow.domain.runtime.AuditStepInstance();
+        pendingStep.setId(71L);
+        pendingStep.setStepDefId(17L);
+        pendingStep.setStepNo(2);
+        pendingStep.setStepName("战略发展部负责人审批");
+        pendingStep.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        target.addStepInstance(pendingStep);
+
+        AuditFlowDef flowDef = new AuditFlowDef();
+        AuditStepDef stepDef = new AuditStepDef();
+        stepDef.setId(17L);
+        stepDef.setRoleId(3L);
+        flowDef.setSteps(List.of(stepDef));
+
+        // 撞号的旧实例：10，早已撤回
+        AuditInstance colliding = new AuditInstance();
+        colliding.setId(10L);
+        colliding.setStatus(AuditInstance.STATUS_WITHDRAWN);
+
+        RejectionRequest request = new RejectionRequest();
+        request.setReason("不同意新增");
+
+        when(auditInstanceRepository.findById(25L)).thenReturn(Optional.of(target));
+        // 若实现仍先按步骤 ID 查，会命中这条错误映射。
+        // 用 lenient：修复生效时这个桩本就不该被调用，这本身就是要断言的结果。
+        lenient().when(auditInstanceRepository.findByStepInstanceId(25L)).thenReturn(Optional.of(colliding));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(5L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(stepDef, 189L, 35L, target)).thenReturn(true);
+        when(workflowApplicationService.rejectAuditInstance(target, 189L, "不同意新增")).thenReturn(target);
+        when(workflowReadModelMapper.toInstanceResponse(target)).thenReturn(
+                WorkflowInstanceResponse.builder().instanceId("25").status("IN_REVIEW").build()
+        );
+
+        WorkflowInstanceResponse response =
+                businessWorkflowApplicationService.rejectTask("25", request, 189L);
+
+        assertEquals("25", response.getInstanceId());
+        // 必须驳回目标实例，而不是撞号的旧实例
+        verify(workflowApplicationService).rejectAuditInstance(target, 189L, "不同意新增");
+        verify(workflowApplicationService, never()).rejectAuditInstance(eq(colliding), any(), any());
     }
 
     @Test

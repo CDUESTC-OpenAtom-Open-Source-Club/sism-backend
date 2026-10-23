@@ -9,7 +9,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +32,8 @@ public class IndicatorMutationService {
 
     private static final String MUTATION_STATUS_IN_MUTATION = "IN_MUTATION";
     private static final String INDICATOR_ENTITY_TYPE = "INDICATOR";
+    /** 2026-10-21：战略任务改名异动与指标异动同链，实体类型为 TASK。 */
+    private static final String TASK_ENTITY_TYPE = "TASK";
     private static final long STRATEGY_ORG_ID = 35L;
 
     /** A3 锁死主动通知：标题/文案为会议定案口径。 */
@@ -43,10 +48,19 @@ public class IndicatorMutationService {
     private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final com.sism.shared.domain.user.UserProvider userProvider;
     private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
+    /** 2026-10-21：任务改名异动复用任务变更留痕（audit_log entity_type=TASK）。 */
+    private final com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
 
     /**
-     * 2026-10-18 用户定案：异动发起权只属于战略发展部组织下的成员——
-     * 不开放给分管校领导等其他角色（分管校领导仅作为异动审批链的终审节点）。
+     * 异动发起权只属于填报人（2026-10-21 用户定案）。
+     *
+     * 口径：从草稿计划到已下发计划，能改数据的始终只有填报人——草稿阶段是他填报，
+     * 已下发之后是他发起异动；负责人和校领导只做审批，不编辑任何字段。
+     * 因此要求：① 属于战略发展部组织；② 具备 ROLE_REPORTER。
+     *
+     * 历史沿革：2026-10-18 先限定「战略部组织内成员」，2026-10-20 补排除了分管校领导，
+     * 但负责人（ROLE_STRATEGY_DEPT_HEAD）仍能发起，等于可以自己发起自己审批。
+     * 本次统一收紧为「必须是填报人」，前后端口径一致。
      */
     public boolean canInitiate(Long operatorUserId) {
         if (operatorUserId == null || operatorUserId <= 0) {
@@ -56,18 +70,14 @@ public class IndicatorMutationService {
         if (orgId == null || orgId != strategyOrgProperties.getStrategyOrgId()) {
             return false;
         }
-        // 2026-10-20 修复：分管校领导账号同样挂在战略发展部（org 35），仅按组织判断会放行。
-        // 按用户定案「只有战略发展部这个组织下的成员才能发起异动」——校领导只是异动审批链
-        // 的终审节点，不具备发起权，因此排除 ROLE_VICE_PRESIDENT。
         List<String> roleCodes = jdbcTemplate.queryForList("""
                 SELECT r.role_code
                 FROM public.sys_user_role ur
                 JOIN public.sys_role r ON r.id = ur.role_id
                 WHERE ur.user_id = ?
                 """, String.class, operatorUserId);
-        boolean isVicePresident = roleCodes.stream()
-                .anyMatch(code -> "ROLE_VICE_PRESIDENT".equalsIgnoreCase(String.valueOf(code).trim()));
-        return !isVicePresident;
+        return roleCodes.stream()
+                .anyMatch(code -> "ROLE_REPORTER".equalsIgnoreCase(String.valueOf(code).trim()));
     }
 
     /**
@@ -85,15 +95,20 @@ public class IndicatorMutationService {
             throw new IllegalArgumentException("指标 ID 不能为空");
         }
         if (!canInitiate(operatorUserId)) {
-            throw new SecurityException("仅战略发展部可发起指标异动");
+            throw new SecurityException("仅战略发展部填报人可发起异动");
         }
 
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
-                SELECT id, indicator_desc, weight_percent, remark, status, mutation_status
-                FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false
+                SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
+                       i.mutation_status, p.status AS plan_status
+                FROM public.indicator i
+                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
                 """,
                 indicatorId);
+        assertPlanDistributedForIndicator(current, "新增");
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
@@ -110,7 +125,7 @@ public class IndicatorMutationService {
         changedFields.put("indicator_desc", Map.of("before", "(新增)", "after",
                 String.valueOf(current.get("indicator_desc"))));
 
-        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId);
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, null);
 
         jdbcTemplate.update(
                 """
@@ -121,8 +136,7 @@ public class IndicatorMutationService {
                 MUTATION_STATUS_IN_MUTATION, indicatorId);
 
         // 新增场景同样要求权重闭合（新增后合计必须仍为 100）
-        assertPlanBasicWeightStillClosed(indicatorId);
-
+        assertPlanBasicWeightStillClosed(List.of(indicatorId), Set.of());
         StartWorkflowRequest request = new StartWorkflowRequest();
         request.setWorkflowCode("PLAN_MUTATION_STRATEGY");
         request.setBusinessEntityId(indicatorId);
@@ -145,28 +159,46 @@ public class IndicatorMutationService {
      * =100 校验，最后逐条启动审批链；任一失败整批回滚（@Transactional）。
      * item 结构：{id: 指标ID, create?: true 表示新增指标,
      *           indicator_desc?/weight_percent?/remark?: 变更值}
+     * 任务改名条目：{id: 任务ID, entity_type: 'TASK', name: 新任务名}
      */
     @Transactional
     public List<String> initiateBatch(List<Map<String, Object>> items, Long operatorUserId) {
         if (items == null || items.isEmpty()) {
-            throw new IllegalArgumentException("异动内容为空：至少提供一条指标的变更");
+            throw new IllegalArgumentException("异动内容为空：至少提供一条变更");
         }
         if (!canInitiate(operatorUserId)) {
-            throw new SecurityException("仅战略发展部可发起指标异动");
+            throw new SecurityException("仅战略发展部填报人可发起异动");
         }
+        // 2026-10-21：一次提交的所有快照与审批实例共享同一批次号，
+        // 供审批中心把多条改动聚合成一张卡片，也为「放弃异动」按批回滚预留。
+        String batchId = java.util.UUID.randomUUID().toString();
         List<String> instanceIds = new ArrayList<>();
-        Long weightCheckAnchor = null;
+        List<MutationTarget> applied = new ArrayList<>();
+        // 权重闭合校验只认指标条目：任务改名不改变权重
+        List<Long> touchedIndicatorIds = new ArrayList<>();
         for (Map<String, Object> item : items) {
-            Long indicatorId = toLongId(item.get("id"));
-            if (indicatorId == null || indicatorId <= 0) {
-                throw new IllegalArgumentException("异动条目缺少有效指标 ID");
+            Long entityId = toLongId(item.get("id"));
+            if (entityId == null || entityId <= 0) {
+                throw new IllegalArgumentException("异动条目缺少有效实体 ID");
             }
-            if (weightCheckAnchor == null) {
-                weightCheckAnchor = indicatorId;
+            boolean isTask = isTaskItem(item);
+            if (isTask) {
+                String newName = item.get("name") == null ? null : String.valueOf(item.get("name"));
+                applyAndMarkTaskInMutation(entityId, newName, operatorUserId, batchId);
+                applied.add(new MutationTarget(TASK_ENTITY_TYPE, entityId, "MODIFY"));
+                continue;
             }
+            touchedIndicatorIds.add(entityId);
             boolean create = Boolean.TRUE.equals(item.get("create"));
             if (create) {
-                markCreatedIndicatorInMutation(indicatorId, operatorUserId);
+                markCreatedIndicatorInMutation(entityId, operatorUserId, batchId);
+                applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, entityId, "CREATE"));
+                continue;
+            }
+            // 2026-10-21 用户定案：已下发计划上的删除同样走异动审批（软删除在审批通过后才生效）
+            if (Boolean.TRUE.equals(item.get("delete"))) {
+                markIndicatorForDeletion(entityId, operatorUserId, batchId);
+                applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, entityId, "DELETE"));
                 continue;
             }
             Map<String, Object> changes = new LinkedHashMap<>();
@@ -177,32 +209,125 @@ public class IndicatorMutationService {
             }
             if (changes.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "异动内容为空：指标 " + indicatorId + " 未提供有效变更字段");
+                        "异动内容为空：指标 " + entityId + " 未提供有效变更字段");
             }
-            applyAndMarkInMutation(indicatorId, changes, operatorUserId);
+            applyAndMarkInMutation(entityId, changes, operatorUserId, batchId);
+            applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, entityId, "MODIFY"));
         }
-        // 统一权重闭合校验：整批应用后校验一次（任一指标即可反查到所属计划）
-        if (weightCheckAnchor != null) {
-            assertPlanBasicWeightStillClosed(weightCheckAnchor);
-        }
+        // 统一权重闭合校验：按条目各自的（计划、目标部门）去重后逐对校验。
+        // 删除条目同样作为校验入口，但其权重先从合计里剔除（删除审批通过前仍留在表里）——
+        // 「删一条 + 加/调平一条」照常通过，「只删不补」会被拦下要求同批补齐。
+        Set<Long> pendingDeleteIds = applied.stream()
+                .filter(target -> INDICATOR_ENTITY_TYPE.equals(target.entityType()))
+                .filter(target -> "DELETE".equals(target.mutationType()))
+                .map(MutationTarget::entityId)
+                .collect(java.util.stream.Collectors.toSet());
+        List<Long> weightAnchorIds = touchedIndicatorIds.stream()
+                .filter(id -> !pendingDeleteIds.contains(id))
+                .toList();
+        assertPlanBasicWeightStillClosed(weightAnchorIds, pendingDeleteIds);
         // 全部通过后逐条启动审批链
-        for (Map<String, Object> item : items) {
-            Long indicatorId = toLongId(item.get("id"));
-            boolean create = Boolean.TRUE.equals(item.get("create"));
-            instanceIds.add(startMutationWorkflow(indicatorId, operatorUserId,
-                    create ? "CREATE" : "MODIFY"));
+        for (MutationTarget target : applied) {
+            instanceIds.add(startMutationWorkflow(
+                    target.entityType(), target.entityId(), operatorUserId, target.mutationType(), batchId));
         }
         return instanceIds;
     }
 
-    /** 新增指标进入异动：写「(新增)」快照 + 打异动标记（不含权重校验与审批启动）。 */
-    private void markCreatedIndicatorInMutation(Long indicatorId, Long operatorUserId) {
+    /** 批量异动中已应用的条目，用于全部校验通过后统一启动审批链。 */
+    private record MutationTarget(String entityType, Long entityId, String mutationType) {
+    }
+
+    private boolean isTaskItem(Map<String, Object> item) {
+        Object raw = item.get("entity_type");
+        return raw != null && TASK_ENTITY_TYPE.equalsIgnoreCase(String.valueOf(raw).trim());
+    }
+
+    /**
+     * 2026-10-22 用户定案：异动资格按「整个计划」判定，不按单条指标状态判定。
+     *
+     * 原实现读 indicator.status 并要求 DISTRIBUTED，导致两个连锁故障：
+     * ① 已下发计划里通过「新增行」建出来的指标状态是 DRAFT（新增落库即 DRAFT，
+     *    只有整份计划下发时 syncIndicatorStatusWithPlan 才会统一刷成 DISTRIBUTED），
+     *    于是同批次「删一条 + 增一条」在提交时被这条 DRAFT 指标挡住，
+     *    前端报「仅已下发（稳定态）的指标可发起异动」——而用户看到的明明是已下发计划；
+     * ② 新增指标审批通过后仍停在 DRAFT，后续再也无法对它发起修改/删除异动。
+     *
+     * 判定口径与任务改名异动保持一致（见 applyAndMarkTaskInMutation）：只看所属计划是否
+     * DISTRIBUTED。计划已下发即代表这棵指标树对外生效，树内单条指标的 status 只是
+     * 下发时的快照，不构成异动门槛。
+     */
+    private void assertPlanDistributedForIndicator(Map<String, Object> indicatorRow, String actionLabel) {
+        String planStatus = indicatorRow.get("plan_status") == null
+                ? null
+                : String.valueOf(indicatorRow.get("plan_status"));
+        if (planStatus == null || "null".equals(planStatus)) {
+            // 没有挂到任务/计划的指标（游离指标）不属于已下发树，维持原有拦截
+            throw new IllegalStateException(
+                    "该指标未关联任何已下发计划，不能发起" + (actionLabel == null ? "" : actionLabel) + "异动");
+        }
+        if (!"DISTRIBUTED".equalsIgnoreCase(planStatus)) {
+            throw new IllegalStateException(
+                    "仅已下发（稳定态）的计划可发起" + (actionLabel == null ? "" : actionLabel) + "异动");
+        }
+    }
+
+    /**
+     * 2026-10-21 用户定案：战略任务改名与指标字段同构——已下发计划上的任务名
+     * 双击改动同样走异动审批。校验口径与指标一致：任务必须存在、所属计划已下发、
+     * 且当前没有进行中的任务异动。
+     */
+    private void applyAndMarkTaskInMutation(Long taskId, String newName, Long operatorUserId,
+                                           String batchId) {
+        String trimmed = newName == null ? "" : newName.trim();
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("战略任务名称不能为空");
+        }
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
-                SELECT id, indicator_desc, weight_percent, remark, status, mutation_status
-                FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false
+                SELECT t.task_id, t.name, t.plan_id, t.mutation_status, p.status AS plan_status
+                FROM public.sys_task t
+                JOIN public.plan p ON p.id = t.plan_id
+                WHERE t.task_id = ? AND COALESCE(t.is_deleted, false) = false
+                """,
+                taskId);
+        String planStatus = String.valueOf(current.get("plan_status"));
+        if (!"DISTRIBUTED".equalsIgnoreCase(planStatus)) {
+            throw new IllegalStateException("仅已下发（稳定态）计划的任务可发起异动");
+        }
+        if (current.get("mutation_status") != null) {
+            throw new IllegalStateException("该任务已有异动在审批中");
+        }
+        String previousName = current.get("name") == null ? null : String.valueOf(current.get("name"));
+        if (trimmed.equals(previousName == null ? "" : previousName.trim())) {
+            throw new IllegalArgumentException("新任务名称与当前值相同，无需异动");
+        }
+
+        taskMutationHistoryService.recordRename(taskId, previousName, trimmed, operatorUserId, batchId);
+
+        jdbcTemplate.update(
+                """
+                UPDATE public.sys_task
+                SET name = ?, mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ?
+                """,
+                trimmed, MUTATION_STATUS_IN_MUTATION, taskId);
+    }
+
+    /** 新增指标进入异动：写「(新增)」快照 + 打异动标记（不含权重校验与审批启动）。 */
+    private void markCreatedIndicatorInMutation(Long indicatorId, Long operatorUserId, String batchId) {
+        Map<String, Object> current = jdbcTemplate.queryForMap(
+                """
+                SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
+                       i.mutation_status, p.status AS plan_status
+                FROM public.indicator i
+                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
                 """,
                 indicatorId);
+        assertPlanDistributedForIndicator(current, "新增");
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
@@ -219,7 +344,54 @@ public class IndicatorMutationService {
         changedFields.put("indicator_desc", Map.of("before", "(新增)", "after",
                 String.valueOf(current.get("indicator_desc"))));
 
-        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId);
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, batchId);
+
+        jdbcTemplate.update(
+                """
+                UPDATE public.indicator
+                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                MUTATION_STATUS_IN_MUTATION, indicatorId);
+    }
+
+    /**
+     * 删除指标进入异动：写 before 快照 + 打异动标记，**不立即软删除**。
+     *
+     * 2026-10-21 用户定案：已下发计划上的删除与修改、新增一样走异动审批，
+     * 审批通过后才真正归档（软删除），驳回则指标保持原样继续生效。
+     * 这与「新增指标先落库、审批通过才生效」是同一套口径：
+     * 异动期间表里保留的是审批前状态，审批结果决定最终形态。
+     */
+    private void markIndicatorForDeletion(Long indicatorId, Long operatorUserId, String batchId) {
+        Map<String, Object> current = jdbcTemplate.queryForMap(
+                """
+                SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
+                       i.mutation_status, p.status AS plan_status
+                FROM public.indicator i
+                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                """,
+                indicatorId);
+        assertPlanDistributedForIndicator(current, "删除");
+        if (current.get("mutation_status") != null) {
+            throw new IllegalStateException("该指标已有异动在审批中");
+        }
+
+        Map<String, Object> before = new LinkedHashMap<>();
+        before.put("indicator_desc", current.get("indicator_desc"));
+        before.put("weight_percent", current.get("weight_percent"));
+        before.put("remark", current.get("remark"));
+        // 删除没有 after 值，用 "(删除)" 占位，保证快照结构与修改类一致
+        Map<String, Object> after = new LinkedHashMap<>();
+        after.put("indicator_desc", "(删除)");
+        after.put("weight_percent", "(删除)");
+        after.put("remark", "(删除)");
+        Map<String, Object> changedFields = new LinkedHashMap<>();
+        changedFields.put("__delete__", Map.of("before", "(存在)", "after", "(删除)"));
+
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, batchId);
 
         jdbcTemplate.update(
                 """
@@ -232,17 +404,18 @@ public class IndicatorMutationService {
 
     /** 修改指标进入异动：写 before/after 快照 + 原地应用变更 + 打异动标记（不含权重校验与审批启动）。 */
     private void applyAndMarkInMutation(Long indicatorId, Map<String, Object> changes,
-                                        Long operatorUserId) {
+                                        Long operatorUserId, String batchId) {
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
-                SELECT id, indicator_desc, weight_percent, remark, status, mutation_status
-                FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false
+                SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
+                       i.mutation_status, p.status AS plan_status
+                FROM public.indicator i
+                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
                 """,
                 indicatorId);
-        String status = String.valueOf(current.get("status"));
-        if (!"DISTRIBUTED".equalsIgnoreCase(status)) {
-            throw new IllegalStateException("仅已下发（稳定态）的指标可发起异动");
-        }
+        assertPlanDistributedForIndicator(current, "修改");
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
@@ -272,7 +445,7 @@ public class IndicatorMutationService {
                     "异动内容为空：至少提供一个有效变更字段（indicator_desc/weight_percent/remark）");
         }
 
-        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId);
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, batchId);
 
         jdbcTemplate.update(
                 """
@@ -293,21 +466,40 @@ public class IndicatorMutationService {
         );
     }
 
-    /** 启动单条指标的异动审批链（PLAN_MUTATION_STRATEGY，填报人修改 → 战略部负责人 → 分管校领导终审）。 */
-    private String startMutationWorkflow(Long indicatorId, Long operatorUserId, String mutationType) {
+    /** 启动单条实体的异动审批链（PLAN_MUTATION_STRATEGY，填报人修改 → 战略部负责人 → 分管校领导终审）。 */
+    private String startMutationWorkflow(Long entityId, Long operatorUserId, String mutationType) {
+        return startMutationWorkflow(INDICATOR_ENTITY_TYPE, entityId, operatorUserId, mutationType, null);
+    }
+
+    /**
+     * 2026-10-21：任务改名异动与指标异动共用同一条流程定义，
+     * 仅 businessEntityType 不同（INDICATOR / TASK），审批节点完全一致。
+     */
+    private String startMutationWorkflow(String entityType, Long entityId,
+                                         Long operatorUserId, String mutationType, String batchId) {
         StartWorkflowRequest request = new StartWorkflowRequest();
         request.setWorkflowCode("PLAN_MUTATION_STRATEGY");
-        request.setBusinessEntityId(indicatorId);
-        request.setBusinessEntityType(INDICATOR_ENTITY_TYPE);
+        request.setBusinessEntityId(entityId);
+        request.setBusinessEntityType(entityType);
         Map<String, Object> variables = new LinkedHashMap<>();
-        variables.put("indicatorId", indicatorId);
+        if (INDICATOR_ENTITY_TYPE.equals(entityType)) {
+            variables.put("indicatorId", entityId);
+        } else {
+            variables.put("taskId", entityId);
+        }
         variables.put("initiatedBy", operatorUserId);
         variables.put("mutationType", mutationType);
         request.setVariables(variables);
         var response = businessWorkflowApplicationService.startWorkflow(
                 request, operatorUserId, strategyOrgProperties.getStrategyOrgId());
-        log.info("[IndicatorMutation] 批量异动已发起: indicatorId={}, mutationType={}, instanceId={}",
-                indicatorId, mutationType, response.getInstanceId());
+        // 2026-10-21：把批次号写到审批实例上，供审批中心按批次聚合展示
+        if (batchId != null && response.getInstanceId() != null) {
+            jdbcTemplate.update(
+                    "UPDATE public.audit_instance SET batch_id = ? WHERE id = ?",
+                    batchId, toLongId(response.getInstanceId()));
+        }
+        log.info("[IndicatorMutation] 批量异动已发起: entityType={}, entityId={}, mutationType={}, instanceId={}, batchId={}",
+                entityType, entityId, mutationType, response.getInstanceId(), batchId);
         return response.getInstanceId();
     }
 
@@ -329,25 +521,59 @@ public class IndicatorMutationService {
      * 2026-10-20：异动后校验基础性权重闭合（合计=100）。
      * 指标所属计划/目标部门由 task→plan 反查；校验失败抛 IllegalStateException，
      * 由 @Transactional 回滚本次权重变更（不会留下"改了一半"的数据）。
+     * 2026-10-21：批量异动按条目各自的（计划、目标部门）去重后逐对校验，
+     * 修复混合批次只校验第一个锚点所属计划、漏检其余计划的缺陷。
+     * 2026-10-22：同一批次里待删除的指标不计入合计——删除要等审批通过才归档，
+     * 若把它算进去，「删一条 10 分 + 加一条 10 分」会被误判成 110。
+     * 2026-10-22 修复（只删不补会把计划卡死）：删除条目同样作为校验入口——
+     * 此前校验入口只取「非删除条目」，整批只有删除时入口为空、校验被跳过，
+     * 删除通过后计划合计跌到 60，此后连纯改名的异动都被"合计必须为100"拦死。
+     * 现在删除批次也按「剔除待删后的合计=100」校验，不满足则要求同批次补齐。
      */
-    private void assertPlanBasicWeightStillClosed(Long indicatorId) {
-        Long planId = jdbcTemplate.query(
-                """
-                SELECT t.plan_id
-                FROM public.indicator i
-                JOIN public.sys_task t ON t.task_id = i.task_id
-                WHERE i.id = ?
-                """,
-                rs -> rs.next() ? rs.getLong(1) : null,
-                indicatorId);
-        Long targetOrgId = jdbcTemplate.query(
-                "SELECT target_org_id FROM public.indicator WHERE id = ?",
-                rs -> rs.next() ? rs.getLong(1) : null,
-                indicatorId);
-        if (planId == null || targetOrgId == null) {
+    private void assertPlanBasicWeightStillClosed(List<Long> indicatorIds, Set<Long> pendingDeleteIds) {
+        Set<Long> excluded = pendingDeleteIds == null ? Set.of() : pendingDeleteIds;
+        Set<Long> pairSourceIds = new LinkedHashSet<>();
+        if (indicatorIds != null) {
+            pairSourceIds.addAll(indicatorIds);
+        }
+        pairSourceIds.addAll(excluded);
+        if (pairSourceIds.isEmpty()) {
             return;
         }
-        basicTaskWeightValidationService.validatePlanBasicWeight(planId, targetOrgId);
+        Set<String> validatedPairs = new HashSet<>();
+        for (Long indicatorId : pairSourceIds) {
+            Long planId = jdbcTemplate.query(
+                    """
+                    SELECT t.plan_id
+                    FROM public.indicator i
+                    JOIN public.sys_task t ON t.task_id = i.task_id
+                    WHERE i.id = ?
+                    """,
+                    rs -> rs.next() ? rs.getLong(1) : null,
+                    indicatorId);
+            Long targetOrgId = jdbcTemplate.query(
+                    "SELECT target_org_id FROM public.indicator WHERE id = ?",
+                    rs -> rs.next() ? rs.getLong(1) : null,
+                    indicatorId);
+            if (planId == null || targetOrgId == null) {
+                continue;
+            }
+            String pairKey = planId + ":" + targetOrgId;
+            if (validatedPairs.add(pairKey)) {
+                try {
+                    basicTaskWeightValidationService.validatePlanBasicWeight(planId, targetOrgId, excluded);
+                } catch (IllegalStateException ex) {
+                    if (excluded.isEmpty()) {
+                        throw ex;
+                    }
+                    // 删除类批次的报错补上「如何修复」的指引：校验数值已剔除待删指标
+                    throw new IllegalStateException(
+                            ex.getMessage()
+                                    + "（本次异动包含删除，校验已剔除待删除指标；"
+                                    + "请在同批次内调整其他指标权重补齐到100后重新提交）");
+                }
+            }
+        }
     }
 
     /** 发起异动：写快照 + 打异动标记 + 启动异动审批链。返回工作流实例 ID。 */
@@ -359,19 +585,20 @@ public class IndicatorMutationService {
             throw new IllegalArgumentException("指标 ID 不能为空");
         }
         if (!canInitiate(operatorUserId)) {
-            throw new SecurityException("仅战略发展部可发起指标异动");
+            throw new SecurityException("仅战略发展部填报人可发起异动");
         }
 
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
-                SELECT id, indicator_desc, weight_percent, remark, status, mutation_status
-                FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false
+                SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
+                       i.mutation_status, p.status AS plan_status
+                FROM public.indicator i
+                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
                 """,
                 indicatorId);
-        String status = String.valueOf(current.get("status"));
-        if (!"DISTRIBUTED".equalsIgnoreCase(status)) {
-            throw new IllegalStateException("仅已下发（稳定态）的指标可发起异动");
-        }
+        assertPlanDistributedForIndicator(current, null);
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
@@ -404,7 +631,7 @@ public class IndicatorMutationService {
             throw new IllegalArgumentException("异动内容为空：至少提供一个有效变更字段（indicator_desc/weight_percent/remark）");
         }
 
-        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId);
+        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, null);
 
         // 原地应用变更（ID 不变）
         jdbcTemplate.update(
@@ -427,7 +654,7 @@ public class IndicatorMutationService {
 
         // 2026-10-20 用户定案：异动与下发共用同一闭合口径——
         // 基础性指标权重合计必须为 100，异动后不达标则不允许发起（抛异常回滚本次变更）。
-        assertPlanBasicWeightStillClosed(indicatorId);
+        assertPlanBasicWeightStillClosed(List.of(indicatorId), Set.of());
 
         // 启动异动审批链（填报人修改 → 战略部负责人 → 分管校领导终审）
         StartWorkflowRequest request = new StartWorkflowRequest();
@@ -568,42 +795,109 @@ public class IndicatorMutationService {
     /**
      * 2026-10-10：该组织的异动审批实例清单（审批中心「异动审批」卡片数据源）。
      * 含进行中与已完成（历史），按发起时间倒序。
+     * 2026-10-21：任务改名异动（entity_type=TASK）并入同一清单，返回 entity_type
+     * 供前端按各自实体去取变更历史；并补充流程编码、当前节点与流向组织名，
+     * 供审批中心「计划审批」看板直接渲染异动卡片。
+     * 2026-10-21 二次：返回 batch_id 与本次异动的字段变更明细（changed_fields），
+     * 审批详情弹窗据此逐字段展示 before→after。
      */
     public java.util.List<java.util.Map<String, Object>> listMutationApprovals(Long orgId) {
         if (orgId == null) {
             return java.util.List.of();
         }
-        return jdbcTemplate.queryForList(
+        return jdbcTemplate.query(
                 """
                 SELECT ai.id AS instance_id,
                        ai.entity_id AS indicator_id,
-                       left(i.indicator_desc, 60) AS indicator_desc,
+                       ai.entity_type AS entity_type,
+                       ai.batch_id AS batch_id,
+                       left(COALESCE(i.indicator_desc, t.name), 60) AS indicator_desc,
                        ai.status,
                        ai.created_at,
-                       ai.completed_at
+                       ai.completed_at,
+                       'PLAN_MUTATION_STRATEGY' AS flow_code,
+                       cur.step_name AS current_step_name,
+                       cur.approver_org_id AS approver_org_id,
+                       so1.name AS source_org_name,
+                       so2.name AS target_org_name,
+                       COALESCE(i.owner_org_id, t.created_by_org_id) AS source_org_id,
+                       COALESCE(i.target_org_id, t.org_id) AS target_org_id,
+                       ru.real_name AS submitter_name,
+                       log.changed_fields::text AS changed_fields_json,
+                       log.before_json::text AS before_json,
+                       log.after_json::text AS after_json
                 FROM public.audit_instance ai
-                JOIN public.indicator i ON i.id = ai.entity_id
-                WHERE ai.entity_type = 'INDICATOR'
-                  AND COALESCE(i.is_deleted, false) = false
-                  AND (i.target_org_id = ? OR i.owner_org_id = ?)
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                LEFT JOIN public.indicator i ON ai.entity_type = 'INDICATOR'
+                    AND i.id = ai.entity_id AND COALESCE(i.is_deleted, false) = false
+                LEFT JOIN public.sys_task t ON ai.entity_type = 'TASK'
+                    AND t.task_id = ai.entity_id AND COALESCE(t.is_deleted, false) = false
+                LEFT JOIN LATERAL (
+                    SELECT si.step_name, si.approver_org_id
+                    FROM public.audit_step_instance si
+                    WHERE si.instance_id = ai.id AND si.status = 'PENDING'
+                    ORDER BY si.step_no DESC LIMIT 1
+                ) cur ON true
+                LEFT JOIN public.sys_org so1 ON so1.id = COALESCE(i.owner_org_id, t.created_by_org_id)
+                LEFT JOIN public.sys_org so2 ON so2.id = COALESCE(i.target_org_id, t.org_id)
+                LEFT JOIN public.sys_user ru ON ru.id = ai.requester_id
+                LEFT JOIN LATERAL (
+                    SELECT al.changed_fields, al.before_json, al.after_json
+                    FROM public.audit_log al
+                    WHERE al.entity_type = ai.entity_type
+                      AND al.entity_id = ai.entity_id
+                      AND (
+                            (ai.batch_id IS NOT NULL AND al.batch_id = ai.batch_id)
+                         OR (ai.batch_id IS NULL AND al.created_at <= ai.created_at)
+                      )
+                    ORDER BY al.created_at DESC, al.log_id DESC
+                    LIMIT 1
+                ) log ON true
+                WHERE (i.target_org_id = ? OR i.owner_org_id = ?)
+                   OR (t.org_id = ? OR t.created_by_org_id = ?)
                 ORDER BY ai.created_at DESC
                 LIMIT 50
                 """,
-                orgId, orgId);
+                (rs, rowNum) -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("instance_id", rs.getLong("instance_id"));
+                    row.put("indicator_id", rs.getLong("indicator_id"));
+                    row.put("entity_type", rs.getString("entity_type"));
+                    row.put("batch_id", rs.getString("batch_id"));
+                    row.put("indicator_desc", rs.getString("indicator_desc"));
+                    row.put("status", rs.getString("status"));
+                    row.put("created_at", rs.getTimestamp("created_at"));
+                    row.put("completed_at", rs.getTimestamp("completed_at"));
+                    row.put("flow_code", rs.getString("flow_code"));
+                    row.put("current_step_name", rs.getString("current_step_name"));
+                    row.put("approver_org_id", rs.getObject("approver_org_id"));
+                    row.put("source_org_name", rs.getString("source_org_name"));
+                    row.put("target_org_name", rs.getString("target_org_name"));
+                    row.put("source_org_id", rs.getObject("source_org_id"));
+                    row.put("target_org_id", rs.getObject("target_org_id"));
+                    row.put("submitter_name", rs.getString("submitter_name"));
+                    row.put("changed_fields", parseJson(rs.getString("changed_fields_json")));
+                    row.put("before_json", parseJson(rs.getString("before_json")));
+                    row.put("after_json", parseJson(rs.getString("after_json")));
+                    return row;
+                },
+                orgId, orgId, orgId, orgId);
     }
 
     private void insertAuditLog(Long indicatorId,
                                 Map<String, Object> before,
                                 Map<String, Object> after,
                                 Map<String, Object> changedFields,
-                                Long operatorUserId) {
+                                Long operatorUserId,
+                                String batchId) {
         jdbcTemplate.update(
                 """
                 INSERT INTO public.audit_log (
                     action, before_json, after_json, changed_fields,
-                    created_at, entity_id, entity_type, reason, actor_user_id
+                    created_at, entity_id, entity_type, reason, actor_user_id, batch_id
                 )
-                VALUES (?, ?::jsonb, ?::jsonb, ?::jsonb, CURRENT_TIMESTAMP, ?, 'INDICATOR', ?, ?)
+                VALUES (?, ?::jsonb, ?::jsonb, ?::jsonb, CURRENT_TIMESTAMP, ?, 'INDICATOR', ?, ?, ?)
                 """,
                 "UPDATE",
                 toJson(before),
@@ -611,7 +905,8 @@ public class IndicatorMutationService {
                 toJson(changedFields),
                 indicatorId,
                 "指标异动",
-                operatorUserId == null ? null : operatorUserId
+                operatorUserId == null ? null : operatorUserId,
+                batchId
         );
     }
 

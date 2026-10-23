@@ -201,6 +201,8 @@ class IndicatorControllerTest {
                             null,
                             null,
                             null,
+                            null,
+                            // 2026-10-21：任务改名异动留痕依赖（本测试不触发异动，传 null）
                             null),
                     strategyApplicationService,
                     batchIndicatorDistributionApplicationService,

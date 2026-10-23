@@ -29,6 +29,16 @@ public class TaskMutationHistoryService {
 
     /** 任务改名留痕；名称未变化时不留痕（避免「已更改 0 次」噪音）。 */
     public void recordRename(Long taskId, String beforeName, String afterName, Long actorUserId) {
+        recordRename(taskId, beforeName, afterName, actorUserId, null);
+    }
+
+    /**
+     * 任务改名留痕（带异动批次号）。
+     * 2026-10-21：同一次「发起异动」提交的指标与任务快照共享 batch_id，
+     * 审批中心据此把多条改动聚合成一张卡片。
+     */
+    public void recordRename(Long taskId, String beforeName, String afterName,
+                             Long actorUserId, String batchId) {
         if (taskId == null || taskId <= 0) {
             return;
         }
@@ -52,9 +62,9 @@ public class TaskMutationHistoryService {
                 """
                 INSERT INTO public.audit_log (
                     action, before_json, after_json, changed_fields,
-                    created_at, entity_id, entity_type, reason, actor_user_id
+                    created_at, entity_id, entity_type, reason, actor_user_id, batch_id
                 )
-                VALUES (?, ?::jsonb, ?::jsonb, ?::jsonb, CURRENT_TIMESTAMP, ?, 'TASK', ?, ?)
+                VALUES (?, ?::jsonb, ?::jsonb, ?::jsonb, CURRENT_TIMESTAMP, ?, 'TASK', ?, ?, ?)
                 """,
                 "UPDATE",
                 toJson(beforeJson),
@@ -62,7 +72,8 @@ public class TaskMutationHistoryService {
                 toJson(changedFields),
                 taskId,
                 "战略任务异动",
-                actorUserId
+                actorUserId,
+                batchId
         );
     }
 
