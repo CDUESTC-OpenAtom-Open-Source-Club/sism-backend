@@ -55,7 +55,10 @@ public class TaskController {
             @PathVariable Long id,
             Authentication authentication) {
         TaskResponse task = taskApplicationService.getTaskById(id);
-        ensureCanAccessTask(authentication, task);
+        // 2026-10-24 用户定案：指标详情抽屉（战略任务/指标视图/下发管理三处复用）以本接口为
+        // 任务数据源，是只读展示——不做组织权限限制。此前战略部填报人查看已下发部门的任务
+        // 会被 ensureCanAccessTask 403（「无权限访问」），抽屉照样打开却弹错误，体验割裂。
+        // 列表接口的按组织过滤保持不变。
         return ResponseEntity.ok(ApiResponse.success(task));
     }
 

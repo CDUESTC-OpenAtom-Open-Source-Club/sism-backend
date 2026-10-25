@@ -191,7 +191,9 @@ class IndicatorControllerTest {
                     JpaTaskRepositoryInternal.class,
                     JdbcTemplate.class,
                     NamedParameterJdbcTemplate.class,
-                    Class.forName("com.sism.iam.application.service.UserNotificationService")
+                    Class.forName("com.sism.iam.application.service.UserNotificationService"),
+                    // 2026-10-24 跨窗口数据同步：新增广播端口依赖（本测试不触发，传 null）
+                    Class.forName("com.sism.shared.domain.notification.DataChangeBroadcaster")
             );
             Object userNotificationService = null;
             return constructor.newInstance(
@@ -210,7 +212,8 @@ class IndicatorControllerTest {
                     jpaTaskRepository,
                     jdbcTemplate,
                     namedParameterJdbcTemplate,
-                    userNotificationService
+                    userNotificationService,
+                    null
             );
         } catch (ReflectiveOperationException ex) {
             throw new IllegalStateException("Failed to create IndicatorController for test", ex);

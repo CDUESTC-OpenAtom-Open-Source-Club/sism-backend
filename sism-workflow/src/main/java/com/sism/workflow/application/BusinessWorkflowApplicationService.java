@@ -328,6 +328,13 @@ public class BusinessWorkflowApplicationService {
     @Transactional
     public WorkflowInstanceResponse approveTask(
             String taskId, ApprovalRequest request, Long userId, String appraisalLevel) {
+        return approveTask(taskId, request, userId, appraisalLevel, null);
+    }
+
+    @Transactional
+    public WorkflowInstanceResponse approveTask(
+            String taskId, ApprovalRequest request, Long userId, String appraisalLevel,
+            java.util.Map<Long, String> indicatorLevels) {
 
         log.info("Approving task: {}, userId: {}", taskId, userId);
 
@@ -349,8 +356,22 @@ public class BusinessWorkflowApplicationService {
         // B9 鉴定投影口径：仅当审批后实例到达终态（status == APPROVED，整条链走完）时，
         // 才把本次 decision 的鉴定等级投影到业务明细行；
         // 中间节点的鉴定仅写入 audit_step_instance.appraisal_level 留痕（approveAuditInstance 内既有逻辑）。
-        if (appraisalLevel != null && !appraisalLevel.isBlank()
-                && AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus())) {
+        // 2026-10-24 用户定案（指标级鉴定）：逐指标等级优先；整单等级仅作旧客户端兼容。
+        boolean terminalApproved = AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus());
+        if (terminalApproved && indicatorLevels != null && !indicatorLevels.isEmpty()) {
+            java.util.Map<Long, String> normalizedLevels = new java.util.LinkedHashMap<>();
+            indicatorLevels.forEach((indicatorId, level) -> {
+                com.sism.enums.ProgressLevel normalized =
+                        com.sism.enums.ProgressLevel.normalize(level);
+                if (indicatorId != null && indicatorId > 0 && normalized != null) {
+                    normalizedLevels.put(indicatorId, normalized.name());
+                }
+            });
+            if (!normalizedLevels.isEmpty()) {
+                workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevelForIndicators(
+                        instance.getEntityType(), instance.getEntityId(), normalizedLevels));
+            }
+        } else if (terminalApproved && appraisalLevel != null && !appraisalLevel.isBlank()) {
             workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevel(
                     instance.getEntityType(), instance.getEntityId(), appraisalLevel));
         }
@@ -377,14 +398,16 @@ public class BusinessWorkflowApplicationService {
     public WorkflowInstanceResponse decideTask(
             String taskId, WorkflowTaskDecisionRequest request, Long userId) {
         if (Boolean.TRUE.equals(request.getApproved())) {
-            // 鉴定进度等级（P1）：通过时可选填写，归一校验（旧预警档位码归并为 DELAYED）
+            // 鉴定进度等级（P1 上报链改造）：通过时可选填写，归一校验（旧预警档位码归并为 DELAYED）
             String appraisalLevel = com.sism.enums.ProgressLevel
                     .normalize(request.getAppraisalLevel()) == null
                     ? null
                     : com.sism.enums.ProgressLevel.normalize(request.getAppraisalLevel()).name();
             ApprovalRequest approvalRequest = new ApprovalRequest();
             approvalRequest.setComment(resolveApprovalComment(request.getComment()));
-            return approveTask(taskId, approvalRequest, userId, appraisalLevel);
+            // 2026-10-24 指标级鉴定：逐指标等级随通过提交，仅末级审批节点由上级部门评定
+            return approveTask(taskId, approvalRequest, userId, appraisalLevel,
+                    request.getIndicatorLevels());
         }
 
         RejectionRequest rejectionRequest = new RejectionRequest();
