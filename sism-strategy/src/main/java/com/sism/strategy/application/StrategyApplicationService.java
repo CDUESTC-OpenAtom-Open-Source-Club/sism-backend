@@ -111,6 +111,10 @@ public class StrategyApplicationService {
         // 2026-10-20 用户定案：已下发计划允许战略部继续新增指标（走异动审批链），
         // 因此这里不再调用 ensurePlanNotDistributedForTask 拦截；
         // 导入路径的「不能重复导入」守卫保留在导入服务内（BusinessImportApplicationService）。
+        // 2026-10-24 用户定案：计划审批中（PENDING，下发审批待负责人/校领导处理）内容必须冻结——
+        // 审批的对象就是当前表内容，此时允许新增行会让审批失去意义。DRAFT 可继续填报，
+        // DISTRIBUTED 走异动链（既有定案），均不受影响。
+        assertPlanNotUnderApprovalForTask(resolvedTaskId);
 
         Indicator indicator = Indicator.create(indicatorDesc, ownerOrg, targetOrg, indicatorType);
 
@@ -618,6 +622,30 @@ public class StrategyApplicationService {
                 .orElseThrow(() -> new IllegalArgumentException("Plan not found: " + task.getPlanId()));
         if (PlanStatus.fromRaw(plan.getStatus()) == PlanStatus.DISTRIBUTED) {
             throw new DistributedPlanMutationBlockedException(DISTRIBUTED_PLAN_MUTATION_BLOCKED_MESSAGE);
+        }
+    }
+
+    /**
+     * 2026-10-24 用户定案：计划审批中（PENDING，下发审批在负责人/校领导环节）内容冻结——
+     * 新增指标被拦下。审批通过后计划转 DISTRIBUTED，新增走异动审批链（既有定案不受影响）；
+     * 驳回/撤回后计划回到可编辑状态，新增随即放开。
+     */
+    private void assertPlanNotUnderApprovalForTask(Long taskId) {
+        if (taskId == null) {
+            return;
+        }
+        Long planId = taskRepository.findById(taskId)
+                .map(StrategicTask::getPlanId)
+                .orElse(null);
+        if (planId == null) {
+            return;
+        }
+        String planStatus = planRepository.findById(planId)
+                .map(Plan::getStatus)
+                .orElse(null);
+        if ("PENDING".equalsIgnoreCase(String.valueOf(planStatus))) {
+            throw new IllegalStateException(
+                    "计划正在审批中，暂不能新增指标：请等审批结束（通过或退回）后再操作，或先撤回本次审批");
         }
     }
 
