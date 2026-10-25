@@ -25,6 +25,8 @@ public class PlanReportIndicatorDetailResponse {
     private String selfRating;
     /** 完成情况描述（与 comment 同源，读侧优先） */
     private String description;
+    /** 2026-10-24 指标级鉴定：上级部门审批通过时评定的鉴定进度等级（可空） */
+    private String appraisalLevel;
     private List<ReportAttachmentResponse> attachments;
 
     public static PlanReportIndicatorDetailResponse fromSnapshot(PlanReportIndicatorSnapshot snapshot) {
@@ -51,6 +53,7 @@ public class PlanReportIndicatorDetailResponse {
                 .comment(snapshot.comment())
                 .selfRating(snapshot.selfRating())
                 .description(snapshot.description())
+                .appraisalLevel(snapshot.appraisalLevel())
                 .attachments(attachmentResponses)
                 .build();
     }

@@ -24,8 +24,21 @@ public interface WorkflowBusinessContextPort {
     /**
      * P1 上报链改造：审批携带鉴定进度等级时，投影到业务明细行。
      * 默认空实现；仅关心该实体类型的上下文适配器覆写。
+     *
+     * @deprecated 2026-10-24 用户定案：整体鉴定废弃，改用 {@link #applyAppraisalLevelForIndicators}。
+     *             仅为兼容保留。
      */
+    @Deprecated
     default void applyAppraisalLevel(String entityType, Long entityId, String appraisalLevel) {
+    }
+
+    /**
+     * 2026-10-24 用户定案（指标级鉴定）：审批通过携带逐指标等级时，
+     * 投影到该报告对应明细行（entityId=报告ID，indicatorLevels=指标ID→等级）。
+     * 默认空实现；仅关心该实体类型的上下文适配器覆写。
+     */
+    default void applyAppraisalLevelForIndicators(String entityType, Long entityId,
+                                                  java.util.Map<Long, String> indicatorLevels) {
     }
 
     /**

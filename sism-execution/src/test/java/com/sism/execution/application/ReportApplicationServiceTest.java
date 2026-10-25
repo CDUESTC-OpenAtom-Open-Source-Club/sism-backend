@@ -358,8 +358,8 @@ class ReportApplicationServiceTest {
         when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
                 .thenReturn(Optional.of(approvedReport), Optional.of(approvedReport));
         when(planReportIndicatorRepository.findByReportId(41L)).thenReturn(List.of(
-                new PlanReportIndicatorSnapshot(1001L, 80, "content", null, null, List.of()),
-                new PlanReportIndicatorSnapshot(1002L, null, "content", null, null, List.of())
+                new PlanReportIndicatorSnapshot(1001L, 80, "content", null, null, null, List.of()),
+                new PlanReportIndicatorSnapshot(1002L, null, "content", null, null, null, List.of())
         ));
         when(indicatorRepository.findByIds(List.of(1001L, 1002L))).thenReturn(List.of(first, second));
 
@@ -553,7 +553,7 @@ class ReportApplicationServiceTest {
 
         when(planReportRepository.findById(16L)).thenReturn(Optional.of(report));
         when(planReportIndicatorRepository.findByReportIds(List.of(16L)))
-                .thenReturn(Map.of(16L, List.of(new PlanReportIndicatorSnapshot(2003L, 15, "已填报草稿", null, null, List.of()))));
+                .thenReturn(Map.of(16L, List.of(new PlanReportIndicatorSnapshot(2003L, 15, "已填报草稿", null, null, null, List.of()))));
 
         PlanReport hydrated = reportApplicationService.findReportById(16L).orElseThrow();
 
@@ -577,9 +577,9 @@ class ReportApplicationServiceTest {
         when(planReportRepository.findById(13L)).thenReturn(Optional.of(report));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(planReportIndicatorRepository.findByReportId(13L))
-                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", null, null, List.of())));
+                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", null, null, null, List.of())));
         when(planReportIndicatorRepository.findByReportIds(List.of(13L)))
-                .thenReturn(Map.of(13L, List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", null, null, List.of()))));
+                .thenReturn(Map.of(13L, List.of(new PlanReportIndicatorSnapshot(2001L, 67, "审批通过备注", null, null, null, List.of()))));
         when(indicatorRepository.findByIds(List.of(2001L))).thenReturn(List.of(indicator));
         when(indicatorRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -609,9 +609,9 @@ class ReportApplicationServiceTest {
         when(planReportRepository.findById(15L)).thenReturn(Optional.of(report));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(planReportIndicatorRepository.findByReportId(15L))
-                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", null, null, List.of())));
+                .thenReturn(List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", null, null, null, List.of())));
         when(planReportIndicatorRepository.findByReportIds(List.of(15L)))
-                .thenReturn(Map.of(15L, List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", null, null, List.of()))));
+                .thenReturn(Map.of(15L, List.of(new PlanReportIndicatorSnapshot(2002L, 20, "审批完成", null, null, null, List.of()))));
         when(indicatorRepository.findByIds(List.of(2002L))).thenReturn(List.of(indicator));
         when(indicatorRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -705,8 +705,8 @@ class ReportApplicationServiceTest {
                 .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(first, second), pageable, 2));
         when(planReportIndicatorRepository.findByReportIds(List.of(51L, 52L)))
                 .thenReturn(Map.of(
-                        51L, List.of(new PlanReportIndicatorSnapshot(3001L, 11, "A", null, null, List.of())),
-                        52L, List.of(new PlanReportIndicatorSnapshot(3002L, 22, "B", null, null, List.of()))
+                        51L, List.of(new PlanReportIndicatorSnapshot(3001L, 11, "A", null, null, null, List.of())),
+                        52L, List.of(new PlanReportIndicatorSnapshot(3002L, 22, "B", null, null, null, List.of()))
                 ));
 
         var page = reportApplicationService.findReportsByStatus("SUBMITTED", 1, 10);

@@ -36,16 +36,26 @@ public class ReportController {
 
     private static final String REPORT_WRITE_ACCESS =
             "hasAnyRole('REPORTER','APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')";
+    /**
+     * 2026-10-24 用户定案：填报内容（创建草稿/写入明细）只属于填报人角色。
+     * 此前复用 REPORT_WRITE_ACCESS，APPROVER（部门审核人）也能写填报——
+     * 界面上「填报/编辑」按钮同步收紧为仅填报人可见，此处为服务端兜底。
+     */
+    private static final String REPORT_FILL_ACCESS =
+            "hasAnyRole('REPORTER','SYSTEM_ADMIN')";
     private static final String REPORT_APPROVAL_ACCESS =
             "hasAnyRole('APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')";
 
     private final ReportApplicationService reportApplicationService;
+    /** 2026-10-24：审批链上的组织可查阅报告内容（否则审批详情内容区空白） */
+    private final com.sism.execution.domain.report.ReportApprovalChainAccessQuery
+            reportApprovalChainAccessQuery;
 
     // ==================== Report CRUD Operations ====================
 
     @PostMapping
     @Operation(summary = "创建月度报告（草稿）", description = "创建一个新的月度进度报告，初始状态为草稿")
-    @PreAuthorize(REPORT_WRITE_ACCESS)
+    @PreAuthorize(REPORT_FILL_ACCESS)
     public ResponseEntity<ApiResponse<PlanReportResponse>> createReport(
             @Valid @RequestBody CreatePlanReportRequest request,
             @AuthenticationPrincipal CurrentUser currentUser) {
@@ -62,7 +72,7 @@ public class ReportController {
 
     @PutMapping("/{id}")
     @Operation(summary = "更新报告内容", description = "更新报告的内容、摘要、进度、问题和下一步计划等信息")
-    @PreAuthorize(REPORT_WRITE_ACCESS)
+    @PreAuthorize(REPORT_FILL_ACCESS)
     public ResponseEntity<ApiResponse<PlanReportResponse>> updateReport(
             @Parameter(description = "报告ID") @PathVariable Long id,
             @Valid @RequestBody UpdatePlanReportRequest request,
@@ -368,9 +378,16 @@ public class ReportController {
             return;
         }
         Long currentOrgId = requireCurrentOrgId(currentUser);
-        if (!Objects.equals(report.getReportOrgId(), currentOrgId)) {
-            throw new AccessDeniedException("不能操作其他组织的报告");
+        if (Objects.equals(report.getReportOrgId(), currentOrgId)) {
+            return;
         }
+        // 2026-10-24（上报内容可查阅修复）：审批方组织（上报链上的申请方/审批方席位）
+        // 必须能看到报告快照——否则审批详情「查看详情」内容区空白，历史上报不可查阅。
+        // 写操作另有 @PreAuthorize(REPORT_WRITE_ACCESS) 与组织校验把守，此处仅放行读。
+        if (reportApprovalChainAccessQuery.isOrgOnApprovalChain(report.getId(), currentOrgId)) {
+            return;
+        }
+        throw new AccessDeniedException("不能操作其他组织的报告");
     }
 
     private void ensureCanAccessOrg(CurrentUser currentUser, Long orgId) {

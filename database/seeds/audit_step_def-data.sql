@@ -1,6 +1,6 @@
 -- audit_step_def clean seed
 -- Scope:
--- - Only keep the 4 approved workflow templates and their canonical 18 steps.
+-- - Only keep the 4 approved workflow templates and their canonical 17 steps.
 -- - Single-table seed only. Upstream dependencies are seeded separately by:
 --   - audit_flow_def-data.sql
 --   - sys_role-data.sql
@@ -11,11 +11,12 @@
 --   - "战略发展部负责人审批" => role 3 + org 35
 --   - "分管校领导审批" => role 4 + org 35
 --   - "学院院长审批人审批" => role 4 + current college org
---   - "战略发展部终审人审批" => role 3 + org 35
+--   - "战略发展部终审人审批" => role 3 + org 35（仅职能部门链 flow 3）
 --   - "职能部门审批人审批" => role 2 + current functional org
--- College chain (flow 4) is 5 nodes per 2026-09-17 定案：
---   填报人提交 → 二级学院审批人 → 学院院长审批人 → 职能部门审批人 → 战略发展部终审人
---   （学院比职能部门多一级；职能部门链 flow 3 保持 4 节点不变）
+-- College chain (flow 4) is 4 nodes per 2026-10-24 定案（推翻 2026-09-17 的 5 节点设计）：
+--   填报人提交 → 二级学院审批人 → 学院院长审批人 → 职能部门审批人（终）
+--   学院上报到上级职能部门审批即收口，不再经过战略发展部终审；
+--   职能部门链 flow 3 保持 4 节点不变（其上级为战略发展部，终审节点仍属职能部门链）。
 
 BEGIN;
 
@@ -47,8 +48,7 @@ VALUES
     (11, 4, '填报人提交', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
     (12, 4, '二级学院审批人审批', 'APPROVAL', 2, false, NOW(), NOW(), 2),
     (13, 4, '学院院长审批人审批', 'APPROVAL', 4, false, NOW(), NOW(), 3),
-    (14, 4, '职能部门审批人审批', 'APPROVAL', 2, false, NOW(), NOW(), 4),
-    (15, 4, '战略发展部终审人审批', 'APPROVAL', 3, true, NOW(), NOW(), 5),
+    (14, 4, '职能部门审批人审批', 'APPROVAL', 2, true, NOW(), NOW(), 4),
 
     (16, 5, '填报人修改', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
     (17, 5, '战略发展部负责人审批', 'APPROVAL', 3, false, NOW(), NOW(), 2),

@@ -23,8 +23,17 @@ public interface PlanReportIndicatorRepository {
     /**
      * P1 上报链改造：报告审批通过时，将终审鉴定等级回写到该报告全部明细行
      * （ appraisal_level 仅在比原值更新时覆盖，保证多轮上报互不污染）。
+     *
+     * @deprecated 2026-10-24 用户定案：整体鉴定废弃，改用 {@link #applyAppraisalLevelForIndicators}。
      */
+    @Deprecated
     void applyAppraisalLevel(Long reportId, String appraisalLevel);
+
+    /**
+     * 2026-10-24 用户定案（指标级鉴定）：把逐指标鉴定等级回写到指定明细行，
+     * 只触碰给出的 indicator_id，未评定的指标保持原值/空。
+     */
+    void applyAppraisalLevelForIndicators(Long reportId, List<Long> indicatorIds, String appraisalLevel);
 
     void attachFiles(Long planReportIndicatorId, java.util.List<Long> attachmentIds, Long createdBy);
 

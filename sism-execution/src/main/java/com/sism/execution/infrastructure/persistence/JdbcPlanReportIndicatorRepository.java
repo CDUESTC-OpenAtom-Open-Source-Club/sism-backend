@@ -74,6 +74,30 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
     }
 
     @Override
+    public void applyAppraisalLevelForIndicators(Long reportId, List<Long> indicatorIds, String appraisalLevel) {
+        if (reportId == null || indicatorIds == null || indicatorIds.isEmpty()
+                || appraisalLevel == null || appraisalLevel.isBlank()) {
+            return;
+        }
+        String placeholders = String.join(", ", java.util.Collections.nCopies(indicatorIds.size(), "?"));
+        Object[] args = new Object[2 + indicatorIds.size()];
+        args[0] = appraisalLevel;
+        args[1] = reportId;
+        for (int i = 0; i < indicatorIds.size(); i++) {
+            args[2 + i] = indicatorIds.get(i);
+        }
+        jdbcTemplate.update(
+                """
+                UPDATE public.plan_report_indicator
+                SET appraisal_level = ?
+                WHERE report_id = ?
+                  AND indicator_id IN (%s)
+                """.formatted(placeholders),
+                args
+        );
+    }
+
+    @Override
     public void attachFiles(Long planReportIndicatorId, List<Long> attachmentIds, Long createdBy) {
         if (planReportIndicatorId == null) {
             return;
@@ -162,6 +186,7 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                        pri.comment,
                        pri.self_rating,
                        pri.description,
+                       pri.appraisal_level,
                        a.id AS attachment_id,
                        a.original_name,
                        a.size_bytes,
@@ -192,6 +217,7 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                                         rs.getString("comment"),
                                         rs.getString("self_rating"),
                                         rs.getString("description"),
+                                        rs.getString("appraisal_level"),
                                         attachments
                                 ),
                                 attachments

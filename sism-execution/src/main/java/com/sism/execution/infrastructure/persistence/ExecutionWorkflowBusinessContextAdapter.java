@@ -36,17 +36,49 @@ public class ExecutionWorkflowBusinessContextAdapter implements WorkflowBusiness
     /**
      * P1 上报链改造：审批携带鉴定进度等级时，投影到该报告全部明细行的
      * appraisal_level（终审/逐级鉴定均覆盖，与节点留痕互为补充）。
+     *
+     * @deprecated 2026-10-24 用户定案：整体鉴定废弃，改用 {@link #applyAppraisalLevelForIndicators}。
      */
+    @Deprecated
     @Override
     public void applyAppraisalLevel(String entityType, Long entityId, String appraisalLevel) {
         if (appraisalLevel == null || appraisalLevel.isBlank()) {
             return;
         }
-        if (!PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType)
-                && !LEGACY_PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType)) {
+        if (!isPlanReportEntity(entityType)) {
             return;
         }
         planReportIndicatorRepository.applyAppraisalLevel(entityId, appraisalLevel);
+    }
+
+    /**
+     * 2026-10-24 用户定案（指标级鉴定）：把逐指标等级投影到对应明细行，
+     * 未给出的指标不动。按等级分组，同等级一条 UPDATE。
+     */
+    @Override
+    public void applyAppraisalLevelForIndicators(String entityType, Long entityId,
+                                                 java.util.Map<Long, String> indicatorLevels) {
+        if (indicatorLevels == null || indicatorLevels.isEmpty()) {
+            return;
+        }
+        if (!isPlanReportEntity(entityType)) {
+            return;
+        }
+        java.util.Map<String, java.util.List<Long>> idsByLevel = new java.util.LinkedHashMap<>();
+        indicatorLevels.forEach((indicatorId, level) -> {
+            if (indicatorId == null || indicatorId <= 0 || level == null || level.isBlank()) {
+                return;
+            }
+            idsByLevel.computeIfAbsent(level.trim().toUpperCase(), key -> new java.util.ArrayList<>())
+                    .add(indicatorId);
+        });
+        idsByLevel.forEach((level, ids) ->
+                planReportIndicatorRepository.applyAppraisalLevelForIndicators(entityId, ids, level));
+    }
+
+    private boolean isPlanReportEntity(String entityType) {
+        return PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType)
+                || LEGACY_PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType);
     }
 
     @Override

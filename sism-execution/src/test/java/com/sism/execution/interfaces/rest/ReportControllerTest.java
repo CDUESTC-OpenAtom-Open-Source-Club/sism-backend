@@ -46,7 +46,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("createReport should use authenticated user and current org only")
     void createReportShouldUseAuthenticatedUserAndCurrentOrgOnly() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getId()).thenReturn(101L);
         when(currentUser.getOrgId()).thenReturn(10L);
@@ -73,7 +74,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("updateReport should ignore request operator user id")
     void updateReportShouldIgnoreRequestOperatorUserId() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getId()).thenReturn(102L);
         when(currentUser.getOrgId()).thenReturn(10L);
@@ -113,7 +115,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("submitReport should use authenticated user id")
     void submitReportShouldUseAuthenticatedUserId() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getId()).thenReturn(103L);
         when(currentUser.getOrgId()).thenReturn(10L);
@@ -132,7 +135,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("rejectReport should ignore request user id")
     void rejectReportShouldIgnoreRequestUserId() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getId()).thenReturn(104L);
         when(currentUser.getOrgId()).thenReturn(10L);
@@ -155,7 +159,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("getAllReports should only return reports from current org")
     void getAllReportsShouldOnlyReturnCurrentOrgReports() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getOrgId()).thenReturn(10L);
 
@@ -180,7 +185,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("getAllReports should use global pagination for admin")
     void getAllReportsShouldUseGlobalPaginationForAdmin() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         doReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))).when(currentUser).getAuthorities();
 
@@ -205,7 +211,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("getReportById should reject reports from other orgs")
     void getReportByIdShouldRejectOtherOrgReports() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getOrgId()).thenReturn(10L);
 
@@ -219,7 +226,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("getReportById should tolerate null indicator details")
     void getReportByIdShouldTolerateNullIndicatorDetails() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getOrgId()).thenReturn(10L);
 
@@ -238,13 +246,14 @@ class ReportControllerTest {
     @Test
     @DisplayName("getReportById should tolerate null attachment lists")
     void getReportByIdShouldTolerateNullAttachmentLists() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getOrgId()).thenReturn(10L);
 
         PlanReport report = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 301L, 106L);
         report.setId(10L);
-        report.setIndicatorDetails(List.of(new PlanReportIndicatorSnapshot(77L, 45, "comment", null, null, List.of())));
+        report.setIndicatorDetails(List.of(new PlanReportIndicatorSnapshot(77L, 45, "comment", null, null, null, List.of())));
         when(reportApplicationService.findReportById(10L)).thenReturn(Optional.of(report));
 
         var response = controller.getReportById(10L, currentUser);
@@ -259,7 +268,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("getReportsByPlanId should tolerate null indicator details")
     void getReportsByPlanIdShouldTolerateNullIndicatorDetails() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getOrgId()).thenReturn(10L);
         PlanReport report = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 4036L, 106L);
@@ -278,7 +288,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("getReportsByStatusPaginated should preserve page total elements")
     void getReportsByStatusPaginatedShouldPreserveTotalElements() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getOrgId()).thenReturn(10L);
         Page<PlanReport> reportPage = org.mockito.Mockito.mock(Page.class);
@@ -300,7 +311,8 @@ class ReportControllerTest {
     @Test
     @DisplayName("searchReports should constrain non-admin to current org in query layer")
     void searchReportsShouldConstrainNonAdminToCurrentOrgInQueryLayer() {
-        ReportController controller = new ReportController(reportApplicationService);
+        ReportController controller = new ReportController(reportApplicationService,
+                (reportId, orgId) -> false);
 
         when(currentUser.getOrgId()).thenReturn(10L);
         Page<PlanReport> reportPage = org.mockito.Mockito.mock(Page.class);
