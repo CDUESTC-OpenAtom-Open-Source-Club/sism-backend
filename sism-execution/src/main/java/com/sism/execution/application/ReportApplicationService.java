@@ -237,10 +237,48 @@ public class ReportApplicationService {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report not found with id: " + reportId));
 
+        // 2026-10-24 用户定案：上报时每条指标的「自评等级」与「进度说明」都必须有值，
+        // 不能空报——前端一键提交已有同口径闸门，此处兜底拦住绕过前端的提交。
+        assertIndicatorDetailsCompleteForSubmit(reportId);
+
         report.submit(userId);
         report = planReportRepository.save(report);
         publishAndSaveEvents(report);
         return enrichReportMetadata(report);
+    }
+
+    /**
+     * 2026-10-24 用户定案：提交上报前校验全部指标明细完整——
+     * 每条明细的 selfRating（自评等级）与 description/comment（进度说明）不得为空。
+     * 报错带上具体缺口（缺等级 N 条 / 缺说明 M 条），填报人可对照补齐。
+     */
+    private void assertIndicatorDetailsCompleteForSubmit(Long reportId) {
+        List<PlanReportIndicatorSnapshot> details = planReportIndicatorRepository.findByReportId(reportId);
+        if (details.isEmpty()) {
+            throw new IllegalStateException("本期还没有任何指标填报内容，请先逐条完成填报后再提交");
+        }
+        long missingRating = details.stream()
+                .filter(detail -> detail.selfRating() == null || detail.selfRating().isBlank())
+                .count();
+        long missingDescription = details.stream()
+                .filter(detail -> {
+                    String description = detail.description() == null ? "" : detail.description().trim();
+                    String comment = detail.comment() == null ? "" : detail.comment().trim();
+                    return description.isEmpty() && comment.isEmpty();
+                })
+                .count();
+        if (missingRating > 0 || missingDescription > 0) {
+            java.util.List<String> gaps = new java.util.ArrayList<>();
+            if (missingRating > 0) {
+                gaps.add(missingRating + " 条指标未选择自评等级");
+            }
+            if (missingDescription > 0) {
+                gaps.add(missingDescription + " 条指标未填写进度说明");
+            }
+            throw new IllegalStateException(
+                    "上报被拦下：" + String.join("、", gaps)
+                            + "。请在指标填报页逐条补齐自评等级与进度说明后再提交");
+        }
     }
 
     @Transactional

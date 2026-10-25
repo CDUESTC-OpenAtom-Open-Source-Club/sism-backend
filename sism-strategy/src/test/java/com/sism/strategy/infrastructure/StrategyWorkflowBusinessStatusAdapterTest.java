@@ -38,11 +38,15 @@ class StrategyWorkflowBusinessStatusAdapterTest {
     @Mock
     private JdbcTemplate jdbcTemplate;
 
+    @Mock
+    private com.sism.shared.domain.notification.DataChangeBroadcaster dataChangeBroadcaster;
+
     private StrategyWorkflowBusinessStatusAdapter adapter;
 
     @BeforeEach
     void setUp() {
-        adapter = new StrategyWorkflowBusinessStatusAdapter(planApplicationService, jdbcTemplate);
+        adapter = new StrategyWorkflowBusinessStatusAdapter(
+                planApplicationService, jdbcTemplate, dataChangeBroadcaster);
     }
 
     @Test
@@ -50,6 +54,8 @@ class StrategyWorkflowBusinessStatusAdapterTest {
     void createApproved_shouldPromoteIndicatorToDistributed() {
         stubMutationType("CREATE");
         stubPlanStatus("DISTRIBUTED");
+        // 无批次快照（历史 CREATE 场景）→ 值落库跳过，仅转正
+        stubBatchSnapshot("INDICATOR", null);
 
         adapter.syncBusinessStatus("INDICATOR", INDICATOR_ID, "APPROVED", 188L, null, null);
 
@@ -108,6 +114,8 @@ class StrategyWorkflowBusinessStatusAdapterTest {
     void modifyApproved_onDistributedPlan_shouldPromoteStatus() {
         stubMutationType("MODIFY");
         stubPlanStatus("DISTRIBUTED");
+        // 无批次快照（历史 MODIFY 场景）→ 值落库跳过，仅转正
+        stubBatchSnapshot("INDICATOR", null);
 
         adapter.syncBusinessStatus("INDICATOR", INDICATOR_ID, "APPROVED", 188L, null, null);
 
@@ -141,6 +149,47 @@ class StrategyWorkflowBusinessStatusAdapterTest {
         adapter.syncBusinessStatus("INDICATOR", INDICATOR_ID, "IN_REVIEW", 188L, null, null);
 
         verify(jdbcTemplate, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    @DisplayName("修改指标审批通过：按快照 after 值落库（发起不落值，通过才更新）")
+    void modifyApproved_withBatchSnapshot_shouldApplyAfterValues() {
+        stubMutationType("MODIFY");
+        stubPlanStatus("DISTRIBUTED");
+        stubBatchSnapshot("INDICATOR",
+                "{\"indicator_desc\":{\"before\":\"旧描述\",\"after\":\"新描述\"},"
+                        + "\"weight_percent\":{\"before\":10,\"after\":20}}");
+
+        // 终审通过时同步方可能传 null 实例 ID（退回步已随重提转 APPROVED）——落库不能依赖它
+        adapter.syncBusinessStatus("INDICATOR", INDICATOR_ID, "APPROVED", 188L, null, null);
+
+        verify(jdbcTemplate).update(
+                contains("SET indicator_desc = COALESCE"),
+                eq("新描述"), eq(new java.math.BigDecimal("20")),
+                org.mockito.ArgumentMatchers.isNull(), eq(INDICATOR_ID));
+    }
+
+    @Test
+    @DisplayName("任务改名审批通过：快照里的新任务名此刻落库")
+    void taskApproved_shouldApplyRenamedName() {
+        stubBatchSnapshot("TASK",
+                "{\"name\":{\"before\":\"旧任务名\",\"after\":\"新任务名\"}}");
+
+        adapter.syncBusinessStatus("TASK", 3100L, "APPROVED", 9L, null, null);
+
+        verify(jdbcTemplate).update(
+                contains("UPDATE public.sys_task SET name ="), eq("新任务名"), eq(3100L));
+        verify(jdbcTemplate).update(
+                contains("UPDATE public.sys_task SET mutation_status = NULL"), eq(3100L));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubBatchSnapshot(String entityType, String changedFieldsJson) {
+        when(jdbcTemplate.query(
+                contains("JOIN public.audit_instance ai ON ai.batch_id = al.batch_id"),
+                any(ResultSetExtractor.class),
+                eq(entityType), any()))
+                .thenReturn(changedFieldsJson);
     }
 
     @SuppressWarnings("unchecked")

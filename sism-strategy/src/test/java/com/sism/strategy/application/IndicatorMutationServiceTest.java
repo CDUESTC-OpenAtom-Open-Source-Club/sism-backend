@@ -147,9 +147,11 @@ class IndicatorMutationServiceTest {
         // 任务改名必须留痕（「已更改 N 次」数据源），并带上本次异动批次号
         verify(taskMutationHistoryService)
                 .recordRename(eq(TASK_ID), eq("旧任务名"), eq("新任务名"), eq(OPERATOR_ID), any(String.class));
-        // 任务被打上异动标记
+        // 2026-10-23：发起只打异动标记，新任务名要等审批通过才落库
         verify(jdbcTemplate).update(
-                contains("UPDATE public.sys_task"), eq("新任务名"), eq("IN_MUTATION"), eq(TASK_ID));
+                contains("UPDATE public.sys_task"), eq("IN_MUTATION"), eq(TASK_ID));
+        verify(jdbcTemplate, never()).update(
+                contains("SET name ="), any(Object[].class));
 
         // 审批实例的实体类型必须是 TASK（前端据此取任务变更历史）
         ArgumentCaptor<StartWorkflowRequest> captor =
@@ -217,7 +219,7 @@ class IndicatorMutationServiceTest {
         ArgumentCaptor<java.util.Set<Long>> excludedCaptor =
                 ArgumentCaptor.forClass(java.util.Set.class);
         verify(basicTaskWeightValidationService).validatePlanBasicWeight(
-                eq(4040L), eq(TARGET_ORG_ID), excludedCaptor.capture());
+                eq(4040L), eq(TARGET_ORG_ID), excludedCaptor.capture(), any());
         assertTrue(excludedCaptor.getValue().contains(INDICATOR_ID));
 
         ArgumentCaptor<StartWorkflowRequest> captor =
@@ -263,7 +265,7 @@ class IndicatorMutationServiceTest {
         // 模拟「剔除待删指标后合计=60」的闭合校验失败
         doThrow(new IllegalStateException("基础性任务指标权重合计必须为100，当前为60"))
                 .when(basicTaskWeightValidationService)
-                .validatePlanBasicWeight(eq(4040L), eq(TARGET_ORG_ID), any());
+                .validatePlanBasicWeight(eq(4040L), eq(TARGET_ORG_ID), any(), any());
 
         IllegalStateException error = assertThrows(
                 IllegalStateException.class,
@@ -379,9 +381,68 @@ class IndicatorMutationServiceTest {
         ArgumentCaptor<java.util.Set<Long>> excludedCaptor =
                 ArgumentCaptor.forClass(java.util.Set.class);
         verify(basicTaskWeightValidationService).validatePlanBasicWeight(
-                eq(4040L), eq(TARGET_ORG_ID), excludedCaptor.capture());
+                eq(4040L), eq(TARGET_ORG_ID), excludedCaptor.capture(), any());
         assertTrue(excludedCaptor.getValue().contains(deleteId));
         assertFalse(excludedCaptor.getValue().contains(createId));
+    }
+
+    @Test
+    @DisplayName("唯一性锁定：同实体已有 IN_REVIEW 异动实例时，再次发起被拦下（驳回退回场景不产生第二条流程）")
+    void initiateBatch_shouldRejectWhenActiveMutationInstanceExists() {
+        stubReporter();
+        stubIndicatorRow("DISTRIBUTED", "DISTRIBUTED");
+        // 已有一条进行中的异动审批实例（如驳回退回填报人后仍存活的那条）
+        when(jdbcTemplate.queryForObject(
+                contains("SELECT COUNT(*)"), eq(Integer.class), eq("INDICATOR"), eq(INDICATOR_ID)))
+                .thenReturn(1);
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> service.initiateBatch(
+                        List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "再次修改")),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("同一对象同时只能有一条异动流程"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("发起只打标记不落业务值：修改型异动提交后表里仍是原值（与上报口径一致，审批通过才更新）")
+    void initiateBatch_shouldNotApplyBusinessValuesAtInitiation() {
+        stubReporter();
+        stubIndicatorRow("DISTRIBUTED", "DISTRIBUTED");
+        // 权重锚点（计划、目标部门）反查，让闭合校验真正执行
+        when(jdbcTemplate.query(
+                contains("SELECT t.plan_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(4040L);
+        when(jdbcTemplate.query(
+                contains("SELECT target_org_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(TARGET_ORG_ID);
+        stubWorkflowStart("951");
+
+        service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述", "weight_percent", 20)),
+                OPERATOR_ID);
+
+        // 只写异动标记，绝不原地写业务字段
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+        verify(jdbcTemplate, never()).update(
+                contains("SET indicator_desc"), any(Object[].class));
+        // 拟变更权重以 override 参与闭合校验（校验口径 = 本批生效后的快照）
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<Long, java.math.BigDecimal>> overrideCaptor =
+                ArgumentCaptor.forClass(java.util.Map.class);
+        verify(basicTaskWeightValidationService).validatePlanBasicWeight(
+                any(), any(), any(), overrideCaptor.capture());
+        assertEquals(
+                java.math.BigDecimal.valueOf(20),
+                overrideCaptor.getValue().get(INDICATOR_ID));
     }
 
     private void stubReporter() {

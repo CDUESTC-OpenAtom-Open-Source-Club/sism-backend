@@ -79,6 +79,8 @@ public class IndicatorController {
     private final JdbcTemplate jdbcTemplate;
     private final NamedParameterJdbcTemplate namedParameterJdbcTemplate;
     private final UserNotificationService userNotificationService;
+    /** 2026-10-24 跨窗口数据同步：草稿态指标直接增删改不走审批流、无审批通知可搭车，成功后广播。 */
+    private final com.sism.shared.domain.notification.DataChangeBroadcaster dataChangeBroadcaster;
 
     @GetMapping
     @Operation(summary = "分页获取所有指标")
@@ -259,6 +261,7 @@ public class IndicatorController {
                     request.getProgress(),
                     request.getCycleId()
             );
+            dataChangeBroadcaster.publishDataChanged("INDICATOR", created.getId());
             return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(created)));
         } catch (DistributedPlanMutationBlockedException ex) {
             return distributedPlanBlockedResponse(ex);
@@ -295,6 +298,7 @@ public class IndicatorController {
                     ownerOrg,
                     targetOrg
             );
+            dataChangeBroadcaster.publishDataChanged("INDICATOR", updated.getId());
             return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(updated)));
         } catch (DistributedPlanMutationBlockedException ex) {
             return distributedPlanBlockedResponse(ex);
@@ -307,6 +311,7 @@ public class IndicatorController {
     public ResponseEntity<ApiResponse<Void>> deleteIndicator(@PathVariable Long id) {
         try {
             strategyApplicationService.deleteIndicator(id);
+            dataChangeBroadcaster.publishDataChanged("INDICATOR", id);
             return ResponseEntity.ok(ApiResponse.success());
         } catch (DistributedPlanMutationBlockedException ex) {
             return distributedPlanBlockedVoidResponse(ex);
