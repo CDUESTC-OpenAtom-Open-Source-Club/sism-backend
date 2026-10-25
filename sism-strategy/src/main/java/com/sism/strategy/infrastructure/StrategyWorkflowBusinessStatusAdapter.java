@@ -1,9 +1,13 @@
 package com.sism.strategy.infrastructure;
 
+import com.sism.shared.domain.notification.DataChangeBroadcaster;
 import com.sism.shared.domain.workflow.WorkflowBusinessStatusPort;
 import com.sism.strategy.application.PlanApplicationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+import java.util.Map;
 
 @Component
 @RequiredArgsConstructor
@@ -13,6 +17,8 @@ public class StrategyWorkflowBusinessStatusAdapter implements WorkflowBusinessSt
 
     private final PlanApplicationService planApplicationService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+    /** 2026-10-24 跨窗口数据同步：指标/任务随审批链发生任何变化即广播，其他窗口局部刷新。 */
+    private final DataChangeBroadcaster dataChangeBroadcaster;
 
     @Override
     public void syncBusinessStatus(String entityType, Long entityId, String status, Long operatorId, String comment, Long workflowInstanceId) {
@@ -25,6 +31,9 @@ public class StrategyWorkflowBusinessStatusAdapter implements WorkflowBusinessSt
         // 原先 endMutationIfTerminal 只挂在 approveTask/reassignTask 旧链路上，
         // instances/{id}/approve|reject 实际链路经此同步点，此处为统一解锁位置。
         if ("INDICATOR".equalsIgnoreCase(entityType)) {
+            // 2026-10-24：异动发起（IN_REVIEW 起始同步）到终态（落值/归档/解锁）
+            // 都会改变其他窗口看到的数据，统一广播（fail-safe，在事务提交前的内存操作）
+            dataChangeBroadcaster.publishDataChanged("INDICATOR", entityId);
             if (!"IN_REVIEW".equalsIgnoreCase(status)) {
                 // 2026-10-22：终态收尾统一为三条规则（用户定案：按整个 Plan 的状态记录）——
                 // ① 审批通过（除删除外）：解锁，并把指标状态对齐到所属计划；
@@ -47,6 +56,9 @@ public class StrategyWorkflowBusinessStatusAdapter implements WorkflowBusinessSt
                             """,
                             entityId);
                 } else if (terminalApproved) {
+                    // 2026-10-23 用户定案（状态更新与上报流程对齐）：异动发起不再原地落库，
+                    // 审批通过此刻才把快照 after 值写入业务表；新增条目 after 与表值一致为幂等。
+                    applyApprovedMutationValues("INDICATOR", entityId);
                     releaseMutationAndSyncPlanStatus(entityId);
                 } else if (!returnedToSubmitter && "CREATE".equals(mutationType)) {
                     jdbcTemplate.update(
@@ -66,9 +78,14 @@ public class StrategyWorkflowBusinessStatusAdapter implements WorkflowBusinessSt
             return;
         }
 
-        // 2026-10-21：战略任务改名异动同口径解锁
+        // 2026-10-21：战略任务改名异动同口径解锁。
+        // 2026-10-23：与指标一致——审批通过此刻才把快照里的新任务名落库。
         if ("TASK".equalsIgnoreCase(entityType)) {
+            dataChangeBroadcaster.publishDataChanged("TASK", entityId);
             if (!"IN_REVIEW".equalsIgnoreCase(status)) {
+                if ("APPROVED".equalsIgnoreCase(status)) {
+                    applyApprovedMutationValues("TASK", entityId);
+                }
                 jdbcTemplate.update(
                         "UPDATE public.sys_task SET mutation_status = NULL, mutation_started_at = NULL WHERE task_id = ?",
                         entityId);
@@ -105,6 +122,108 @@ public class StrategyWorkflowBusinessStatusAdapter implements WorkflowBusinessSt
                     entityId,
                     comment == null || comment.isBlank() ? "Rejected" : comment
             );
+        }
+    }
+
+    /**
+     * 2026-10-23：异动审批通过后按快照落业务值。
+     *
+     * 快照定位：audit_log.batch_id = 异动实例.batch_id 且该实例已 APPROVED（限
+     * PLAN_MUTATION_STRATEGY 链，避免其他 INDICATOR/TASK 流程的通过事件误触发落库），
+     * 取最新一条。不依赖调用方传实例 ID——终审通过时若实例已无「退回填报人」步骤，
+     * 同步方传的 workflowInstanceId 为 null，不能作为定位依据（线上实测踩坑：
+     * 重提复用实例后退回步已转 APPROVED，靠 ID 判空会整段跳过落库）。
+     * 仅应用 changed_fields 中出现的业务字段；__delete__ 占位与 (新增)/(删除) 标记不参与。
+     */
+    private void applyApprovedMutationValues(String entityType, Long entityId) {
+        String changedFieldsJson = jdbcTemplate.query(
+                """
+                SELECT al.changed_fields::text
+                FROM public.audit_log al
+                JOIN public.audit_instance ai ON ai.batch_id = al.batch_id
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                WHERE al.entity_type = ?
+                  AND al.entity_id = ?
+                  AND ai.status = 'APPROVED'
+                ORDER BY al.log_id DESC
+                LIMIT 1
+                """,
+                rs -> rs.next() ? rs.getString(1) : null,
+                entityType, entityId);
+        if (changedFieldsJson == null || changedFieldsJson.isBlank()) {
+            return;
+        }
+        Map<String, Object> changedFields = parseJsonMap(changedFieldsJson);
+        if (changedFields == null || changedFields.isEmpty()) {
+            return;
+        }
+
+        if ("TASK".equalsIgnoreCase(entityType)) {
+            String afterName = extractAfterValue(changedFields.get("name"));
+            if (afterName != null && !afterName.isBlank()) {
+                jdbcTemplate.update(
+                        "UPDATE public.sys_task SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                        afterName, entityId);
+            }
+            return;
+        }
+
+        if (!"INDICATOR".equalsIgnoreCase(entityType)) {
+            return;
+        }
+        String afterDesc = extractAfterValue(changedFields.get("indicator_desc"));
+        BigDecimal afterWeight = extractAfterDecimal(changedFields.get("weight_percent"));
+        String afterRemark = extractAfterValue(changedFields.get("remark"));
+        if (afterDesc == null && afterWeight == null && afterRemark == null) {
+            return;
+        }
+        jdbcTemplate.update(
+                """
+                UPDATE public.indicator
+                SET indicator_desc = COALESCE(?, indicator_desc),
+                    weight_percent = COALESCE(?, weight_percent),
+                    remark = COALESCE(?, remark),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                afterDesc, afterWeight, afterRemark, entityId);
+    }
+
+    /** changed_fields 形如 {"field": {"before": x, "after": y}}，取 after 值的字符串形态。 */
+    private String extractAfterValue(Object delta) {
+        if (!(delta instanceof Map<?, ?> map)) {
+            return null;
+        }
+        Object after = map.get("after");
+        if (after == null) {
+            return null;
+        }
+        String text = String.valueOf(after).trim();
+        // 新增/删除类占位快照不落业务值（新增行创建时已带终值，删除由归档分支处理）
+        if ("(新增)".equals(text) || "(删除)".equals(text)) {
+            return null;
+        }
+        return text;
+    }
+
+    private BigDecimal extractAfterDecimal(Object delta) {
+        String after = extractAfterValue(delta);
+        if (after == null || after.isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(after);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private Map<String, Object> parseJsonMap(String raw) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(raw, Map.class);
+        } catch (Exception ex) {
+            return null;
         }
     }
 

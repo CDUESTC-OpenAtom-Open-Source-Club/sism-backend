@@ -106,12 +106,14 @@ public class IndicatorMutationService {
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
                 WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                FOR UPDATE OF i
                 """,
                 indicatorId);
         assertPlanDistributedForIndicator(current, "新增");
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
+        assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
         before.put("indicator_desc", "(新增)");
@@ -176,6 +178,8 @@ public class IndicatorMutationService {
         List<MutationTarget> applied = new ArrayList<>();
         // 权重闭合校验只认指标条目：任务改名不改变权重
         List<Long> touchedIndicatorIds = new ArrayList<>();
+        // 2026-10-23：发起不再原地落库后，修改条目的拟变更权重以 override 参与闭合校验
+        Map<Long, java.math.BigDecimal> proposedWeights = new LinkedHashMap<>();
         for (Map<String, Object> item : items) {
             Long entityId = toLongId(item.get("id"));
             if (entityId == null || entityId <= 0) {
@@ -211,6 +215,7 @@ public class IndicatorMutationService {
                 throw new IllegalArgumentException(
                         "异动内容为空：指标 " + entityId + " 未提供有效变更字段");
             }
+            proposedWeights.putAll(collectProposedWeights(entityId, changes));
             applyAndMarkInMutation(entityId, changes, operatorUserId, batchId);
             applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, entityId, "MODIFY"));
         }
@@ -225,7 +230,7 @@ public class IndicatorMutationService {
         List<Long> weightAnchorIds = touchedIndicatorIds.stream()
                 .filter(id -> !pendingDeleteIds.contains(id))
                 .toList();
-        assertPlanBasicWeightStillClosed(weightAnchorIds, pendingDeleteIds);
+        assertPlanBasicWeightStillClosed(weightAnchorIds, pendingDeleteIds, proposedWeights);
         // 全部通过后逐条启动审批链
         for (MutationTarget target : applied) {
             instanceIds.add(startMutationWorkflow(
@@ -273,9 +278,39 @@ public class IndicatorMutationService {
     }
 
     /**
+     * 2026-10-23 用户定案（并发缺陷修复）：同一实体同时只允许一条进行中的异动审批。
+     * 仅靠 mutation_status 标记拦不住所有路径——驳回退回填报人/中间审批环节时，
+     * 审批实例仍处于 IN_REVIEW 活动态，而解锁逻辑此时已清掉 mutation_status，
+     * 再次发起就会给同一对象挂上第二条未完成流程（重复创建审批实例、产生脏卡片）。
+     * 因此发起前必须再查审批实例表兜底，发现 IN_REVIEW 活动实例一律拦下。
+     */
+    private void assertNoActiveMutationFlow(String entityType, Long entityId, String label) {
+        Integer activeCount = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                WHERE ai.entity_type = ?
+                  AND ai.entity_id = ?
+                  AND ai.status = 'IN_REVIEW'
+                """,
+                Integer.class, entityType, entityId);
+        if (activeCount != null && activeCount > 0) {
+            throw new IllegalStateException("该" + label
+                    + "已有异动审批进行中（同一对象同时只能有一条异动流程），"
+                    + "请先在审批中心处理完当前流程后再重新发起");
+        }
+    }
+
+    /**
      * 2026-10-21 用户定案：战略任务改名与指标字段同构——已下发计划上的任务名
      * 双击改动同样走异动审批。校验口径与指标一致：任务必须存在、所属计划已下发、
      * 且当前没有进行中的任务异动。
+     *
+     * 2026-10-23 用户定案（状态更新与上报流程对齐）：发起异动只写快照 + 打异动标记，
+     * 任务名等审批通过后才落库；驳回/撤回时表里仍是原值，不产生脏数据。
+     * SELECT 带 FOR UPDATE 行锁，并发双击/双人同时发起时串行化，后到者被唯一性守卫拦下。
      */
     private void applyAndMarkTaskInMutation(Long taskId, String newName, Long operatorUserId,
                                            String batchId) {
@@ -289,6 +324,7 @@ public class IndicatorMutationService {
                 FROM public.sys_task t
                 JOIN public.plan p ON p.id = t.plan_id
                 WHERE t.task_id = ? AND COALESCE(t.is_deleted, false) = false
+                FOR UPDATE OF t
                 """,
                 taskId);
         String planStatus = String.valueOf(current.get("plan_status"));
@@ -298,6 +334,7 @@ public class IndicatorMutationService {
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该任务已有异动在审批中");
         }
+        assertNoActiveMutationFlow(TASK_ENTITY_TYPE, taskId, "战略任务");
         String previousName = current.get("name") == null ? null : String.valueOf(current.get("name"));
         if (trimmed.equals(previousName == null ? "" : previousName.trim())) {
             throw new IllegalArgumentException("新任务名称与当前值相同，无需异动");
@@ -308,11 +345,11 @@ public class IndicatorMutationService {
         jdbcTemplate.update(
                 """
                 UPDATE public.sys_task
-                SET name = ?, mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP,
+                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE task_id = ?
                 """,
-                trimmed, MUTATION_STATUS_IN_MUTATION, taskId);
+                MUTATION_STATUS_IN_MUTATION, taskId);
     }
 
     /** 新增指标进入异动：写「(新增)」快照 + 打异动标记（不含权重校验与审批启动）。 */
@@ -325,12 +362,14 @@ public class IndicatorMutationService {
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
                 WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                FOR UPDATE OF i
                 """,
                 indicatorId);
         assertPlanDistributedForIndicator(current, "新增");
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
+        assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
         before.put("indicator_desc", "(新增)");
@@ -372,12 +411,14 @@ public class IndicatorMutationService {
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
                 WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                FOR UPDATE OF i
                 """,
                 indicatorId);
         assertPlanDistributedForIndicator(current, "删除");
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
+        assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
         before.put("indicator_desc", current.get("indicator_desc"));
@@ -402,7 +443,13 @@ public class IndicatorMutationService {
                 MUTATION_STATUS_IN_MUTATION, indicatorId);
     }
 
-    /** 修改指标进入异动：写 before/after 快照 + 原地应用变更 + 打异动标记（不含权重校验与审批启动）。 */
+    /** 修改指标进入异动：写 before/after 快照 + 打异动标记（不含权重校验与审批启动）。
+     *
+     * 2026-10-23 用户定案（状态更新与上报流程对齐）：发起异动只落快照与异动标记，
+     * 变更值审批通过后才写入业务表——驳回/撤回时表里仍是原值，不再产生脏数据；
+     * 审批详情展示的 before→after 一律以快照为准。SELECT 加 FOR UPDATE 行锁，
+     * 并发重复发起时串行化，由唯一性守卫拦下后到请求。
+     */
     private void applyAndMarkInMutation(Long indicatorId, Map<String, Object> changes,
                                         Long operatorUserId, String batchId) {
         Map<String, Object> current = jdbcTemplate.queryForMap(
@@ -413,12 +460,14 @@ public class IndicatorMutationService {
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
                 WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                FOR UPDATE OF i
                 """,
                 indicatorId);
         assertPlanDistributedForIndicator(current, "修改");
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
+        assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
         before.put("indicator_desc", current.get("indicator_desc"));
@@ -447,20 +496,16 @@ public class IndicatorMutationService {
 
         insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, batchId);
 
+        // 2026-10-23 用户定案：只打异动标记，不落业务值——审批通过时由
+        // StrategyWorkflowBusinessStatusAdapter 按快照 after 值落库。
         jdbcTemplate.update(
                 """
                 UPDATE public.indicator
-                SET indicator_desc = COALESCE(?, indicator_desc),
-                    weight_percent = COALESCE(?, weight_percent),
-                    remark = COALESCE(?, remark),
-                    mutation_status = ?,
+                SET mutation_status = ?,
                     mutation_started_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                after.get("indicator_desc"),
-                toBigDecimal(after.get("weight_percent")),
-                after.get("remark"),
                 MUTATION_STATUS_IN_MUTATION,
                 indicatorId
         );
@@ -531,7 +576,14 @@ public class IndicatorMutationService {
      * 现在删除批次也按「剔除待删后的合计=100」校验，不满足则要求同批次补齐。
      */
     private void assertPlanBasicWeightStillClosed(List<Long> indicatorIds, Set<Long> pendingDeleteIds) {
+        assertPlanBasicWeightStillClosed(indicatorIds, pendingDeleteIds, Map.of());
+    }
+
+    private void assertPlanBasicWeightStillClosed(List<Long> indicatorIds, Set<Long> pendingDeleteIds,
+                                                  Map<Long, java.math.BigDecimal> weightOverrides) {
         Set<Long> excluded = pendingDeleteIds == null ? Set.of() : pendingDeleteIds;
+        Map<Long, java.math.BigDecimal> overrides =
+                weightOverrides == null ? Map.of() : weightOverrides;
         Set<Long> pairSourceIds = new LinkedHashSet<>();
         if (indicatorIds != null) {
             pairSourceIds.addAll(indicatorIds);
@@ -561,7 +613,8 @@ public class IndicatorMutationService {
             String pairKey = planId + ":" + targetOrgId;
             if (validatedPairs.add(pairKey)) {
                 try {
-                    basicTaskWeightValidationService.validatePlanBasicWeight(planId, targetOrgId, excluded);
+                    basicTaskWeightValidationService.validatePlanBasicWeight(
+                            planId, targetOrgId, excluded, overrides);
                 } catch (IllegalStateException ex) {
                     if (excluded.isEmpty()) {
                         throw ex;
@@ -574,6 +627,25 @@ public class IndicatorMutationService {
                 }
             }
         }
+    }
+
+    /**
+     * 2026-10-23：发起异动不再原地落库，修改条目的拟变更权重需以 override 形式
+     * 参与闭合校验（校验口径 = 本批变更生效后的快照）。仅取 weight_percent 变更。
+     */
+    private Map<Long, java.math.BigDecimal> collectProposedWeights(Long indicatorId,
+                                                                   Map<String, Object> changes) {
+        if (changes == null || !changes.containsKey("weight_percent")
+                || changes.get("weight_percent") == null) {
+            return Map.of();
+        }
+        java.math.BigDecimal proposed = toBigDecimal(changes.get("weight_percent"));
+        if (proposed == null) {
+            return Map.of();
+        }
+        Map<Long, java.math.BigDecimal> overrides = new LinkedHashMap<>();
+        overrides.put(indicatorId, proposed);
+        return overrides;
     }
 
     /** 发起异动：写快照 + 打异动标记 + 启动异动审批链。返回工作流实例 ID。 */
@@ -596,12 +668,14 @@ public class IndicatorMutationService {
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
                 WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                FOR UPDATE OF i
                 """,
                 indicatorId);
         assertPlanDistributedForIndicator(current, null);
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
+        assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         // 快照：before = 当前值，after = 应用变更后的值，changed_fields = 变更字段名
         Map<String, Object> before = new LinkedHashMap<>();
@@ -633,28 +707,23 @@ public class IndicatorMutationService {
 
         insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, null);
 
-        // 原地应用变更（ID 不变）
+        // 2026-10-23 用户定案：发起只打标记，变更值审批通过后按快照落库（与上报口径一致）
         jdbcTemplate.update(
                 """
                 UPDATE public.indicator
-                SET indicator_desc = COALESCE(?, indicator_desc),
-                    weight_percent = COALESCE(?, weight_percent),
-                    remark = COALESCE(?, remark),
-                    mutation_status = ?,
+                SET mutation_status = ?,
                     mutation_started_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                after.get("indicator_desc"),
-                toBigDecimal(after.get("weight_percent")),
-                after.get("remark"),
                 MUTATION_STATUS_IN_MUTATION,
                 indicatorId
         );
 
         // 2026-10-20 用户定案：异动与下发共用同一闭合口径——
-        // 基础性指标权重合计必须为 100，异动后不达标则不允许发起（抛异常回滚本次变更）。
-        assertPlanBasicWeightStillClosed(List.of(indicatorId), Set.of());
+        // 基础性指标权重合计必须为 100；校验按「本批变更生效后的快照」计算，
+        // 修改条目的拟变更权重以 override 形式参与合计（发起不再原地落库）。
+        assertPlanBasicWeightStillClosed(List.of(indicatorId), Set.of(), collectProposedWeights(indicatorId, changes));
 
         // 启动异动审批链（填报人修改 → 战略部负责人 → 分管校领导终审）
         StartWorkflowRequest request = new StartWorkflowRequest();
