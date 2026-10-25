@@ -79,6 +79,7 @@ class ReportApplicationServiceTest {
                 eventPublisher,
                 workflowApprovalMetadataQuery,
                 workflowAuditSyncGateway,
+                null,
                 ports
         );
     }

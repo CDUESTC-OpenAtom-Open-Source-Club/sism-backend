@@ -59,6 +59,7 @@ public class ReportApplicationService {
     private final DomainEventPublisher eventPublisher;
     private final WorkflowApprovalMetadataQuery workflowApprovalMetadataQuery;
     private final WorkflowAuditSyncGateway workflowAuditSyncGateway;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
     private final java.util.List<com.sism.shared.domain.workflow.WorkflowBusinessContextPort> workflowBusinessContextPorts;
 
     /**
@@ -241,6 +242,10 @@ public class ReportApplicationService {
         // 不能空报——前端一键提交已有同口径闸门，此处兜底拦住绕过前端的提交。
         assertIndicatorDetailsCompleteForSubmit(reportId);
 
+        // 2026-10-24 用户定案（上报/异动互斥）：异动审批在途时锁定上报提交——
+        // 异动改动的内容正在被审批固化，两者对同一部门二选一。
+        assertMutationApprovalNotInFlight(report.getReportOrgId());
+
         report.submit(userId);
         report = planReportRepository.save(report);
         publishAndSaveEvents(report);
@@ -252,6 +257,41 @@ public class ReportApplicationService {
      * 每条明细的 selfRating（自评等级）与 description/comment（进度说明）不得为空。
      * 报错带上具体缺口（缺等级 N 条 / 缺说明 M 条），填报人可对照补齐。
      */
+    /**
+     * 2026-10-24 用户定案（上报/异动互斥）：该报告部门存在进行中的异动审批（INDICATOR/TASK，
+     * PLAN_MUTATION_STRATEGY 链）时拒绝提交上报。异动锁在该部门的指标上，按部门维度判定：
+     * 异动实例的 approver_org 或指标 target_org 命中报告部门即在途。
+     */
+    private void assertMutationApprovalNotInFlight(Long reportOrgId) {
+        if (reportOrgId == null) {
+            return;
+        }
+        Integer inFlight = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                WHERE ai.status = 'IN_REVIEW'
+                  AND (
+                        EXISTS (SELECT 1 FROM public.audit_step_instance si
+                                WHERE si.instance_id = ai.id AND si.status = 'PENDING'
+                                  AND si.approver_org_id = ?)
+                     OR EXISTS (SELECT 1 FROM public.indicator i
+                                WHERE i.id = ai.entity_id AND ai.entity_type = 'INDICATOR'
+                                  AND i.target_org_id = ?)
+                     OR EXISTS (SELECT 1 FROM public.sys_task t
+                                WHERE t.task_id = ai.entity_id AND ai.entity_type = 'TASK'
+                                  AND t.org_id = ?)
+                  )
+                """,
+                Integer.class, reportOrgId, reportOrgId, reportOrgId);
+        if (inFlight != null && inFlight > 0) {
+            throw new IllegalStateException(
+                    "当前部门存在进行中的异动审批，暂不能提交上报；请等异动审批结束或撤回后再操作");
+        }
+    }
+
     private void assertIndicatorDetailsCompleteForSubmit(Long reportId) {
         List<PlanReportIndicatorSnapshot> details = planReportIndicatorRepository.findByReportId(reportId);
         if (details.isEmpty()) {
