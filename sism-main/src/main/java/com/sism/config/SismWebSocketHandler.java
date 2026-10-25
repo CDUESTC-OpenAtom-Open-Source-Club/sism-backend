@@ -73,6 +73,38 @@ public class SismWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    /**
+     * 2026-10-24 跨窗口数据同步：广播型推送（DATA_CHANGED）。
+     * 数据变更事件不带敏感内容（仅实体类型+ID），发给所有在线客户端；
+     * 各客户端自行判断该实体是否在自己当前视图内，命中才做局部刷新。
+     */
+    public int sendToAll(NotificationMessagePayload message) {
+        String payload = toJson(message);
+        TextMessage textMessage = new TextMessage(payload);
+        int delivered = 0;
+
+        for (Set<WebSocketSession> sessions : sessionsByUserId.values()) {
+            for (WebSocketSession session : sessions) {
+                try {
+                    if (session.isOpen()) {
+                        synchronized (session) {
+                            session.sendMessage(textMessage);
+                        }
+                        delivered++;
+                    } else {
+                        unregisterSession(session);
+                    }
+                } catch (IOException e) {
+                    log.error("Error broadcasting WebSocket message to session {}: {}",
+                            session.getId(), e.getMessage());
+                    unregisterSession(session);
+                }
+            }
+        }
+
+        return delivered;
+    }
+
     public boolean sendToUser(String userId, NotificationMessagePayload message) {
         Set<WebSocketSession> sessions = sessionsByUserId.get(userId);
         if (sessions == null || sessions.isEmpty()) {

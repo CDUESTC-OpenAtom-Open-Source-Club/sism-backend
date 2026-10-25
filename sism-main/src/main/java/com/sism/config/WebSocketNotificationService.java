@@ -33,4 +33,28 @@ public class WebSocketNotificationService {
                 Instant.now().toString()
         ));
     }
+
+    /**
+     * 2026-10-24 跨窗口数据同步：广播数据变更事件（type=DATA_CHANGED）。
+     * 仅携带实体类型与 ID，前端据此做定向局部刷新；fail-safe，绝不抛出。
+     */
+    public boolean broadcastDataChanged(String entityType, Long entityId) {
+        if (entityType == null || entityType.isBlank() || entityId == null) {
+            return false;
+        }
+        try {
+            return webSocketHandler.sendToAll(new SismWebSocketHandler.NotificationMessagePayload(
+                    "DATA_CHANGED",
+                    "",
+                    "",
+                    entityType,
+                    entityId,
+                    null,
+                    null,
+                    Instant.now().toString()
+            )) > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
 }

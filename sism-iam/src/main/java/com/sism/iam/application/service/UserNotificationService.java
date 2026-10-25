@@ -48,6 +48,8 @@ public class UserNotificationService implements NotificationProvider {
     private final UserRepository userRepository;
     private final ApplicationEventPublisher applicationEventPublisher;
     private final RealtimeNotificationProvider realtimeNotificationProvider;
+    /** 2026-10-24（铃铛跳转修复）：待办通知补 source/targetOrgName，供前端定位工作台与学院 */
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
     /**
      * 2026-09-27 细粒度异步刷新：持久化通知落库后，通过 WS 实时通道推送给在线收件人。
@@ -808,7 +810,7 @@ public class UserNotificationService implements NotificationProvider {
         }
     }
 
-    private static String buildApprovalSubmissionMetadataJson(
+    private String buildApprovalSubmissionMetadataJson(
             Long approvalInstanceId,
             String entityType,
             Long entityId,
@@ -824,10 +826,55 @@ public class UserNotificationService implements NotificationProvider {
         metadata.put("stepName", stepName);
         metadata.put("submitterName", submitterName);
         metadata.put("result", "SUBMITTED");
+        // 2026-10-24（铃铛跳转修复）：组织名随待办通知下发，前端点铃铛后据此
+        // 落到正确工作台（/distribution）并自动选中提交方学院。
+        enrichOrgNames(metadata, approvalInstanceId, entityType, entityId);
         try {
             return OBJECT_MAPPER.writeValueAsString(metadata);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize approval submission metadata", e);
+        }
+    }
+
+    /**
+     * 尽力而为的组织名补全：按审批实例回查 requester 组织；上报类再补审批方/提交方。
+     * 口径与 my-tasks 相同（下发方向）：source=计划创建方（职能部门），target=学院。
+     * 查询失败只降级为少写两个键，不影响通知主流程。
+     */
+    private void enrichOrgNames(Map<String, Object> metadata, Long approvalInstanceId,
+                                String entityType, Long entityId) {
+        try {
+            if (approvalInstanceId == null) {
+                return;
+            }
+            java.util.List<String> requesterRows = jdbcTemplate.queryForList(
+                    "SELECT o.name FROM public.audit_instance ai JOIN public.sys_org o ON o.id = ai.requester_org_id WHERE ai.id = ?",
+                    String.class,
+                    approvalInstanceId);
+            String requesterOrgName = requesterRows.isEmpty() ? null : requesterRows.get(0);
+            if (requesterOrgName != null && !requesterOrgName.isBlank()) {
+                metadata.put("sourceOrgName", requesterOrgName);
+            }
+            if ("PLAN_REPORT".equalsIgnoreCase(entityType) && entityId != null) {
+                java.util.List<String> creatorRows = jdbcTemplate.queryForList(
+                        "SELECT o.name FROM public.plan_report pr JOIN public.plan p ON p.id = pr.plan_id JOIN public.sys_org o ON o.id = p.created_by_org_id WHERE pr.id = ?",
+                        String.class,
+                        entityId);
+                String planCreatorOrgName = creatorRows.isEmpty() ? null : creatorRows.get(0);
+                if (planCreatorOrgName != null && !planCreatorOrgName.isBlank()) {
+                    metadata.put("targetOrgName", planCreatorOrgName);
+                }
+                java.util.List<String> reportRows = jdbcTemplate.queryForList(
+                        "SELECT o.name FROM public.plan_report pr JOIN public.sys_org o ON o.id = pr.report_org_id WHERE pr.id = ?",
+                        String.class,
+                        entityId);
+                String reportOrgName = reportRows.isEmpty() ? null : reportRows.get(0);
+                if (reportOrgName != null && !reportOrgName.isBlank()) {
+                    metadata.put("reportOrgName", reportOrgName);
+                }
+            }
+        } catch (Exception ex) {
+            // 通知主流程不因元数据增强失败而中断
         }
     }
 
