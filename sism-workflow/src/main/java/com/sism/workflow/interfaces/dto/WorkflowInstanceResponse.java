@@ -37,6 +37,8 @@ public class WorkflowInstanceResponse {
     private String currentTaskId;
     private String currentStepName;
     private Long currentApproverId;
+    /** 2026-10-26 修复：当前审批人所属组织——前端按它判断卡片与当前部门是否相关 */
+    private Long approverOrgId;
     private String currentApproverName;
     private Boolean canWithdraw;
 }

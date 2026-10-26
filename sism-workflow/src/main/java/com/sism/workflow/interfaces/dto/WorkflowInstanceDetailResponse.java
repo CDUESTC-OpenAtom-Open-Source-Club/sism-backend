@@ -28,7 +28,7 @@ public class WorkflowInstanceDetailResponse extends WorkflowInstanceResponse {
             List<WorkflowTaskResponse> tasks, List<WorkflowHistoryResponse> history) {
         super(instanceId, definitionId, status, entityType, entityId, businessEntityId, flowCode, flowName,
                 starterId, starterName, planId, planName, sourceOrgId, sourceOrgName, targetOrgId,
-                targetOrgName, startTime, endTime, null, null, null, null, null);
+                targetOrgName, startTime, endTime, null, null, null, null, null, null);
         this.tasks = tasks;
         this.history = history;
     }

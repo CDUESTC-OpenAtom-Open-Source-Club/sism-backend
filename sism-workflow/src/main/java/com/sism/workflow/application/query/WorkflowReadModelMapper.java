@@ -63,6 +63,9 @@ public class WorkflowReadModelMapper {
                 .currentStepName(currentStep != null ? currentStep.getStepName() : null)
                 .currentApproverId(currentStep != null ? currentStep.getApproverId() : null)
                 .currentApproverName(null)
+                // 2026-10-26 修复：补 approverOrgId——前端按「当前审批人所属组织」判断
+                // 卡片与当前部门是否相关；缺该字段时学院审核人看不到本学院上报的待办卡
+                .approverOrgId(currentStep != null ? currentStep.getApproverOrgId() : null)
                 .canWithdraw(instance.canRequesterWithdraw())
                 .build();
     }
