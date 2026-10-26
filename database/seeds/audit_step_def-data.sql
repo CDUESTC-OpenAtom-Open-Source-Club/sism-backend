@@ -47,10 +47,10 @@ VALUES
     (10, 3, '战略发展部终审人审批', 'APPROVAL', 3, true, NOW(), NOW(), 4),
 
     (11, 4, '填报人提交', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
-    (12, 4, '二级学院审批人审批', 'APPROVAL', 2, false, NOW(), NOW(), 2),
-    (13, 4, '学院院长审批人审批', 'APPROVAL', 4, false, NOW(), NOW(), 3),
-    (14, 4, '职能部门审批人审批', 'APPROVAL', 2, false, NOW(), NOW(), 4),
-    (15, 4, '战略发展部终审人审批', 'APPROVAL', 3, true, NOW(), NOW(), 5),
+    (12, 4, '学院审核人审批', 'APPROVAL', 4, false, NOW(), NOW(), 2),
+    (13, 4, '分管职能部门负责人审批', 'APPROVAL', 2, false, NOW(), NOW(), 3),
+    (14, 4, '分管职能部门校领导审批', 'APPROVAL', 4, false, NOW(), NOW(), 4),
+    (15, 4, '战略发展部审核人审批', 'APPROVAL', 3, true, NOW(), NOW(), 5),
 
     (16, 5, '填报人修改', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
     (17, 5, '战略发展部负责人审批', 'APPROVAL', 3, false, NOW(), NOW(), 2),
