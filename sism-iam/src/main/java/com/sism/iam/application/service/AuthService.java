@@ -64,6 +64,7 @@ public class AuthService {
         loginAttemptService.recordSuccess(account, clientKey);
 
         List<String> roleCodes = userRepository.findRoleCodesByUserId(user.getId());
+        List<String> permissions = userRepository.findPermissionCodesByUserId(user.getId());
 
         String accessToken = jwtTokenService.generateToken(user, roleCodes);
         String refreshToken = jwtTokenService.generateRefreshToken(user, roleCodes);
@@ -74,6 +75,7 @@ public class AuthService {
                 roleCodes,
                 organization != null ? organization.getName() : null,
                 organization != null ? organization.getType().name() : null,
+                permissions,
                 accessToken,
                 refreshToken,
                 jwtTokenService.getExpirationSeconds()
@@ -98,6 +100,7 @@ public class AuthService {
                         "DINGTALK_UNBOUND", "尚未开通本系统账号，请联系系统管理员开通"));
 
         List<String> roleCodes = userRepository.findRoleCodesByUserId(user.getId());
+        List<String> permissions = userRepository.findPermissionCodesByUserId(user.getId());
         String accessToken = jwtTokenService.generateToken(user, roleCodes);
         String refreshToken = jwtTokenService.generateRefreshToken(user, roleCodes);
         var organization = organizationRepository.findById(user.getOrgId()).orElse(null);
@@ -107,6 +110,7 @@ public class AuthService {
                 roleCodes,
                 organization != null ? organization.getName() : null,
                 organization != null ? organization.getType().name() : null,
+                permissions,
                 accessToken,
                 refreshToken,
                 jwtTokenService.getExpirationSeconds()
@@ -170,6 +174,40 @@ public class AuthService {
             return List.of();
         }
         return userRepository.findPermissionCodesByUserId(userId);
+    }
+
+    /**
+     * 有效权限明细：每个权限码来自哪个角色、角色作用域是否对用户组织有效。
+     * 供 GET /auth/permissions/effective 核对使用。
+     */
+    @Transactional(readOnly = true)
+    public List<EffectivePermission> getEffectivePermissions(Long userId) {
+        if (userId == null || userId <= 0) {
+            return List.of();
+        }
+        List<Object[]> rows = userRepository.findEffectivePermissionRows(userId);
+        List<EffectivePermission> result = new java.util.ArrayList<>(rows.size());
+        for (Object[] row : rows) {
+            Object scopeOrgId = row[3];
+            result.add(new EffectivePermission(
+                    row[0] == null ? null : row[0].toString(),
+                    row[1] == null ? null : row[1].toString(),
+                    row[2] == null ? null : row[2].toString(),
+                    scopeOrgId == null ? null : ((Number) scopeOrgId).longValue(),
+                    Boolean.TRUE.equals(row[4])
+            ));
+        }
+        return result;
+    }
+
+    /** 有效权限明细行。 */
+    public record EffectivePermission(
+            String permCode,
+            String roleCode,
+            String dataAccessMode,
+            Long scopeOrgId,
+            Boolean scopeValid
+    ) {
     }
 
     private java.util.Optional<User> findUserByAccount(String account) {

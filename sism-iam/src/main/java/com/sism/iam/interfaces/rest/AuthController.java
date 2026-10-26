@@ -195,6 +195,21 @@ public class AuthController {
     }
 
     /**
+     * 有效权限明细：每个权限码的来源角色、作用域模式与作用域是否有效。
+     * 供「改造前 vs 改造后」核对使用（角色 + 部门）。
+     */
+    @GetMapping("/permissions/effective")
+    @Operation(summary = "获取当前用户有效权限明细（含角色与组织作用域）")
+    public ResponseEntity<ApiResponse<List<com.sism.iam.application.service.AuthService.EffectivePermission>>>
+    getEffectivePermissions(@AuthenticationPrincipal CurrentUser currentUser) {
+        if (currentUser == null) {
+            return ResponseEntity.status(401).body(ApiResponse.error(2000, "未登录"));
+        }
+        return ResponseEntity.ok(ApiResponse.success(
+                authService.getEffectivePermissions(currentUser.getId())));
+    }
+
+    /**
      * 验证Token
      */
     @GetMapping("/validate")
@@ -423,7 +438,8 @@ public class AuthController {
         return UserSummaryResponse.fromUser(
                 user,
                 organization != null ? organization.getName() : null,
-                organization != null ? organization.getType().name() : null
+                organization != null ? organization.getType().name() : null,
+                authService.getPermissionCodes(user.getId())
         );
     }
 
@@ -492,12 +508,19 @@ public class AuthController {
         private String orgType;
         private Boolean isActive;
         private List<String> roles;
+        /** 有效权限码（角色 + 组织作用域计算后下发） */
+        private List<String> permissions;
 
         public static UserSummaryResponse fromUser(User user) {
-            return fromUser(user, null, null);
+            return fromUser(user, null, null, List.of());
         }
 
         public static UserSummaryResponse fromUser(User user, String orgName, String orgType) {
+            return fromUser(user, orgName, orgType, List.of());
+        }
+
+        public static UserSummaryResponse fromUser(User user, String orgName, String orgType,
+                                                  List<String> permissions) {
             return new UserSummaryResponse(
                     user.getId(),
                     user.getUsername(),
@@ -510,7 +533,8 @@ public class AuthController {
                     user.getIsActive(),
                     user.getRoles() == null
                             ? List.of()
-                            : user.getRoles().stream().map(role -> role.getRoleCode()).collect(Collectors.toList())
+                            : user.getRoles().stream().map(role -> role.getRoleCode()).collect(Collectors.toList()),
+                    permissions == null ? List.of() : permissions
             );
         }
     }

@@ -6,6 +6,8 @@
 --   system admin is reserved for maintenance and automatic workflow actions.
 -- - Workflow seat names such as college dean or strategy final approver are resolved
 --   from workflow step + organization scope, not from extra role rows.
+-- - 2026-10-26 权限模型改造：data_access_mode 表达角色作用域
+--   ALL=全组织 / OWN_ORG=本组织 / FIXED_ORG=仅 scope_org_id 指定组织。
 
 BEGIN;
 
@@ -14,6 +16,7 @@ INSERT INTO public.sys_role (
     role_code,
     role_name,
     data_access_mode,
+    scope_org_id,
     is_enabled,
     remark,
     created_at,
@@ -25,6 +28,7 @@ VALUES
         'ROLE_REPORTER',
         '填报人',
         'OWN_ORG',
+        NULL,
         true,
         '计划/任务/指标内容的实际填报人。负责草稿编辑、填报提交、月报填报，不负责审批节点决策。',
         NOW(),
@@ -35,6 +39,7 @@ VALUES
         'ROLE_APPROVER',
         '审核人',
         'OWN_ORG',
+        NULL,
         true,
         '通用审核人审批角色。用于职能部门负责人、二级学院审核人，以及职能部门对下级单位提交内容的终审节点。具体审批对象由当前 org_id 与 step_name 共同决定。2026-10-25 用户定案：二级学院只设「填报人」与「审核人」两个席位，学院不设「分管校领导」。',
         NOW(),
@@ -44,9 +49,10 @@ VALUES
         3,
         'ROLE_STRATEGY_DEPT_HEAD',
         '战略发展部负责人',
-        'ALL',
+        'FIXED_ORG',
+        35,
         true,
-        '战略发展部审批角色。用于战略发展部负责人审批节点与战略发展部终审节点，固定落到战略发展部组织。',
+        '战略发展部审批角色。用于战略发展部负责人审批节点与战略发展部终审节点，固定落到战略发展部组织（scope_org_id=35）。',
         NOW(),
         NOW()
     ),
@@ -54,7 +60,8 @@ VALUES
         4,
         'ROLE_VICE_PRESIDENT',
         '分管校领导',
-        'ALL',
+        'OWN_ORG',
+        NULL,
         true,
         '高级审批角色。用于分管校领导审批节点与学院院长审批节点，具体身份由组织层级与当前流程节点共同决定。',
         NOW(),
@@ -65,6 +72,7 @@ VALUES
         'ROLE_SYSTEM_ADMIN',
         '系统管理员',
         'ALL',
+        NULL,
         true,
         '系统维护与自动审批专用角色，不作为人工业务审批席位参与候选人解析。',
         NOW(),
@@ -75,6 +83,7 @@ SET
     role_code = EXCLUDED.role_code,
     role_name = EXCLUDED.role_name,
     data_access_mode = EXCLUDED.data_access_mode,
+    scope_org_id = EXCLUDED.scope_org_id,
     is_enabled = EXCLUDED.is_enabled,
     remark = EXCLUDED.remark,
     updated_at = EXCLUDED.updated_at;
