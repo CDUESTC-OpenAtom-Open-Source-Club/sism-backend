@@ -132,6 +132,16 @@ public interface IndicatorRepository {
     Page<Indicator> findByYear(Integer year, Pageable pageable);
 
     /**
+     * 2026-10-26 数据隔离（R13）：按可见组织（目标组织或拥有组织 = 本部门）分页查询
+     */
+    Page<Indicator> findByYearAndVisibleOrg(Integer year, Long orgId, Pageable pageable);
+
+    /**
+     * 2026-10-26 数据隔离（R13）：按可见组织分页查询（不限年份）
+     */
+    Page<Indicator> findByVisibleOrg(Long orgId, Pageable pageable);
+
+    /**
      * 根据 ID 列表批量查询指标
      */
     List<Indicator> findByIds(List<Long> ids);

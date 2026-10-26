@@ -15,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -38,9 +39,13 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 
 class IndicatorControllerTest {
 
@@ -66,6 +71,45 @@ class IndicatorControllerTest {
         stubJdbcQueries();
     }
 
+    /** 2026-10-26 数据隔离（R13）：战略发展部账号保留全量视图 */
+    private com.sism.shared.application.dto.CurrentUser strategyUser() {
+        return new com.sism.shared.application.dto.CurrentUser(
+                1L, "zlb_admin", "战略部管理员", null, 35L, java.util.List.of());
+    }
+
+    /** 2026-10-26 数据隔离（R13）：部门账号按本部门过滤 */
+    private com.sism.shared.application.dto.CurrentUser deptUser(Long orgId) {
+        return new com.sism.shared.application.dto.CurrentUser(
+                2L, "dept_user", "部门账号", null, orgId, java.util.List.of());
+    }
+
+    @Test
+    @DisplayName("2026-10-26 数据隔离（R13）：部门账号的指标列表按本部门过滤，不返回全量")
+    void shouldScopeIndicatorListToCallerOrgForDepartmentUsers() {
+        Indicator indicator = createIndicator(2004L, 41003L);
+        when(strategyApplicationService.getIndicatorsByVisibleOrg(eq(2026), eq(59L), eq(false), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(indicator), PageRequest.of(0, 20), 1));
+
+        controller.listIndicators(0, 20, null, null, 2026, deptUser(59L));
+
+        verify(strategyApplicationService, never()).getIndicatorsByYear(anyInt(), any(Pageable.class));
+        verify(strategyApplicationService).getIndicatorsByVisibleOrg(eq(2026), eq(59L), eq(false), any(Pageable.class));
+    }
+
+    @Test
+    @DisplayName("2026-10-26 数据隔离（R13）：战略发展部账号保留全量视图")
+    void shouldKeepFullVisibilityForStrategyDeptUsers() {
+        Indicator indicator = createIndicator(2004L, 41003L);
+        when(strategyApplicationService.getIndicatorsByYear(2026, PageRequest.of(0, 20)))
+                .thenReturn(new PageImpl<>(List.of(indicator), PageRequest.of(0, 20), 1));
+
+        controller.listIndicators(0, 20, null, null, 2026, strategyUser());
+
+        verify(strategyApplicationService).getIndicatorsByYear(2026, PageRequest.of(0, 20));
+        verify(strategyApplicationService, never())
+                .getIndicatorsByVisibleOrg(any(), any(), anyBoolean(), any(Pageable.class));
+    }
+
     @Test
     @DisplayName("listIndicators should populate cycleId and year from task-plan-cycle chain")
     void shouldPopulateCycleIdAndYearWhenListingIndicators() {
@@ -74,7 +118,7 @@ class IndicatorControllerTest {
                 .thenReturn(new PageImpl<>(List.of(indicator), PageRequest.of(0, 1), 1));
 
         ResponseEntity<ApiResponse<PageResult<IndicatorController.IndicatorResponse>>> response =
-                controller.listIndicators(0, 1, null, null, 2026);
+                controller.listIndicators(0, 1, null, null, 2026, strategyUser());
 
         IndicatorController.IndicatorResponse item = response.getBody().getData().getItems().get(0);
         assertEquals(4L, item.getCycleId());
@@ -168,7 +212,7 @@ class IndicatorControllerTest {
         when(strategyApplicationService.getIndicatorsByYear(2026, PageRequest.of(0, 1)))
                 .thenReturn(new PageImpl<>(List.of(indicator), PageRequest.of(0, 1), 1));
 
-        controller.listIndicators(0, 1, null, null, 2026);
+        controller.listIndicators(0, 1, null, null, 2026, strategyUser());
 
         verify(namedParameterJdbcTemplate).queryForList(
                 contains("FROM public.sys_task"),

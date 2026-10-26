@@ -7,6 +7,7 @@ import com.sism.shared.domain.workflow.WorkflowBusinessContextPort;
 import com.sism.workflow.domain.definition.AuditFlowDef;
 import com.sism.workflow.domain.definition.AuditStepDef;
 import com.sism.workflow.domain.query.repository.WorkflowQueryRepository;
+import com.sism.workflow.domain.definition.FlowDefinitionRepository;
 import com.sism.workflow.domain.runtime.AuditInstance;
 import com.sism.workflow.domain.runtime.AuditStepInstance;
 import com.sism.workflow.domain.runtime.AuditInstanceRepository;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -52,7 +54,8 @@ class WorkflowReadModelServiceTest {
     private WorkflowBusinessContextPort workflowBusinessContextPort;
 
     private WorkflowReadModelService newService() {
-        WorkflowReadModelMapper mapper = new WorkflowReadModelMapper();
+        FlowDefinitionRepository flowDefinitionRepository = mock(FlowDefinitionRepository.class);
+        WorkflowReadModelMapper mapper = new WorkflowReadModelMapper(flowDefinitionRepository, java.util.List.of());
         return new WorkflowReadModelService(
                 workflowDefinitionQueryService,
                 auditInstanceRepository,

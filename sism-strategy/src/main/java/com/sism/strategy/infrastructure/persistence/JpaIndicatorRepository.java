@@ -161,6 +161,16 @@ public class JpaIndicatorRepository implements IndicatorRepository {
     }
 
     @Override
+    public Page<Indicator> findByYearAndVisibleOrg(Integer year, Long orgId, Pageable pageable) {
+        return jpaRepository.findByYearAndVisibleOrg(year, orgId, pageable);
+    }
+
+    @Override
+    public Page<Indicator> findByVisibleOrg(Long orgId, Pageable pageable) {
+        return jpaRepository.findByVisibleOrg(orgId, pageable);
+    }
+
+    @Override
     public List<Indicator> findByOwnerOrgIdAndTargetOrgId(Long ownerOrgId, Long targetOrgId) {
         return jpaRepository.findByOwnerOrgIdAndTargetOrgIdAndIsDeletedFalse(ownerOrgId, targetOrgId);
     }

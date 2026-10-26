@@ -60,6 +60,10 @@ import java.util.stream.Stream;
 @Tag(name = "指标管理", description = "指标管理相关接口")
 public class IndicatorController {
 
+    /** 2026-10-26 数据隔离（R13）：战略发展部保留全量指标视图 */
+    private static final Long STRATEGY_ORG_ID = 35L;
+
+
     private static final String INDICATOR_WRITE_ACCESS =
             "hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')";
     private static final String INDICATOR_DELETE_ACCESS =
@@ -89,11 +93,19 @@ public class IndicatorController {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long cycleId,
-            @RequestParam(required = false) Integer year) {
+            @RequestParam(required = false) Integer year,
+            @AuthenticationPrincipal CurrentUser currentUser) {
         Pageable pageable = PageRequest.of(page, size);
         Page<Indicator> indicatorPage;
 
-        if (year != null) {
+        // 2026-10-26 数据隔离（R13）：部门账号只能看到归属本部门的指标；
+        // 战略发展部保留全量视图。
+        Long callerOrgId = currentUser == null ? null : currentUser.getOrgId();
+        boolean fullAccess = callerOrgId == null || STRATEGY_ORG_ID.equals(callerOrgId);
+
+        if (!fullAccess) {
+            indicatorPage = strategyApplicationService.getIndicatorsByVisibleOrg(year, callerOrgId, false, pageable);
+        } else if (year != null) {
             // 按年份过滤：通过 cycle -> task -> indicator 关系链
             indicatorPage = strategyApplicationService.getIndicatorsByYear(year, pageable);
         } else if (status != null) {

@@ -113,7 +113,13 @@ public class WorkflowController {
             @AuthenticationPrincipal CurrentUser currentUser) {
         List<AuditInstance> instances = workflowApplicationService.getPendingAuditInstancesByUserId(currentUser.getId());
         List<WorkflowInstanceResponse> responses = instances.stream()
-                .map(workflowReadModelMapper::toInstanceResponse)
+                .map(instance -> {
+                    WorkflowInstanceResponse response = workflowReadModelMapper.toInstanceResponse(instance);
+                    // 2026-10-26 修复：补齐 flowCode 与组织上下文——
+                    // 前端审批中心按 flowCode 区分流程、按组织判断归属，缺字段会过滤掉上报待办
+                    workflowReadModelMapper.enrichInstanceOrgContext(response, instance);
+                    return response;
+                })
                 .toList();
         return ResponseEntity.ok(ApiResponse.success(responses));
     }

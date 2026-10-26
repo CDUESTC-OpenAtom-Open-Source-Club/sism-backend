@@ -23,6 +23,8 @@ public class ApproverResolver {
     private static final String PLAN_REPORT_ENTITY_TYPE = "PLAN_REPORT";
     private static final String COLLEGE_FINAL_APPROVAL_STEP_NAME = "职能部门终审";
     private static final String FUNCTIONAL_DEPT_STEP_NAME = "职能部门";
+    /** 2026-10-26 用户定案：学院链第 4 环「分管职能部门校领导审批」——席位归职能部门本级 */
+    private static final String FUNCTIONAL_VICE_PRESIDENT_STEP_NAME = "分管职能部门校领导";
     private static final String COLLEGE_APPROVAL_FLOW_CODE = "PLAN_APPROVAL_COLLEGE";
 
     private final UserProvider userProvider;
@@ -219,12 +221,38 @@ public class ApproverResolver {
     }
 
     private Long resolveScopeOrgId(AuditStepDef stepDef, Long requesterOrgId, AuditInstance instance) {
-        if (!isCollegeFinalApprovalStep(stepDef, instance)) {
+        if (!isCollegeFinalApprovalStep(stepDef, instance)
+                && !isCollegeFunctionalVicePresidentStep(stepDef, instance)) {
             return requesterOrgId;
         }
         return resolveBusinessSummary(instance.getEntityType(), instance.getEntityId())
                 .map(summary -> summary.sourceOrgId() != null ? summary.sourceOrgId() : requesterOrgId)
                 .orElse(requesterOrgId);
+    }
+
+    /**
+     * 2026-10-26 用户定案：学院上报链第 4 环「分管职能部门校领导审批」——
+     * 席位属于「分管该学院的职能部门」，而不是学院自己。
+     * 判定条件：学院审批流（PLAN_APPROVAL_COLLEGE）+ 步骤名含「分管职能部门校领导」+ role 4。
+     * 解析出的 scopeOrgId 会被 matchesRoleScope 的 vice-president 分支
+     * 再经 functional-vice-president-scope-by-org 归一，确保命中该职能部门的 leader 席位。
+     */
+    private boolean isCollegeFunctionalVicePresidentStep(AuditStepDef stepDef, AuditInstance instance) {
+        if (stepDef == null || instance == null) {
+            return false;
+        }
+        if (!PLAN_ENTITY_TYPE.equalsIgnoreCase(instance.getEntityType())
+                && !PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(instance.getEntityType())) {
+            return false;
+        }
+        if (!getVicePresidentRoleId().equals(stepDef.getRoleId())) {
+            return false;
+        }
+        if (!isCollegeApprovalFlow(instance)) {
+            return false;
+        }
+        String stepName = stepDef.getStepName();
+        return stepName != null && stepName.contains(FUNCTIONAL_VICE_PRESIDENT_STEP_NAME);
     }
 
     private java.util.Optional<WorkflowBusinessContextPort.BusinessSummary> resolveBusinessSummary(

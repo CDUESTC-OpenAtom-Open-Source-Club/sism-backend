@@ -97,6 +97,53 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
     Page<Indicator> findByYear(@Param("year") Integer year, Pageable pageable);
 
     /**
+     * 2026-10-26 数据隔离修复（审批链验证报告 R13）：按可见组织过滤指标——
+     * 部门账号只能看到「目标组织 = 本部门」或「拥有组织 = 本部门」的指标。
+     */
+    @Query(value = """
+            SELECT i.* FROM indicator i
+            INNER JOIN sys_task t ON i.task_id = t.task_id
+            INNER JOIN plan p ON t.plan_id = p.id
+            INNER JOIN cycle c ON p.cycle_id = c.id
+            WHERE c.year = :year
+              AND COALESCE(i.is_deleted, false) = false
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+            ORDER BY i.id DESC
+            """,
+           countQuery = """
+            SELECT COUNT(*) FROM indicator i
+            INNER JOIN sys_task t ON i.task_id = t.task_id
+            INNER JOIN plan p ON t.plan_id = p.id
+            INNER JOIN cycle c ON p.cycle_id = c.id
+            WHERE c.year = :year
+              AND COALESCE(i.is_deleted, false) = false
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+            """,
+           nativeQuery = true)
+    Page<Indicator> findByYearAndVisibleOrg(
+            @Param("year") Integer year,
+            @Param("orgId") Long orgId,
+            Pageable pageable);
+
+    @Query(value = """
+            SELECT i.* FROM indicator i
+            INNER JOIN sys_task t ON i.task_id = t.task_id
+            INNER JOIN plan p ON t.plan_id = p.id
+            WHERE COALESCE(i.is_deleted, false) = false
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+            ORDER BY i.id DESC
+            """,
+           countQuery = """
+            SELECT COUNT(*) FROM indicator i
+            INNER JOIN sys_task t ON i.task_id = t.task_id
+            INNER JOIN plan p ON t.plan_id = p.id
+            WHERE COALESCE(i.is_deleted, false) = false
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+            """,
+           nativeQuery = true)
+    Page<Indicator> findByVisibleOrg(@Param("orgId") Long orgId, Pageable pageable);
+
+    /**
      * 根据拥有组织ID和目标组织ID查询指标
      * 用于批量撤回操作
      */

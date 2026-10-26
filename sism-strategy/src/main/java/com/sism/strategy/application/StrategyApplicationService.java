@@ -338,6 +338,29 @@ public class StrategyApplicationService {
         return result;
     }
 
+    /**
+     * 2026-10-26 数据隔离（R13）：按可见组织查询指标。
+     * 部门账号（职能部门/二级学院）只能看到目标组织或拥有组织为本部门的指标；
+     * 战略发展部（org35）保留全量视图。
+     */
+    public Page<Indicator> getIndicatorsByVisibleOrg(Integer year, Long orgId, boolean fullAccess, Pageable pageable) {
+        Page<Indicator> result;
+        if (fullAccess) {
+            result = year != null
+                    ? indicatorRepository.findByYear(year, pageable)
+                    : indicatorRepository.findAll(pageable);
+        } else if (year != null) {
+            result = indicatorRepository.findByYearAndVisibleOrg(year, orgId, pageable);
+        } else {
+            result = indicatorRepository.findByVisibleOrg(orgId, pageable);
+        }
+        result.getContent().forEach(indicator -> {
+            Hibernate.initialize(indicator.getOwnerOrg());
+            Hibernate.initialize(indicator.getTargetOrg());
+        });
+        return result;
+    }
+
     public List<Indicator> searchIndicators(String keyword) {
         return indicatorRepository.findByKeyword(keyword);
     }

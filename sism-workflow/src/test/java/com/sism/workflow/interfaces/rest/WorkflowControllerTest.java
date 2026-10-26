@@ -2,6 +2,7 @@ package com.sism.workflow.interfaces.rest;
 
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.workflow.application.WorkflowApplicationService;
+import com.sism.workflow.domain.definition.FlowDefinitionRepository;
 import com.sism.workflow.domain.runtime.AuditInstance;
 import com.sism.workflow.interfaces.dto.CreateLegacyFlowRequest;
 import com.sism.workflow.interfaces.dto.CreateLegacyFlowStepRequest;
@@ -15,6 +16,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mock;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("WorkflowController tests")
@@ -29,7 +31,9 @@ class WorkflowControllerTest {
         WorkflowController controller = new WorkflowController(
                 workflowApplicationService,
                 new com.sism.workflow.interfaces.assembler.LegacyWorkflowAssembler(),
-                new com.sism.workflow.application.query.WorkflowReadModelMapper()
+                new com.sism.workflow.application.query.WorkflowReadModelMapper(
+                        mock(com.sism.workflow.domain.definition.FlowDefinitionRepository.class),
+                        java.util.List.of())
         );
 
         when(workflowApplicationService.getAuditFlowDefById(9L)).thenReturn(null);
@@ -46,7 +50,9 @@ class WorkflowControllerTest {
         WorkflowController controller = new WorkflowController(
                 workflowApplicationService,
                 new com.sism.workflow.interfaces.assembler.LegacyWorkflowAssembler(),
-                new com.sism.workflow.application.query.WorkflowReadModelMapper()
+                new com.sism.workflow.application.query.WorkflowReadModelMapper(
+                        mock(com.sism.workflow.domain.definition.FlowDefinitionRepository.class),
+                        java.util.List.of())
         );
         CreateLegacyFlowRequest request = new CreateLegacyFlowRequest();
         request.setFlowCode("FLOW-1");
@@ -75,7 +81,9 @@ class WorkflowControllerTest {
         WorkflowController controller = new WorkflowController(
                 workflowApplicationService,
                 new com.sism.workflow.interfaces.assembler.LegacyWorkflowAssembler(),
-                new com.sism.workflow.application.query.WorkflowReadModelMapper()
+                new com.sism.workflow.application.query.WorkflowReadModelMapper(
+                        mock(com.sism.workflow.domain.definition.FlowDefinitionRepository.class),
+                        java.util.List.of())
         );
         StartLegacyInstanceRequest request = new StartLegacyInstanceRequest();
         request.setFlowDefId(1L);
@@ -111,7 +119,9 @@ class WorkflowControllerTest {
         WorkflowController controller = new WorkflowController(
                 workflowApplicationService,
                 new com.sism.workflow.interfaces.assembler.LegacyWorkflowAssembler(),
-                new com.sism.workflow.application.query.WorkflowReadModelMapper()
+                new com.sism.workflow.application.query.WorkflowReadModelMapper(
+                        mock(com.sism.workflow.domain.definition.FlowDefinitionRepository.class),
+                        java.util.List.of())
         );
 
         var response = controller.cancelInstance(10L, null);
