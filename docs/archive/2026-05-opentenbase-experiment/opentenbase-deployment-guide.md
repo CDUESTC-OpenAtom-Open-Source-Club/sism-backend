@@ -1,3 +1,5 @@
+> **[已归档 2026-10-26]** OpenTenBase 为 2026-05 期间的实验性数据库方案，**当前标准生产路径是 compose 管理的 PostgreSQL 容器**（见 `docs/architecture/main-branch-release-and-deploy-runbook.md` §4.4）。本文仅作历史留档。
+
 # OpenTenBase Deployment Guide
 
 This guide defines the supported handoff path for moving SISM from a local

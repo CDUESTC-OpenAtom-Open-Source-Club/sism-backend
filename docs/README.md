@@ -18,25 +18,41 @@
 - 当前仍直接约束发布、部署、运维排查
 - 当前 README、脚本、工作流会直接引用
 
-当前保留文档：
+当前保留文档（2026-10-26 文档治理后）：
+
+**部署与运维**
 
 - `architecture/main-branch-release-and-deploy-runbook.md`
-  - 主线发布、离线手动部署、服务器验证、故障排查入口
-- `deployment-image-arch-note.md`
-  - 生产服务器镜像架构要求与 2026-05-27 Docker 替换复盘
+  - 主线发布、离线手动部署（三道安全门）、服务器验证、故障排查 —— **部署口径权威文档**
+- `architecture/deployment-image-arch-note.md`
+  - 镜像平台要求（linux/amd64 强制）与 2026-05-27 替换复盘（含时效标注）
+- `Ubuntu-24.04-生产换机部署手册.md`
+  - 生产换机操作手册
+- `scripts/deployment/README.md`
+  - 离线三步脚本（download / upload / install）逐支说明
+
+**数据库**
+
 - `flyway-migration-guide.md`
-  - 当前 Flyway 迁移执行规范
-- `workflow-test-guide.md`
-  - 当前审批联调与 smoke 测试入口
-- `PLAN_DISPATCH_STRATEGY-前端测试清单.md`
-- `PLAN_DISPATCH_FUNCDEPT-前端测试清单.md`
-- `PLAN_APPROVAL_FUNCDEPT-前端测试清单.md`
-- `PLAN_APPROVAL_COLLEGE-前端测试清单.md`
-  - 当前审批链逐条测试清单
+  - Flyway 迁移命名与执行规范
+- `seed-change-system-admin-auto-approval.md`
+  - 种子变更与系统管理员自动审批约定
+
+**测试与账号**
+
+- `PLAN_DISPATCH_STRATEGY-前端测试清单.md` / `PLAN_DISPATCH_FUNCDEPT-前端测试清单.md`
+- `PLAN_APPROVAL_FUNCDEPT-前端测试清单.md` / `PLAN_APPROVAL_COLLEGE-前端测试清单.md`
+  - 四条审批链逐条测试清单（步骤名已按 2026-10-26 五节点链更新）
 - `用户账号密码文档.md`
-  - 当前测试账号与联调账号口径
+  - 测试账号矩阵（已对齐学院两级席位：填报人 + 审核人）
 - `frontend-permission-control.md`
-  - 当前前后端权限分流说明
+  - 三层权限体系说明（含 2026-10-26 行为变化标注）
+
+**已归档（`docs/archive/`）**
+
+- `2026-05-opentenbase-experiment/` — OpenTenBase 实验环境（非生产路径）
+- `2026-03-superseded-guides/workflow-test-guide.md` — 早期审批联调汇总（被 PLAN_* 清单取代）
+- `generated/` — 自动生成报告与 OpenTenBase 阶段记录（2026-05）
 
 ### 2. 可再生成文档
 

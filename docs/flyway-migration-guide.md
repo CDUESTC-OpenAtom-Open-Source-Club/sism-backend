@@ -475,7 +475,6 @@ graph LR
 - [Flyway 官方文档](https://flywaydb.org/documentation/)
 - [PostgreSQL 文档](https://www.postgresql.org/docs/)
 - [项目 README](../README.md)
-- [数据库表索引](./database-tables-index.md)
 
 ### C. 联系方式
 
