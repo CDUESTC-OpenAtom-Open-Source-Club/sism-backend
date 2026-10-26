@@ -21,7 +21,7 @@
 当前保留文档：
 
 - `architecture/main-branch-release-and-deploy-runbook.md`
-  - 主线发布、自动部署、服务器验证、故障排查入口
+  - 主线发布、离线手动部署、服务器验证、故障排查入口
 - `deployment-image-arch-note.md`
   - 生产服务器镜像架构要求与 2026-05-27 Docker 替换复盘
 - `flyway-migration-guide.md`
@@ -54,6 +54,12 @@
 - `generated/reports-index.json`
 
 ### 3. 历史归档文档
+
+> **时效提示**：归档区文档记录的是**当时**的架构与操作方式，不反映当前状态。
+> 当前权威说法以「当前执行文档」为准，特别是：
+> - **没有自动部署**——`main` 推送只构建镜像，部署必须手动触发 + 离线三步（见 `architecture/main-branch-release-and-deploy-runbook.md`）
+> - 2026-05 期间的 OpenTenBase / OTB 相关文档是**实验环境**记录，标准生产路径是 compose 管理的 PostgreSQL 容器
+> - 审批链步骤名已于 2026-10-26 调整（学院链改为五节点、命名统一为「审核人」），旧文档中的步骤名与账号角色可能已过时
 
 以下文档统一进入 `docs/archive/`：
 

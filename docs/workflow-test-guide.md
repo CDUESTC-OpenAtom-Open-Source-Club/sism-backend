@@ -8,7 +8,7 @@
 **默认密码**: 所有测试账号密码均为 `admin123`
 
 **说明**:
-- 本文档以 [`audit_step_def-data.sql`](/Users/blackevil/Documents/前端架构测试/sism-backend/database/seeds/audit_step_def-data.sql) 的 14 个 canonical 步骤为准。
+- 本文档以 [`audit_step_def-data.sql`](../database/seeds/audit_step_def-data.sql) 的 14 个 canonical 步骤为准。
 - 部分旧文档里的 `jwc_*`、`jsjxy_*`、`zlb_leader` 等旧账号命名已不再适用于当前 clean seed。
 - 当前可直接复用的关键全局账号是 `admin`（战略发展部分管校领导）、`zlb_admin`（战略发展部填报人）、`zlb_final1` / `zlb_final2`（`ROLE_STRATEGY_DEPT_HEAD`，可处理战略发展部负责人/终审节点）。
 

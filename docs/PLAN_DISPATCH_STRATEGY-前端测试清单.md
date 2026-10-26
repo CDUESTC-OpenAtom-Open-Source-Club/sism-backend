@@ -3,11 +3,11 @@
 适用流程: `Plan下发审批（战略发展部）`
 
 流程定义来源:
-- [audit_step_def-data.sql](/Users/blackevil/Documents/前端架构测试/sism-backend/database/seeds/audit_step_def-data.sql#L31)
+- [audit_step_def-data.sql](../database/seeds/audit_step_def-data.sql#L31)
 
 测试账号来源:
-- [sys_user-data.sql](/Users/blackevil/Documents/前端架构测试/sism-backend/database/seeds/sys_user-data.sql)
-- [sys_user_role-data.sql](/Users/blackevil/Documents/前端架构测试/sism-backend/database/seeds/sys_user_role-data.sql#L17)
+- [sys_user-data.sql](../database/seeds/sys_user-data.sql)
+- [sys_user_role-data.sql](../database/seeds/sys_user_role-data.sql#L17)
 
 默认密码: `admin123`
 

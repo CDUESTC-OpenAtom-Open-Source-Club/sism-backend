@@ -3,7 +3,7 @@
 适用流程: `Plan下发审批（职能部门）`
 
 流程定义来源:
-- [audit_step_def-data.sql](/Users/blackevil/Documents/前端架构测试/sism-backend/database/seeds/audit_step_def-data.sql#L35)
+- [audit_step_def-data.sql](../database/seeds/audit_step_def-data.sql#L35)
 
 默认密码: `admin123`
 
@@ -11,7 +11,7 @@
 
 步骤如下:
 1. 填报人提交
-2. 职能部门审批人审批
+2. 职能部门审核人审批
 3. 分管校领导审批
 
 推荐测试账号:
