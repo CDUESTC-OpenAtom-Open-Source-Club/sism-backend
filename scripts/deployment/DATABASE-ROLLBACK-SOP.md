@@ -8,8 +8,8 @@
 
 适用脚本：
 
-- [restore-database.sh](/Users/blackevil/战略开发/sism-backend/scripts/deployment/restore-database.sh)
-- [backup-database.sh](/Users/blackevil/战略开发/sism-backend/scripts/deployment/backup-database.sh)
+- [restore-database.sh](restore-database.sh)
+- [backup-database.sh](backup-database.sh)
 
 ## 1. 启动回滚的前置条件
 

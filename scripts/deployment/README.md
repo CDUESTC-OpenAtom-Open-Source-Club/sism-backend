@@ -12,9 +12,9 @@
 - `upload-offline-release.sh`
 - `install-offline-release.sh`
 
-正常推送 `main` 时，GitHub Actions 默认只生成保留 7 天的镜像 artifact，
-不会连接服务器。只有在手动运行工作流并显式选择
-`delivery_target=test-server` 时，才允许使用测试服务器的自托管 Runner。
+推送 `main` 时，GitHub Actions 只做校验 + 构建镜像 + 推 GHCR + 导出保留 7 天的
+artifact，**不会连接服务器**。只有手动运行工作流（workflow_dispatch）并显式选择
+`delivery_target=test-server` 时，才允许使用测试服务器的自托管 Runner 落服。
 
 离线发布流程：
 
@@ -26,7 +26,27 @@
 ```
 
 目标服务器只需要 Docker、Compose、SSH 和已经迁移好的生产 `.env`，不需要
-访问 GitHub 或 GHCR。完整说明见 `docs/部署运维/SISM-离线人工发布手册.md`。
+访问 GitHub 或 GHCR。完整流程见
+`docs/architecture/main-branch-release-and-deploy-runbook.md`。
+
+发布拓扑：
+
+```text
+GitHub 托管 Runner          产出：镜像 artifact + Compose 部署包
+        │
+        │ gh CLI（本地电脑拉取）
+        ▼
+操作者本地电脑              download-offline-release.sh
+                           → 校验 gzip、生成 manifest.env 与 SHA256SUMS
+                           → 组装离线 tar.gz
+        │
+        │ SSH/SCP
+        ▼
+目标服务器                  upload-offline-release.sh（上传并预校验）
+                           install-offline-release.sh
+                           → 校验 archive 与 SHA256 → docker load
+                           → docker compose up → 健康检查 → 失败自动回滚
+```
 
 ## 当前保留
 
@@ -64,11 +84,11 @@ PostgreSQL 备份脚本，适用于生产或受控测试环境的例行备份。
 ### `restore-database.sh`
 PostgreSQL 恢复脚本，适用于从备份文件恢复数据库；内部校验已对齐当前 `sys_* / cycle / indicator / sys_task` 表结构。
 
-配套文档：
+配套文档（仓库相对路径）：
 
-- [DATABASE-ROLLBACK-SOP.md](/Users/blackevil/战略开发/sism-backend/scripts/deployment/DATABASE-ROLLBACK-SOP.md)
-- [PRODUCTION-RELEASE-CHECKLIST.md](/Users/blackevil/战略开发/sism-backend/scripts/deployment/PRODUCTION-RELEASE-CHECKLIST.md)
-- [PREPROD-READINESS.md](/Users/blackevil/战略开发/sism-backend/scripts/deployment/PREPROD-READINESS.md)
+- [DATABASE-ROLLBACK-SOP.md](DATABASE-ROLLBACK-SOP.md)
+- [PRODUCTION-RELEASE-CHECKLIST.md](PRODUCTION-RELEASE-CHECKLIST.md)
+- [PREPROD-READINESS.md](PREPROD-READINESS.md)
 
 ## 不再保留的脚本
 

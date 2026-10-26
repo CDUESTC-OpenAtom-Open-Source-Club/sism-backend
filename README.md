@@ -47,7 +47,7 @@ sism-backend/
 - `docs/PROJECT_HISTORY_AND_GOVERNANCE.md`
   - 后端目录规范、项目历史治理、状态流转与验证门禁
 - `docs/architecture/main-branch-release-and-deploy-runbook.md`
-  - `main` 分支发布、自动部署与服务器验证入口
+  - `main` 分支发布、离线手动部署与服务器验证入口
 
 ## 快速开始
 
@@ -171,6 +171,9 @@ GRANT ALL PRIVILEGES ON DATABASE sism_dev TO sism_user;
 
 #### 5. 加载种子数据 (可选)
 
+种子是**可选**的：不灌种子也能正常启动——Flyway 会自动建好 schema，只是库里没有
+业务数据（无测试账号、无计划容器），需要自己造数。
+
 ```bash
 # 使用当前受支持的 clean seed 流程前，请先确认目标环境是本地开发库
 ./database/scripts/reset-clean-seeds.sh
@@ -178,6 +181,15 @@ GRANT ALL PRIVILEGES ON DATABASE sism_dev TO sism_user;
 
 说明：
 
+- 本脚本**会清空业务表**（destructive），仅限本地或已批准的测试库
+- 有 `psql` 时用 psql 执行；**没有 psql 也可用**——自动回退到
+  `database/scripts/jdbc/Exec.java`（项目自带 PostgreSQL JDBC 驱动）
+- 或直接用一键脚本（会自动询问是否灌种子）：
+  ```bash
+  ./scripts/dev/up-local.sh            # 交互：询问是否灌种子
+  ./scripts/dev/up-local.sh --no-seed  # 明确跳过
+  ./scripts/dev/up-local.sh --seed     # 强制灌
+  ```
 - 当前仓库仅保留最小化的本地 seed 重置脚本
 - 如果要执行约束型迁移、重置种子或重建老库 Flyway 历史，请先阅读 `sism-main/src/main/resources/db/migration/README.md` 与 `database/scripts/README.md`
 - 当前 clean seed 的装载总入口是 `database/seeds/reset-and-load-clean-seeds.sql`
@@ -465,7 +477,7 @@ server:
 ### 环境配置文件
 
 - **dev**: 开发环境 (本地数据库)
-- **prod**: 生产环境 (远程数据库 175.24.139.148:8386)
+- **prod**: 生产环境 (生产服务器 `47.108.249.115`，由 compose 栈内的 PostgreSQL 容器承载)
 
 ### 环境变量
 
@@ -1490,13 +1502,12 @@ server:
 - 代码质量检查
 - 测试覆盖率报告
 
-**部署 Pipeline** (`.github/workflows/deploy.yml`):
-- 自动部署到生产服务器 (175.24.139.148)
-- 上传重试机制 (3次重试，10秒间隔)
-- 连接超时优化 (30秒连接超时，15秒心跳间隔)
-- JAR 文件完整性校验 (MD5 校验和)
-- 自动重启服务与健康检查
-- 部署状态: ✅ 生产就绪 (最后更新: 2026-02-24)
+**镜像构建 Pipeline** (`.github/workflows/build-and-push-image.yml`):
+- `main` 推送时校验 + 构建后端镜像 + 推送到 GHCR（**不落服**）
+- 部署 job 需手动 `workflow_dispatch` 且显式选择 `delivery_target=test-server`
+- 服务器与 GitHub 网络不通，正式落服走离线三步：
+  `download-offline-release.sh` → `upload-offline-release.sh` → `install-offline-release.sh`
+- 详见 `docs/architecture/main-branch-release-and-deploy-runbook.md`
 
 ### Flyway 数据库迁移
 
