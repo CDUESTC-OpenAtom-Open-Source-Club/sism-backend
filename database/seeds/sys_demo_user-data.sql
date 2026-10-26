@@ -1,5 +1,6 @@
 -- Demo (full-flow test) accounts
--- Each department gets one demo account with ALL 4 roles assigned.
+-- Each department gets one demo account with all workflow roles assigned
+-- (职能部门 1,2,3,4；二级学院 1,2,3——学院不设分管校领导席位，见 2026-10-26 定案).
 -- Demo accounts still follow the same org-scope filtering as real users.
 -- Extra roles let a single in-org account verify reporter + approver + strategy head + VP
 -- seats without creating separate test people for each department.
@@ -86,15 +87,18 @@ VALUES
     (419, 1, NOW()), (419, 2, NOW()), (419, 3, NOW()), (419, 4, NOW()),
     (420, 1, NOW()), (420, 2, NOW()), (420, 3, NOW()), (420, 4, NOW()),
 
-    -- 二级学院 (roles 1,2,3,4)
-    (421, 1, NOW()), (421, 2, NOW()), (421, 3, NOW()), (421, 4, NOW()),
-    (422, 1, NOW()), (422, 2, NOW()), (422, 3, NOW()), (422, 4, NOW()),
-    (423, 1, NOW()), (423, 2, NOW()), (423, 3, NOW()), (423, 4, NOW()),
-    (424, 1, NOW()), (424, 2, NOW()), (424, 3, NOW()), (424, 4, NOW()),
-    (425, 1, NOW()), (425, 2, NOW()), (425, 3, NOW()), (425, 4, NOW()),
-    (426, 1, NOW()), (426, 2, NOW()), (426, 3, NOW()), (426, 4, NOW()),
-    (427, 1, NOW()), (427, 2, NOW()), (427, 3, NOW()), (427, 4, NOW()),
-    (428, 1, NOW()), (428, 2, NOW()), (428, 3, NOW()), (428, 4, NOW())
+    -- 二级学院 (roles 1,2,3)
+    -- 2026-10-26 用户定案：二级学院不设「分管校领导」席位（role 4）——
+    -- 学院只设「填报人」（role 1）与「审核人」（role 2）两个席位；
+    -- role 3 保留给演示账号跨环节调试（真实账号不绑定）。
+    (421, 1, NOW()), (421, 2, NOW()), (421, 3, NOW()),
+    (422, 1, NOW()), (422, 2, NOW()), (422, 3, NOW()),
+    (423, 1, NOW()), (423, 2, NOW()), (423, 3, NOW()),
+    (424, 1, NOW()), (424, 2, NOW()), (424, 3, NOW()),
+    (425, 1, NOW()), (425, 2, NOW()), (425, 3, NOW()),
+    (426, 1, NOW()), (426, 2, NOW()), (426, 3, NOW()),
+    (427, 1, NOW()), (427, 2, NOW()), (427, 3, NOW()),
+    (428, 1, NOW()), (428, 2, NOW()), (428, 3, NOW())
 ON CONFLICT DO NOTHING;
 
 -- Keep the user sequence aligned after explicit ID inserts.

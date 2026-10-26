@@ -11,7 +11,7 @@
 --   - "战略发展部负责人审批" => role 3 + org 35
 --   - "分管校领导审批" => role 4 + org 35
 --   - "学院院长审批人审批" => role 4 + current college org
---   - "战略发展部终审人审批" => role 3 + org 35（仅职能部门链 flow 3）
+--   - "战略发展部审核人审批" => role 3 + org 35（职能部门链 flow 3 末环与学院链 flow 4 末环同名）
 --   - "职能部门审批人审批" => role 2 + current functional org
 -- College chain (flow 4) is 5 nodes per 2026-10-24 晚间定案（恢复 2026-09-17 的 5 节点设计；
 -- 当日早间曾短暛建为 4 节点，经用户复核恢复）：
@@ -44,10 +44,10 @@ VALUES
     (7, 3, '填报人提交', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
     (8, 3, '职能部门审批人审批', 'APPROVAL', 2, false, NOW(), NOW(), 2),
     (9, 3, '分管校领导审批', 'APPROVAL', 4, false, NOW(), NOW(), 3),
-    (10, 3, '战略发展部终审人审批', 'APPROVAL', 3, true, NOW(), NOW(), 4),
+    (10, 3, '战略发展部审核人审批', 'APPROVAL', 3, true, NOW(), NOW(), 4),
 
     (11, 4, '填报人提交', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
-    (12, 4, '学院审核人审批', 'APPROVAL', 4, false, NOW(), NOW(), 2),
+    (12, 4, '学院审核人审批', 'APPROVAL', 2, false, NOW(), NOW(), 2),
     (13, 4, '分管职能部门负责人审批', 'APPROVAL', 2, false, NOW(), NOW(), 3),
     (14, 4, '分管职能部门校领导审批', 'APPROVAL', 4, false, NOW(), NOW(), 4),
     (15, 4, '战略发展部审核人审批', 'APPROVAL', 3, true, NOW(), NOW(), 5),
