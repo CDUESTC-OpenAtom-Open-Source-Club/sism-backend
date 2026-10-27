@@ -821,6 +821,11 @@ public class ReportApplicationService {
      * 已批准（APPROVED）的月份视为已结清，不参与「最早未填报月」比较；
      * 仅 DRAFT/REJECTED/SUBMITTED 等未结清报告的月份仍算欠账、继续拦截跳月。
      * 月份格式统一 yyyy-MM，字符串比较即时间序比较。
+     *
+     * 2026-10-27 用户定案：起算月不是 1 月，而是「计划下发给该组织的那个月」。
+     * 例如 2 月下发到某学院的计划，该学院从 2 月开始填报，不会被要求补 1 月。
+     * 下发月取该计划的审批实例（PLAN 类型、entity_id=planId）完成时刻所在月——
+     * 审批通过即下发完成，那一刻就是该组织开始填报的月份。
      */
     private void assertEarliestUnfilledMonth(String rawMonth,
                                              String normalizedMonth,
@@ -850,6 +855,47 @@ public class ReportApplicationService {
         if (earliest != null && earliest.compareTo(normalizedMonth) < 0) {
             throw new ConflictException(
                     "存在更早的未填报月份 " + earliest + "，请先补报 " + earliest + " 后再填报 " + normalizedMonth);
+        }
+
+        // 2026-10-27：填报月份不得早于「计划下发月」——
+        // 计划 2 月下发到某组织，该组织从 2 月开始填报，不允许被要求补 1 月。
+        String dispatchMonth = resolvePlanDispatchMonth(planId);
+        if (dispatchMonth != null && normalizedMonth.compareTo(dispatchMonth) < 0) {
+            throw new ConflictException(
+                    "填报月份不能早于计划下发月份 " + dispatchMonth + "，请从下发当月开始填报");
+        }
+    }
+
+    /**
+     * 2026-10-27 用户定案：查询「计划下发给该组织」的月份（yyyyMM）。
+     *
+     * 口径：该计划的审批实例（audit_instance.entity_type='PLAN' 且 entity_id=planId）
+     * 完成（completed_at）时刻所在月。审批通过 = 下发完成，那一刻起该组织开始按月填报。
+     * 数据不可得时返回 null，由调用方按「当前自然月」降级。
+     */
+    private String resolvePlanDispatchMonth(Long planId) {
+        if (planId == null || planId <= 0) {
+            return null;
+        }
+        try {
+            List<String> months = jdbcTemplate.query(
+                    """
+                    SELECT DISTINCT to_char(completed_at, 'YYYYMM') AS ym
+                    FROM public.audit_instance
+                    WHERE entity_type = 'PLAN'
+                      AND entity_id = ?
+                      AND completed_at IS NOT NULL
+                    """,
+                    (rs, rowNum) -> rs.getString(1),
+                    planId
+            );
+            return months.stream()
+                    .filter(month -> month != null && month.matches("^\\d{6}$"))
+                    .min(String::compareTo)
+                    .orElse(null);
+        } catch (Exception error) {
+            log.warn("[ReportApplicationService] 查询计划下发月份失败，降级为当前月口径: {}", error.getMessage());
+            return null;
         }
     }
 
