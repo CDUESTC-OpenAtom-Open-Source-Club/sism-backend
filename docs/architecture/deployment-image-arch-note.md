@@ -1,6 +1,7 @@
 > **[时效标注 2026-10-26]** 本文的**镜像平台要求（linux/amd64 强制）仍然有效**；
-> 但文中服务器 IP `175.24.139.148` 为旧生产实例（现役 `47.108.249.115`），
-> 部署触发机制以 `main-branch-release-and-deploy-runbook.md` 为准（离线手动部署，无自动部署）。
+> 文中服务器 IP `175.24.139.148` 即**现役生产实例**（blackevil.cn，部署目录 `/opt/sism-stack/production`）；
+> 旧稿误记为 `47.108.249.115`，该地址已不可达，勿再引用。
+> 部署触发机制以 `main-branch-release-and-deploy-runbook.md` 为准（离线三步，不走 Workflow 落服）。
 
 # Deployment Image Architecture Note
 

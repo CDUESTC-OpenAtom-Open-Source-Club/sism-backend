@@ -13,8 +13,8 @@
 - `install-offline-release.sh`
 
 推送 `main` 时，GitHub Actions 只做校验 + 构建镜像 + 推 GHCR + 导出保留 7 天的
-artifact，**不会连接服务器**。只有手动运行工作流（workflow_dispatch）并显式选择
-`delivery_target=test-server` 时，才允许使用测试服务器的自托管 Runner 落服。
+artifact，**不会连接服务器**（workflow 内已无任何 `self-hosted` job 与部署 job）。
+落服只能在本地发起：产物先下载到本机，再由本机推送到服务器。
 
 离线发布流程：
 
