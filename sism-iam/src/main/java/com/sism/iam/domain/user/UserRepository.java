@@ -77,6 +77,13 @@ public interface UserRepository extends UserProvider {
         return List.of();
     }
 
+    /**
+     * 有效权限明细：perm_code, role_code, data_access_mode, scope_org_id, scope_valid
+     */
+    default List<Object[]> findEffectivePermissionRows(Long userId) {
+        return List.of();
+    }
+
     @Override
     default List<String> getUserPermissionCodes(Long userId) {
         return findPermissionCodesByUserId(userId);

@@ -90,6 +90,11 @@ public class JpaUserRepository implements UserRepository {
     }
 
     @Override
+    public List<Object[]> findEffectivePermissionRows(Long userId) {
+        return jpaRepository.findEffectivePermissionRows(userId);
+    }
+
+    @Override
     public Map<Long, Long> countUsersByRoleIds(Set<Long> roleIds) {
         if (roleIds == null || roleIds.isEmpty()) {
             return Map.of();

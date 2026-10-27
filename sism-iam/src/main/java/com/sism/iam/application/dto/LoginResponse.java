@@ -31,6 +31,7 @@ public class LoginResponse {
                 user.getRoles().stream().map(role -> role.getRoleCode()).toList(),
                 null,
                 null,
+                List.of(),
                 accessToken,
                 refreshToken,
                 expiresIn
@@ -42,6 +43,7 @@ public class LoginResponse {
             List<String> roleCodes,
             String orgName,
             String orgType,
+            List<String> permissions,
             String accessToken,
             String refreshToken,
             long expiresIn
@@ -65,7 +67,8 @@ public class LoginResponse {
                 user.getOrgId(),
                 orgName,
                 orgType,
-                roleCodes
+                roleCodes,
+                permissions
         ));
         return response;
     }
@@ -83,5 +86,7 @@ public class LoginResponse {
         private String orgName;
         private String orgType;
         private List<String> roles;
+        /** 有效权限码：后端按「角色 + 组织作用域」计算后下发，前端只消费、不再硬编码 */
+        private List<String> permissions;
     }
 }

@@ -51,16 +51,52 @@ public interface JpaUserRepositoryInternal extends JpaRepository<User, Long> {
             """, nativeQuery = true)
     List<String> findRoleCodesByUserId(Long userId);
 
+    /**
+     * 有效权限码：权限 = 角色 + 组织作用域（2026-10-26 权限模型改造）。
+     * - ALL：全组织有效
+     * - OWN_ORG：角色在用户所属组织有效（角色绑定在用户上，恒有效）
+     * - FIXED_ORG：仅当 scope_org_id = 用户 org_id 时有效
+     */
     @Query(value = """
             SELECT DISTINCT p.perm_code
             FROM sys_user_role ur
-            JOIN sys_role_permission rp ON rp.role_id = ur.role_id
+            JOIN sys_user u ON u.id = ur.user_id
+            JOIN sys_role r ON r.id = ur.role_id
+            JOIN sys_role_permission rp ON rp.role_id = r.id
             JOIN sys_permission p ON p.id = rp.perm_id
             WHERE ur.user_id = :userId
               AND COALESCE(p.is_enabled, true) = true
+              AND (
+                    r.data_access_mode = 'ALL'
+                 OR r.data_access_mode = 'OWN_ORG'
+                 OR (r.data_access_mode = 'FIXED_ORG' AND r.scope_org_id = u.org_id)
+              )
             ORDER BY p.perm_code
             """, nativeQuery = true)
     List<String> findPermissionCodesByUserId(Long userId);
+
+    /**
+     * 有效权限明细（含来源角色与作用域是否有效），用于 /auth/permissions/effective 核对接口。
+     * 列顺序：perm_code, role_code, data_access_mode, scope_org_id, scope_valid
+     */
+    @Query(value = """
+            SELECT p.perm_code,
+                   r.role_code,
+                   r.data_access_mode,
+                   r.scope_org_id,
+                   (r.data_access_mode = 'ALL'
+                     OR r.data_access_mode = 'OWN_ORG'
+                     OR (r.data_access_mode = 'FIXED_ORG' AND r.scope_org_id = u.org_id)) AS scope_valid
+            FROM sys_user_role ur
+            JOIN sys_user u ON u.id = ur.user_id
+            JOIN sys_role r ON r.id = ur.role_id
+            JOIN sys_role_permission rp ON rp.role_id = r.id
+            JOIN sys_permission p ON p.id = rp.perm_id
+            WHERE ur.user_id = :userId
+              AND COALESCE(p.is_enabled, true) = true
+            ORDER BY r.role_code, p.perm_code
+            """, nativeQuery = true)
+    List<Object[]> findEffectivePermissionRows(Long userId);
 
     @Query("""
             SELECT r.id, COUNT(DISTINCT u.id)
