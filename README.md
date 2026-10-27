@@ -477,7 +477,7 @@ server:
 ### 环境配置文件
 
 - **dev**: 开发环境 (本地数据库)
-- **prod**: 生产环境 (生产服务器 `47.108.249.115`，由 compose 栈内的 PostgreSQL 容器承载)
+- **prod**: 生产环境 (生产服务器 `175.24.139.148`，由 compose 栈内的 PostgreSQL 容器承载)
 
 ### 环境变量
 
@@ -1503,11 +1503,11 @@ server:
 - 测试覆盖率报告
 
 **镜像构建 Pipeline** (`.github/workflows/build-and-push-image.yml`):
-- `main` 推送时校验 + 构建后端镜像 + 推送到 GHCR（**不落服**）
-- 部署 job 需手动 `workflow_dispatch` 且显式选择 `delivery_target=test-server`
-- 服务器与 GitHub 网络不通，正式落服走离线三步：
+- `main` 推送时校验 + 构建后端镜像 + 推送到 GHCR + 上传镜像 artifact（**不落服**）
+- **workflow 内没有任何部署 job**，也没有 `self-hosted` runner；GitHub 侧不存在能触达服务器的代码
+- 正式落服走本地三步：
   `download-offline-release.sh` → `upload-offline-release.sh` → `install-offline-release.sh`
-- 详见 `docs/architecture/main-branch-release-and-deploy-runbook.md`
+- 详见 `docs/开发与部署流程规范.md` 与 `docs/architecture/main-branch-release-and-deploy-runbook.md`
 
 ### Flyway 数据库迁移
 

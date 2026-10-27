@@ -1,6 +1,6 @@
 # SISM 主线发布与离线手动部署操作手册
 
-> 最后更新：2026-10-26（重写：澄清部署触发机制，消除「自动部署」错误说辞）
+> 最后更新：2026-10-26（**拓扑定死**：删除 `deploy` / `stage-on-server` job，GitHub 侧不再有任何触达服务器的代码；落服只走本地三步）
 
 ## 1. 文档目的
 
@@ -12,17 +12,21 @@
 
 | 门 | 机制 | 效果 |
 |---|---|---|
-| ① 代码进仓库 ≠ 部署 | 部署 job 条件为 `workflow_dispatch` **且** `delivery_target == 'test-server'` | `push` 到 `main` 只会构建镜像，部署 job 直接跳过 |
-| ② 部署必须手动触发 | 只能从 Actions 页面手动 *Run workflow* | 无人值守的定时/推送无法触发部署 |
-| ③ 产物落地靠人工搬运 | 服务器与 GitHub 网络不通，产物经本地中转 | 服务器不被 GitHub 直接触达 |
+| ① 代码进仓库 ≠ 部署 | workflow 里**根本没有部署 job**（2026-10-26 已删除 `deploy` 与 `stage-on-server`） | push 到 `main` 只构建镜像与产物，GitHub 侧没有任何能触达服务器的代码 |
+| ② 落服只能从本地发起 | 只有本机能执行 `upload-offline-release.sh` / `install-offline-release.sh` | 服务器不被 GitHub 直接触达，也不主动拉取 |
+| ③ 产物落地靠人工搬运 | 产物先在本地成形（含逐文件 `sha256`），再由本机推送到服务器 | 全程可校验、可中断、可重跑 |
+
+> 校验现状（两仓都应有空输出）：
+> `grep -rnE "self-hosted|docker compose up|download-artifact" .github/workflows/`
 
 ### 1.2 服务器与仓库现状
 
-- 服务器目标：`47.108.249.115`
-- 服务器容器运行时：**podman**（不是 docker）
+- 服务器目标：`175.24.139.148`（blackevil.cn）
+- 服务器容器运行时：**Docker 29.1.4 + Compose v5.0.1**（该机未安装 podman）
 - 部署目录：`/opt/sism-stack/production`
+- 离线包存放：`/opt/sism-releases/`
 - 镜像仓库：GHCR（`ghcr.io/<owner>/sism-backend`、`ghcr.io/<owner>/strategic-task-management`）
-- 前后端仓库统一用 GitHub secrets：`SERVER_HOST`、`SERVER_USER`、`SERVER_SSH_KEY`、`GHCR_USERNAME`、`GHCR_TOKEN`
+- GitHub secrets 现在只剩构建所需（`GITHUB_TOKEN`）；`SERVER_*`、`GHCR_*` 等落服用 secret 已不再被任何 workflow 读取，可择机清理
 
 ## 2. 分支与仓库职责
 
@@ -33,22 +37,26 @@
 | `sism-backend` | 后端代码、后端镜像、**整套系统栈的部署编排**（compose + 离线脚本 + 部署 workflow） |
 | `strategic-task-management` | 前端代码、前端镜像、前端构建校验 |
 
-> 说明：后端仓库的部署 workflow 带 `deploy_mode`（`full-stack` / `backend-only` / `frontend-only`）与 `frontend_tag` 参数，因此它天然是全栈部署入口。**整套栈的 compose 定义、离线脚本、部署 workflow 都以 `sism-backend` 为准**，前端仓库不单独维护部署逻辑。
+> 说明：整套栈的 compose 定义、离线脚本、离线包组装都以 `sism-backend` 为准；前端仓库只产出前端镜像与 `frontend-image-<sha>` 产物，不单独维护部署逻辑。
 
 ### 2.2 分支职责
 
 | 分支 | 用途 |
 |---|---|
-| `main` | 稳定主线。合并到这里 = 代码进入正式线，**但不会自动部署** |
-| `baseline/*` | 当前阶段开发基线。日常开发在这里进行，验收后合并回 `main` |
-| `feature/*`、`fix/*`、`codex/*`、`backup/*` | 临时分支，验证或迁移后清理 |
+| `main` | 稳定主线。合并到这里 = 进入正式线并触发构建，**但不落服** |
+| `develop` | 日常集成分支。功能/修复先合到这里 |
+| `feature/*` `fix/*` `chore/*` | 短分支，合入 `develop` 后立即删除 |
+| `hotfix/*` | 从 `main` 拉，修完合回 `main` 并回灌 `develop` |
+
+分支规则的唯一权威见 `docs/提交与分支工作流.md`。`baseline/*`、`test/*`、`dev/*` 已废止，历史内容转为 `archive/<repo>/<branch>` 标签。
 
 ### 2.3 合并原则
 
-1. 阶段开发在 `baseline/*` 或功能分支进行
-2. 验收通过后合并到 `main`（触发 CI + 镜像构建，产物在 GHCR）
-3. 发布完成后把 `baseline/*` 快进到 `main`，保持开发基线与主线一致
-4. 严禁让旧 `main` 反向覆盖当前基线代码
+1. 功能与修复一律从 `develop` 拉短分支
+2. PR 合并进 `develop` 用 squash，合并即删分支
+3. 验收通过后 `develop` 用 `git merge --no-ff` 合进 `main`（保留发布合并点）
+4. 发版后把 `develop` 快进对齐到 `main`
+5. 严禁在 `main` 上直接提交
 
 ## 3. 发布链路（离线手动）
 
@@ -58,8 +66,8 @@
 
 | 仓库 | workflow | 做的事 | 不做的事 |
 |---|---|---|---|
-| `sism-backend` | `Build and Deploy Backend` | QA 校验（后端 verification / Flyway 命名检查）→ 准备部署 bundle → 构建后端镜像 → 推 GHCR → 导出镜像 artifact | **不连服务器**（`deploy` job 条件不满足而跳过） |
-| `strategic-task-management` | `Build and Push Frontend Image` | QA 校验（架构基线 / type-check / 单测 / 生产构建）→ 构建前端镜像 → 推 GHCR → 导出镜像 artifact | **不连服务器**（`stage-on-server` job 条件不满足而跳过） |
+| `sism-backend` | `Build and Push Backend` | QA 校验（后端 verification / Flyway 命名检查）→ 准备部署 bundle → 构建后端镜像 → 推 GHCR → 导出镜像 artifact | **不连服务器**（workflow 内已无任何 `self-hosted` job） |
+| `strategic-task-management` | `Build and Push Frontend Image` | QA 校验（架构基线 / type-check / 单测 / 生产构建）→ 构建前端镜像 → 推 GHCR → 导出镜像 artifact | **不连服务器**（`stage-on-server` 已删除） |
 
 产物有两处可取：
 - **GHCR 镜像**（tag 含 commit SHA 与滚动 `main`）
@@ -78,7 +86,7 @@ cd sism-backend/scripts/deployment
 ### 3.3 阶段三：上传到服务器
 
 ```bash
-./upload-offline-release.sh --archive <包.tar.gz> --remote root@47.108.249.115
+./upload-offline-release.sh --archive <包.tar.gz> --remote root@175.24.139.148
 # 只想先传不部署：加 --upload-only
 ```
 
@@ -90,7 +98,7 @@ cd sism-backend/scripts/deployment
 # 只校验不落地：--verify-only
 ```
 
-`install-offline-release.sh` 依次完成：校验 manifest 与 checksum → 安装镜像归档 → `podman compose up -d` → 等待健康检查通过 → 失败自动回滚上一版镜像。
+`install-offline-release.sh` 依次完成：校验 manifest 与 checksum → 安装镜像归档 → `docker compose up -d` → 等待健康检查通过 → 失败自动回滚上一版镜像。
 
 ### 3.5 全流程一览
 
@@ -110,7 +118,7 @@ cd sism-backend/scripts/deployment
 
 ### 4.1 日常开发
 
-1. 在 `baseline/*` 或功能分支上开发
+1. 在 `develop` 或短分支（`feature/*`、`fix/*`）上开发
 2. 本地最小验证
    - 后端：`./mvnw -pl sism-main -am -DskipTests package`
    - 前端：`npm run build`
@@ -123,7 +131,7 @@ cd sism-backend/scripts/deployment
 2. 合并后端到 `main` → 等待其 CI 与镜像构建完成
 3. 若为联动版本，确认前后端 `main` 落在预期提交
 4. 走 §3.2 → §3.4 的离线三步
-5. 发布后把 `baseline/*` 快进到 `main`
+5. 发布后把 `develop` 快进对齐到 `main`
 
 ### 4.3 首次部署
 
@@ -148,9 +156,9 @@ cd sism-backend/scripts/deployment
 ### 5.2 常用检查命令
 
 ```bash
-ssh root@47.108.249.115
+ssh root@175.24.139.148
 cd /opt/sism-stack/production
-podman ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
 cat deploy-status.env
 tail -200 deploy-run.log
 curl -sS http://127.0.0.1:8080/api/v1/actuator/health
@@ -172,7 +180,7 @@ curl -I http://127.0.0.1/
 原因通常是校验太早（容器刚重建就单次 `curl`）。当前逻辑已改为带重试等待；再次遇到先做实机确认：
 
 ```bash
-podman ps
+docker ps
 curl http://127.0.0.1:8080/api/v1/actuator/health
 curl -I http://127.0.0.1/
 ```
@@ -184,7 +192,7 @@ curl -I http://127.0.0.1/
 ### 6.3 产物版本对不上
 
 - 服务器镜像 tag 应等于目标 commit SHA
-- 用 `podman images` 核对本地 tag
+- 用 `docker images` 核对本地 tag
 - 用 `gh run list` 核对 run ID 与 SHA，再重新 `download-offline-release.sh`
 
 ## 7. 相关文档
