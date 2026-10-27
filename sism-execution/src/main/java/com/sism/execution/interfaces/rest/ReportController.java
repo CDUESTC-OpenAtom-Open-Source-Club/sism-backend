@@ -112,6 +112,14 @@ public class ReportController {
             @Parameter(description = "报告ID") @PathVariable Long id,
             @AuthenticationPrincipal CurrentUser currentUser) {
         PlanReport report = requireReportWithPermission(id, currentUser);
+        // 2026-10-27 用户定案：草稿按 ID 直查仅「填报组织自身 + 系统管理员」；
+        // 链上审批角色在报告提交进入流程后经审批链可读（ensureCanAccessReport 既有逻辑）。
+        if (PlanReport.STATUS_DRAFT.equals(report.getStatus()) && !isSystemAdmin(currentUser)) {
+            Long viewerOrgId = requireCurrentOrgId(currentUser);
+            if (report.getReportOrgId() == null || !report.getReportOrgId().equals(viewerOrgId)) {
+                throw new AccessDeniedException("未提交的填报内容仅填报组织可见");
+            }
+        }
         return ResponseEntity.ok(ApiResponse.success(PlanReportResponse.fromEntity(report)));
     }
 
@@ -323,6 +331,21 @@ public class ReportController {
         List<PlanReport> reports = isAdmin(currentUser)
                 ? reportApplicationService.findReportsByPlanId(planId)
                 : reportApplicationService.findReportsByPlanIdForOrg(planId, requireCurrentOrgId(currentUser));
+
+        // 2026-10-27 用户定案：未提交的草稿仅「填报组织自身」可见——
+        // 上级/审批链角色（如战略发展部负责人、分管校领导）在草稿提交进入审核之前，
+        // 看到的应该都是上一次已上报的数据，而不是填报人正在编辑的草稿。
+        // 2026-10-27 豁免收窄：isAdmin 含链上审批角色（上报链终审/分管校领导节点授权角色），
+        // 若以它豁免草稿过滤，终审人在草稿期就能透视填报内容——豁免仅保留真系统管理员。
+        if (!isSystemAdmin(currentUser)) {
+            Long viewerOrgId = requireCurrentOrgId(currentUser);
+            reports = reports.stream()
+                    .filter(report -> !PlanReport.STATUS_DRAFT.equals(report.getStatus())
+                            || (report.getReportOrgId() != null
+                                    && report.getReportOrgId().equals(viewerOrgId)))
+                    .toList();
+        }
+
         List<PlanReportSimpleResponse> responses = reports.stream()
                 .map(PlanReportSimpleResponse::fromEntity)
                 .collect(Collectors.toList());
@@ -410,6 +433,21 @@ public class ReportController {
                         || "ROLE_SYSTEM_ADMIN".equals(authority)
                         || "ROLE_VICE_PRESIDENT".equals(authority)
                         || "ROLE_STRATEGY_DEPT_HEAD".equals(authority));
+    }
+
+    /**
+     * 2026-10-27：真系统管理员。与 isAdmin 的区别是剔除战略发展部负责人/分管校领导——
+     * 这两个角色是上报审批链的节点授权角色（终审/分管校领导节点），属「链上审批人」，
+     * 其内容可见性应由审批链授予（报告进入流程后），而不是草稿期的全局透视。
+     */
+    private boolean isSystemAdmin(CurrentUser currentUser) {
+        if (currentUser == null || currentUser.getAuthorities() == null) {
+            return false;
+        }
+        return currentUser.getAuthorities().stream()
+                .map(authority -> authority.getAuthority())
+                .anyMatch(authority -> "ROLE_ADMIN".equals(authority)
+                        || "ROLE_SYSTEM_ADMIN".equals(authority));
     }
 
     private Long requireCurrentOrgId(CurrentUser currentUser) {
