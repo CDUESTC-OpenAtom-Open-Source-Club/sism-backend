@@ -637,6 +637,8 @@ public class PlanApplicationService {
         details.setStatus(planResponse.getStatus());
         details.setStartDate(planResponse.getStartDate());
         details.setEndDate(planResponse.getEndDate());
+        // 2026-10-27：下发月 = 月度填报的起算月（不是 1 月）
+        details.setDispatchMonth(planResponse.getDispatchMonth());
         details.setOwnerDepartment(planResponse.getOwnerDepartment());
         details.setCompletionPercentage(planResponse.getCompletionPercentage());
         details.setIndicatorCount(planResponse.getIndicatorCount());
@@ -710,6 +712,40 @@ public class PlanApplicationService {
     /**
      * 将Plan实体转换为响应DTO
      */
+    /**
+     * 2026-10-27 用户定案：查询计划的下发月份（YYYYMM）。
+     *
+     * 口径：该计划的审批实例（audit_instance.entity_type='PLAN' 且 entity_id=planId）
+     * 完成（completed_at）时刻所在月。审批通过 = 下发完成，那一刻起该组织
+     * 开始按月填报，所以月度填报从这一个月起算，而不是从 1 月起算。
+     * 数据不可得时返回 null，由调用方按「当前自然月」降级。
+     */
+    private String resolveDispatchMonth(Long planId) {
+        if (planId == null || planId <= 0) {
+            return null;
+        }
+        try {
+            List<String> months = jdbcTemplate.query(
+                    """
+                    SELECT DISTINCT to_char(completed_at, 'YYYYMM') AS ym
+                    FROM public.audit_instance
+                    WHERE entity_type = 'PLAN'
+                      AND entity_id = ?
+                      AND completed_at IS NOT NULL
+                    """,
+                    (rs, rowNum) -> rs.getString(1),
+                    planId
+            );
+            return months.stream()
+                    .filter(month -> month != null && month.matches("^\\d{6}$"))
+                    .min(String::compareTo)
+                    .orElse(null);
+        } catch (Exception error) {
+            log.warn("[PlanApplicationService] 查询计划下发月份失败，降级为当前月口径: {}", error.getMessage());
+            return null;
+        }
+    }
+
     private PlanResponse convertToResponse(Plan plan, String year) {
         return convertToResponse(plan, year, loadOrgNamesById(plan), loadPlanMetrics(plan == null ? List.of() : List.of(plan)));
     }
@@ -735,6 +771,8 @@ public class PlanApplicationService {
                 .status(PlanStatus.fromRaw(plan.getStatus()).value())
                 .startDate(plan.getCreatedAt())
                 .endDate(plan.getUpdatedAt())
+                // 2026-10-27：下发月 = 计划审批实例完成时刻所在月，月度填报从它起算
+                .dispatchMonth(resolveDispatchMonth(plan.getId()))
                 .ownerDepartment(createdByOrgName)
                 .completionPercentage(completionPercentage)
                 .indicatorCount(indicatorCount)

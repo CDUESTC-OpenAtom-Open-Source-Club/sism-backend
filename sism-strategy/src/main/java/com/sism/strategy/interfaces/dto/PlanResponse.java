@@ -40,6 +40,15 @@ public class PlanResponse {
     @Schema(description = "结束日期")
     private LocalDateTime endDate;
 
+    /**
+     * 下发月份（YYYYMM）——该计划下发给目标组织的月份。
+     * 2026-10-27 用户定案：月度填报从「下发月」起算，不是从 1 月起算。
+     * 例如 2 月下发到某学院的计划，该学院从 2 月开始填报。
+     * 取该计划审批实例（PLAN 类型）完成时刻所在月；未下发时为 null。
+     */
+    @Schema(description = "下发月份（YYYYMM），月度填报的起算月", example = "202610")
+    private String dispatchMonth;
+
     @Schema(description = "负责部门")
     private String ownerDepartment;
 
