@@ -669,6 +669,7 @@ public class PlanApplicationService {
                 .stream()
                 .toList();
         Map<Long, Integer> reportProgressByIndicatorId = getLatestReportProgressByIndicatorIds(indicatorIds);
+        Map<Long, String> lastAppraisalLevelByIndicatorId = getLatestApprovedAppraisalLevelByIndicatorIds(indicatorIds);
         CurrentReportContext currentReportContext = getCurrentReportContext(plan.getId(), indicatorIds);
 
         List<InternalIndicatorResponse> indicators = planIndicators.stream()
@@ -1084,13 +1085,17 @@ public class PlanApplicationService {
             return CurrentReportContext.empty();
         }
 
+        // 2026-10-27 用户定案：计划详情内嵌的「当期报告」只允许已进入审批流程的轮次——
+        // 草稿（未点发起审批）不得通过计划详情外泄给上级页面，上级在草稿期看到的是上一版快照。
+        // 口径为「最近一轮非草稿」而非仅 IN_REVIEW/REJECTED：审批全部通过后若排除 APPROVED，
+        // 当期上下文会清空，下发审批页的进度说明/自评等级/资料列将整列空白。
         List<Map<String, Object>> reportRows = jdbcTemplate.queryForList(
                 """
                 SELECT pr.id AS report_id, pr.status AS report_status
                 FROM public.plan_report pr
                 WHERE pr.plan_id = ?
                   AND pr.is_deleted = false
-                  AND pr.status IN ('DRAFT', 'IN_REVIEW', 'REJECTED')
+                  AND pr.status <> 'DRAFT'
                 ORDER BY pr.updated_at DESC NULLS LAST, pr.id DESC
                 LIMIT 1
                 """,
@@ -1223,6 +1228,58 @@ public class PlanApplicationService {
             case "REJECTED" -> "REJECTED";
             default -> "NONE";
         };
+    }
+
+    /**
+     * 2026-10-27 用户定案：取每个指标「最近一轮已通过（APPROVED）上报」的鉴定进度等级。
+     * 鉴定等级是审批人对该指标的评定结果，新一个月的填报轮次应沿用最近一轮的评定显示，
+     * 而不是回到「未评定」。
+     * 无已通过轮次（从未被鉴定）时该指标不出现在结果中，前端显示「未评定」。
+     */
+    private Map<Long, String> getLatestApprovedAppraisalLevelByIndicatorIds(List<Long> indicatorIds) {
+        if (indicatorIds == null || indicatorIds.isEmpty()) {
+            return Map.of();
+        }
+
+        List<Map<String, Object>> rows = namedParameterJdbcTemplate.queryForList(
+                """
+                SELECT pri.indicator_id AS indicator_id, pri.appraisal_level AS appraisal_level
+                FROM public.plan_report_indicator pri
+                INNER JOIN (
+                    SELECT pri2.indicator_id, MAX(COALESCE(pr.approved_at, pr.updated_at)) AS latest_completed
+                    FROM public.plan_report_indicator pri2
+                    INNER JOIN public.plan_report pr ON pri2.report_id = pr.id
+                    WHERE pr.is_deleted = false
+                    AND pr.status = 'APPROVED'
+                    AND pri2.appraisal_level IS NOT NULL
+                    AND pri2.appraisal_level <> ''
+                    AND pri2.indicator_id IN (:indicatorIds)
+                    GROUP BY pri2.indicator_id
+                ) latest ON latest.indicator_id = pri.indicator_id
+                INNER JOIN public.plan_report pr ON pri.report_id = pr.id
+                WHERE pr.is_deleted = false
+                AND pr.status = 'APPROVED'
+                AND pri.appraisal_level IS NOT NULL
+                AND pri.appraisal_level <> ''
+                AND pri.indicator_id IN (:indicatorIds)
+                AND COALESCE(pr.approved_at, pr.updated_at) = latest.latest_completed
+                """,
+                new MapSqlParameterSource("indicatorIds", indicatorIds)
+        );
+
+        Map<Long, String> appraisalByIndicatorId = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Object indicatorIdValue = row.get("indicator_id");
+            Object levelValue = row.get("appraisal_level");
+            if (!(indicatorIdValue instanceof Number indicatorIdNumber)) {
+                continue;
+            }
+            String level = levelValue == null ? null : String.valueOf(levelValue).trim();
+            if (level != null && !level.isEmpty()) {
+                appraisalByIndicatorId.put(indicatorIdNumber.longValue(), level);
+            }
+        }
+        return appraisalByIndicatorId;
     }
 
     private Map<Long, Integer> getLatestReportProgressByIndicatorIds(List<Long> indicatorIds) {
