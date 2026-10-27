@@ -59,4 +59,14 @@ public interface WorkflowBusinessContextPort {
     default boolean isOrgLockedByMutation(Long orgId) {
         return false;
     }
+
+    /**
+     * 2026-10-27 用户定案：上报链最后一个节点通过前，必须校验本报告实例下
+     * 全部指标的鉴定进度等级已评定（不允许「未评定」通过）。
+     * 本方法返回该业务实体（entityId=报告ID）下全部指标 ID，供审批侧做完整性校验。
+     * 默认空列表；仅报告类实体（PLAN_REPORT）的上下文适配器覆写。
+     */
+    default java.util.List<Long> findIndicatorIdsByReport(Long entityId) {
+        return java.util.List.of();
+    }
 }

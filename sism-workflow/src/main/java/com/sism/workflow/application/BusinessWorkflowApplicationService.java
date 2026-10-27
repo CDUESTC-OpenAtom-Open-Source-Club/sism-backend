@@ -358,8 +358,8 @@ public class BusinessWorkflowApplicationService {
         // 中间节点的鉴定仅写入 audit_step_instance.appraisal_level 留痕（approveAuditInstance 内既有逻辑）。
         // 2026-10-24 用户定案（指标级鉴定）：逐指标等级优先；整单等级仅作旧客户端兼容。
         boolean terminalApproved = AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus());
-        if (terminalApproved && indicatorLevels != null && !indicatorLevels.isEmpty()) {
-            java.util.Map<Long, String> normalizedLevels = new java.util.LinkedHashMap<>();
+        java.util.Map<Long, String> normalizedLevels = new java.util.LinkedHashMap<>();
+        if (indicatorLevels != null) {
             indicatorLevels.forEach((indicatorId, level) -> {
                 com.sism.enums.ProgressLevel normalized =
                         com.sism.enums.ProgressLevel.normalize(level);
@@ -367,10 +367,22 @@ public class BusinessWorkflowApplicationService {
                     normalizedLevels.put(indicatorId, normalized.name());
                 }
             });
-            if (!normalizedLevels.isEmpty()) {
-                workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevelForIndicators(
-                        instance.getEntityType(), instance.getEntityId(), normalizedLevels));
-            }
+        }
+
+        // 2026-10-27 用户定案：上报链（PLAN_APPROVAL_*）最后一个节点通过时，
+        // 本报告实例下全部指标的鉴定进度等级必须已评定——存在「未评定」则阻止通过，
+        // 审批人需在审批详情中逐条完成鉴定。@Transactional 保证校验失败整单回滚。
+        boolean reportApprovalChain =
+                detailBeforeApproval != null
+                && detailBeforeApproval.getFlowCode() != null
+                && detailBeforeApproval.getFlowCode().toUpperCase().startsWith("PLAN_APPROVAL");
+        if (terminalApproved && reportApprovalChain) {
+            assertAllIndicatorsAppraised(instance, normalizedLevels);
+        }
+
+        if (terminalApproved && !normalizedLevels.isEmpty()) {
+            workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevelForIndicators(
+                    instance.getEntityType(), instance.getEntityId(), normalizedLevels));
         } else if (terminalApproved && appraisalLevel != null && !appraisalLevel.isBlank()) {
             workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevel(
                     instance.getEntityType(), instance.getEntityId(), appraisalLevel));
@@ -392,6 +404,41 @@ public class BusinessWorkflowApplicationService {
         markOwnSubmittedNotificationsRead(instance.getId(), userId);
 
         return workflowReadModelMapper.toInstanceResponse(approved);
+    }
+
+    /**
+     * 2026-10-27 用户定案：上报链最后一个节点（本次通过即实例终态）通过前，
+     * 本报告实例下全部指标的鉴定进度等级必须已评定（超前完成/正常/延期）。
+     * 存在「未评定」的指标时阻止通过，并提示审批人补齐鉴定。
+     *
+     * @param instance      本次审批的实例（entityType=PLAN_REPORT）
+     * @param normalizedLevels 本次 decision 携带的逐指标鉴定等级（已归一）
+     */
+    private void assertAllIndicatorsAppraised(AuditInstance instance,
+                                              java.util.Map<Long, String> normalizedLevels) {
+        java.util.List<Long> requiredIndicatorIds = workflowBusinessContextPorts.stream()
+                .map(port -> port.findIndicatorIdsByReport(instance.getEntityId()))
+                .flatMap(java.util.List::stream)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (requiredIndicatorIds.isEmpty()) {
+            return;
+        }
+
+        java.util.List<Long> unappraised = requiredIndicatorIds.stream()
+                .filter(indicatorId -> {
+                    String level = normalizedLevels.get(indicatorId);
+                    return level == null || level.isBlank();
+                })
+                .toList();
+        if (!unappraised.isEmpty()) {
+            throw new com.sism.exception.ConflictException(
+                    "存在未评定的鉴定进度等级（指标 "
+                            + unappraised.stream().map(String::valueOf)
+                            .collect(java.util.stream.Collectors.joining("、"))
+                            + "），请在审批详情中完成全部指标的鉴定后再通过");
+        }
     }
 
     @Transactional

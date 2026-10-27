@@ -1,5 +1,6 @@
 package com.sism.execution.infrastructure.persistence;
 
+import com.sism.execution.domain.report.PlanReportIndicatorSnapshot;
 import com.sism.execution.domain.report.PlanReportRepository;
 import com.sism.shared.domain.workflow.WorkflowBusinessContextPort;
 import com.sism.organization.domain.OrganizationRepository;
@@ -79,6 +80,21 @@ public class ExecutionWorkflowBusinessContextAdapter implements WorkflowBusiness
     private boolean isPlanReportEntity(String entityType) {
         return PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType)
                 || LEGACY_PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType);
+    }
+
+    /**
+     * 2026-10-27 用户定案：上报链末节点通过前校验用——返回报告实例下全部指标 ID。
+     */
+    @Override
+    public java.util.List<Long> findIndicatorIdsByReport(Long entityId) {
+        if (entityId == null || entityId <= 0) {
+            return java.util.List.of();
+        }
+        return planReportIndicatorRepository.findByReportId(entityId).stream()
+                .map(PlanReportIndicatorSnapshot::indicatorId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
     }
 
     @Override
