@@ -146,7 +146,7 @@ for _ in $(seq 1 60); do
   backend_ok=0
   frontend_ok=0
   if curl -fsS http://127.0.0.1:8080/api/v1/actuator/health >/dev/null 2>&1; then backend_ok=1; fi
-  if curl -fsS http://127.0.0.1:3500/ >/dev/null 2>&1; then frontend_ok=1; fi
+  if curl -fsS http://localhost:3500/ >/dev/null 2>&1; then frontend_ok=1; fi
   if [[ "$backend_ok" == "1" && "$frontend_ok" == "1" ]]; then
     log "后端与前端均已就绪"
     break
