@@ -101,7 +101,7 @@ public class IndicatorMutationService {
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
                 SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
-                       i.mutation_status, p.status AS plan_status
+                       i.mutation_status, p.status AS plan_status, p.id AS plan_id
                 FROM public.indicator i
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
@@ -267,14 +267,24 @@ public class IndicatorMutationService {
         String planStatus = indicatorRow.get("plan_status") == null
                 ? null
                 : String.valueOf(indicatorRow.get("plan_status"));
+        String planId = indicatorRow.get("plan_id") == null
+                ? null
+                : String.valueOf(indicatorRow.get("plan_id"));
+        String planSuffix = planId == null
+                ? ""
+                : "（该指标当前所属计划 #" + planId + "，状态：" + planStatus + "）";
         if (planStatus == null || "null".equals(planStatus)) {
             // 没有挂到任务/计划的指标（游离指标）不属于已下发树，维持原有拦截
             throw new IllegalStateException(
-                    "该指标未关联任何已下发计划，不能发起" + (actionLabel == null ? "" : actionLabel) + "异动");
+                    "该指标未关联任何已下发计划，不能发起" + (actionLabel == null ? "" : actionLabel) + "异动"
+                            + planSuffix);
         }
         if (!"DISTRIBUTED".equalsIgnoreCase(planStatus)) {
+            // 2026-10-28 迭代（Issue #92-1 报错可读性）：带上实际所属计划与状态——
+            // 多周期副本下同名指标 id 不同，选错副本时可自助定位
             throw new IllegalStateException(
-                    "仅已下发（稳定态）的计划可发起" + (actionLabel == null ? "" : actionLabel) + "异动");
+                    "仅已下发（稳定态）的计划可发起" + (actionLabel == null ? "" : actionLabel) + "异动"
+                            + planSuffix);
         }
     }
 
@@ -413,7 +423,7 @@ public class IndicatorMutationService {
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
                 SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
-                       i.mutation_status, p.status AS plan_status
+                       i.mutation_status, p.status AS plan_status, p.id AS plan_id
                 FROM public.indicator i
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
@@ -463,7 +473,7 @@ public class IndicatorMutationService {
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
                 SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
-                       i.mutation_status, p.status AS plan_status
+                       i.mutation_status, p.status AS plan_status, p.id AS plan_id
                 FROM public.indicator i
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
@@ -513,7 +523,7 @@ public class IndicatorMutationService {
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
                 SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
-                       i.mutation_status, p.status AS plan_status
+                       i.mutation_status, p.status AS plan_status, p.id AS plan_id
                 FROM public.indicator i
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
@@ -722,7 +732,7 @@ public class IndicatorMutationService {
         Map<String, Object> current = jdbcTemplate.queryForMap(
                 """
                 SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
-                       i.mutation_status, p.status AS plan_status
+                       i.mutation_status, p.status AS plan_status, p.id AS plan_id
                 FROM public.indicator i
                 LEFT JOIN public.sys_task t ON t.task_id = i.task_id
                 LEFT JOIN public.plan p ON p.id = t.plan_id
