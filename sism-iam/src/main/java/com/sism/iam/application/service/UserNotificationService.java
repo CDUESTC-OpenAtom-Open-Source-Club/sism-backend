@@ -699,7 +699,8 @@ public class UserNotificationService implements NotificationProvider {
         notification.setTitle(title);
         notification.setContent(content);
         notification.setStatus(STATUS_UNREAD);
-        notification.setActionUrl("/indicators/" + indicatorId);
+        // 2026-10-28 修正：跳转到该指标的填报进度页（/indicators/{id} 不是有效路由）
+        notification.setActionUrl("/indicators/" + indicatorId + "/progress");
         notification.setRelatedEntityType(ENTITY_TYPE_INDICATOR);
         notification.setRelatedEntityId(indicatorId);
         notification.setBatchKey(batchKey);
