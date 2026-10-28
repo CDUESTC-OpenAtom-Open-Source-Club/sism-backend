@@ -60,7 +60,7 @@ class BasicTaskWeightValidationServiceTest {
     }
 
     @Test
-    @DisplayName("Should fail when basic root indicator weights do not sum to 100")
+    @DisplayName("Should fail when plan indicator weights do not sum to 100")
     void shouldFailWhenBasicWeightNotEquals100() {
         Indicator indicatorA = buildIndicator(2001L, 1001L, 49L, BigDecimal.valueOf(25));
         Indicator indicatorB = buildIndicator(2002L, 1001L, 49L, BigDecimal.valueOf(25));
@@ -74,9 +74,27 @@ class BasicTaskWeightValidationServiceTest {
                 () -> service.validatePlanBasicWeight(7L, 49L)
         );
 
-        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("基础性任务指标权重合计必须为100"));
+        // 2026-10-28 口径调整：校验范围由「基础性任务」改为「计划内全部指标」
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("计划内指标权重合计必须为 100%"));
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("当前为 50%"));
         verify(indicatorRepository).findByTaskIds(List.of(1001L));
         verify(indicatorRepository, never()).findAll();
+    }
+
+    @Test
+    @DisplayName("Should include development task indicators in plan weight total")
+    void shouldIncludeDevelopmentTaskIndicatorsInPlanTotal() {
+        // 2026-10-28 口径调整：发展性任务的指标同样计入计划合计。
+        // 此前只统计基础性任务子集，导致「基础性 50 / 计划 100」这类数据无法通过校验。
+        Indicator basicIndicator = buildIndicator(2001L, 1001L, 49L, BigDecimal.valueOf(50));
+        Indicator developmentIndicator = buildIndicator(2002L, 1002L, 49L, BigDecimal.valueOf(50));
+
+        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class), org.mockito.ArgumentMatchers.eq(7L)))
+                .thenReturn(List.of(1001L, 1002L));
+        when(indicatorRepository.findByTaskIds(List.of(1001L, 1002L)))
+                .thenReturn(List.of(basicIndicator, developmentIndicator));
+
+        assertDoesNotThrow(() -> service.validatePlanBasicWeight(7L, 49L));
     }
 
     @Test

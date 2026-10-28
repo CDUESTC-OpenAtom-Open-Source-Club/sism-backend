@@ -60,34 +60,45 @@ public class BasicTaskWeightValidationService {
             return;
         }
 
-        Set<Long> basicTaskIds = jdbcTemplate.queryForList("""
+        Set<Long> taskIds = jdbcTemplate.queryForList("""
                         SELECT t.task_id
                         FROM public.sys_task t
                         WHERE t.plan_id = ?
                           AND COALESCE(t.is_deleted, false) = false
-                          AND t.task_type = 'BASIC'
                         """,
                 Long.class,
                 planId
         ).stream().collect(Collectors.toSet());
 
-        if (basicTaskIds.isEmpty()) {
-            throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
+        if (taskIds.isEmpty()) {
+            throw new IllegalStateException("当前计划不存在任务，不能下发");
         }
 
-        BigDecimal totalWeight = indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
+        // 2026-10-28 口径调整（用户定案）：权重按「整个计划合计 100」校验，
+        // 不再只看基础性任务——此前发展性任务权重不参与校验，导致同一任务内
+        // 权重合计可以随意写成 110、120 而无人拦截（实测可一路下发/异动/填报）。
+        List<Indicator> planIndicators = indicatorRepository.findByTaskIds(List.copyOf(taskIds)).stream()
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
                 .filter(indicator -> !excluded.contains(indicator.getId()))
                 .filter(indicator -> indicator.getParentIndicatorId() == null)
                 .filter(indicator -> indicator.getTargetOrg() != null)
                 .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
+                .collect(Collectors.toList());
+
+        BigDecimal totalWeight = planIndicators.stream()
                 .map(indicator -> resolveEffectiveWeight(indicator, overrides))
                 .filter(weight -> weight != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
+            BigDecimal diff = REQUIRED_TOTAL_WEIGHT.subtract(totalWeight);
+            String direction = diff.signum() > 0 ? "还差 " : "超出 ";
             throw new IllegalStateException(
-                    "基础性任务指标权重合计必须为100，当前为" + totalWeight.stripTrailingZeros().toPlainString()
+                    "计划内指标权重合计必须为 100%，当前为 "
+                            + totalWeight.stripTrailingZeros().toPlainString() + "%（"
+                            + direction + diff.abs().stripTrailingZeros().toPlainString()
+                            + "%，共 " + planIndicators.size() + " 项指标）。"
+                            + "请在指标列表中调整权重，或导入时留空由系统自动等分"
             );
         }
     }
