@@ -25,5 +25,12 @@ public class ApprovalRequest {
     @Pattern(regexp = "^(?i)(AHEAD|NORMAL|DELAYED)$", message = "鉴定进度等级必须是 AHEAD/NORMAL/DELAYED")
     private String appraisalLevel;
 
+    /**
+     * 2026-10-24 指标级鉴定：逐指标鉴定等级（指标ID → 超前完成/正常/延期）。
+     * 2026-10-27 修复：controller 层此前缺失该字段，前端提交的逐指标等级
+     * 在进入服务层前就被丢弃，导致「按指标逐条评定」从未真正生效。
+     */
+    private java.util.Map<Long, String> indicatorLevels;
+
     private Map<String, Object> variables;
 }

@@ -118,6 +118,40 @@ class IndicatorMutationServiceTest {
     }
 
     @Test
+    @DisplayName("2026-10-27 回归：上报审批在途时任务改名异动必须被拒（与指标路径同口径）")
+    void initiateBatch_shouldRejectTaskMutationWhenReportApprovalInFlight() {
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+
+        Map<String, Object> taskRow = new HashMap<>();
+        taskRow.put("task_id", TASK_ID);
+        taskRow.put("name", "旧任务名");
+        taskRow.put("plan_id", 4040L);
+        taskRow.put("mutation_status", null);
+        taskRow.put("plan_status", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.sys_task t"), eq(TASK_ID)))
+                .thenReturn(taskRow);
+
+        // 该计划存在 IN_REVIEW 的上报审批实例（PLAN_REPORT 实体）
+        when(jdbcTemplate.queryForObject(
+                contains("PLAN_APPROVAL_FUNCDEPT"), eq(Integer.class), eq(4040L)))
+                .thenReturn(1);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("id", TASK_ID, "entity_type", "TASK", "name", "新任务名")),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("上报正在审批中"));
+        // 不允许出现「上报在审 + 异动在审」并存：不得启动审批链、不得打异动标记
+        verifyNoInteractions(businessWorkflowApplicationService);
+        verify(jdbcTemplate, never()).update(
+                contains("SET mutation_status = ?"), any(Object[].class));
+    }
+
+    @Test
     @DisplayName("批量异动中的任务改名条目：写任务快照、打异动标记，并以 TASK 实体启动同一审批链")
     void initiateBatch_shouldStartTaskMutationWithTaskEntityType() {
         when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));

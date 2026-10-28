@@ -543,7 +543,8 @@ public class BusinessImportApplicationService {
                         null,
                         normalized.indicatorType(),
                         defaultWeight(normalized.weight()),
-                        null,
+                        // 2026-10-28 迭代计划 M4：导入时按表格序号写 sortOrder，作为稳定排序依据
+                        normalized.seq() != null ? normalized.seq() : 0,
                         normalized.remark(),
                         0);
                 counter.created++;
@@ -685,7 +686,8 @@ public class BusinessImportApplicationService {
                         normalized.parentIndicatorId(),
                         normalized.indicatorType(),
                         defaultWeight(normalized.weight()),
-                        null,
+                        // 2026-10-28 迭代计划 M4：导入时按表格序号写 sortOrder，作为稳定排序依据
+                        normalized.seq() != null ? normalized.seq() : 0,
                         normalized.remark(),
                         0);
                 counter.created++;

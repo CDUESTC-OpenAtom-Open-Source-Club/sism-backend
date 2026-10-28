@@ -83,7 +83,7 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN cycle c ON p.cycle_id = c.id
             WHERE c.year = :year
               AND COALESCE(i.is_deleted, false) = false
-            ORDER BY i.id DESC
+            ORDER BY COALESCE(i.sort_order, 2147483647) ASC, i.id ASC
             """,
            countQuery = """
             SELECT COUNT(*) FROM indicator i
@@ -108,7 +108,7 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             WHERE c.year = :year
               AND COALESCE(i.is_deleted, false) = false
               AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
-            ORDER BY i.id DESC
+            ORDER BY COALESCE(i.sort_order, 2147483647) ASC, i.id ASC
             """,
            countQuery = """
             SELECT COUNT(*) FROM indicator i
@@ -131,7 +131,7 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN plan p ON t.plan_id = p.id
             WHERE COALESCE(i.is_deleted, false) = false
               AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
-            ORDER BY i.id DESC
+            ORDER BY COALESCE(i.sort_order, 2147483647) ASC, i.id ASC
             """,
            countQuery = """
             SELECT COUNT(*) FROM indicator i
