@@ -310,7 +310,7 @@ public class ExcelBusinessImportParser {
     private List<String> validateWarnings(NormalizedImportRow row) {
         List<String> warnings = new ArrayList<>();
         if (row.weight() == null) {
-            warnings.add("权重为空，将按系统默认值处理");
+            warnings.add("权重为空，将由系统自动分配");
         }
         return warnings;
     }

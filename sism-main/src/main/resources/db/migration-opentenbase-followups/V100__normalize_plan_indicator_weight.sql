@@ -14,7 +14,7 @@
 -- 分配规则与运行时（BusinessImportApplicationService#normalizePlanWeights）逐条一致：
 --   1) 权重全部为空/待分配 → 按条数等分（每项保底 0.01，余数计入最后一条）；
 --   2) 部分为空/待分配、且已填合计未满 100 → 保留已填值，空项平分剩余额度；
---   3) 部分为空/待分配、但已填合计已满/超额 → 整体等分（保证合计为 100 这一硬约束）；
+--   3) 部分为空/待分配、但已填合计已满/超额 → 不改写（与运行时一致，保留手填值），交给校验拦截；
 --   4) 全部已填但合计不等于 100 → 存量数据专用：按现有值等比缩放到 100
 --      （运行时对手填超额不会自动改写；存量数据没有"本次留空"的语义，故按比例修正）。
 --
@@ -50,9 +50,13 @@ BEGIN
           AND i.target_org_id IS NOT NULL
         GROUP BY t.plan_id, i.target_org_id, (i.parent_indicator_id IS NULL)
     LOOP
+        -- 注意：这里用 CASE WHEN 而不是聚合 FILTER —— FILTER 是 PostgreSQL 9.4 才有的语法，
+        -- 而 openTenbase（openGauss 内核）目录下的迁移脚本需要兼容更早的语法。
         SELECT COUNT(*),
-               COUNT(*) FILTER (WHERE i.weight_percent IS NULL OR i.weight_percent <= 0.01),
-               COALESCE(SUM(i.weight_percent) FILTER (WHERE i.weight_percent > 0.01), 0)
+               COALESCE(SUM(CASE WHEN i.weight_percent IS NULL OR i.weight_percent <= 0.01
+                                 THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN i.weight_percent > 0.01
+                                 THEN i.weight_percent ELSE 0 END), 0)
         INTO ind_cnt, blank_cnt, filled_total
         FROM indicator i
         JOIN sys_task t ON t.task_id = i.task_id
@@ -87,10 +91,11 @@ BEGIN
             use_all := FALSE;
             remaining := 100.0 - filled_total;
         ELSIF blank_cnt > 0 THEN
-            -- 已填合计已满/超额 → 整体等分（与运行时一致）
-            scope_even := TRUE;
-            use_all := TRUE;
-            remaining := 100.0;
+            -- 已填合计已满/超额 → 与运行时一致：**不改写**（包括不整体等分），
+            -- 保留手填值与待分配标记，交给下发校验拦截并提示人工调整。
+            RAISE NOTICE '[V100] plan=% org=% 已填合计 % 已满/超额，保留手填值不改写，交由校验拦截',
+                    grp.plan_id, grp.target_org_id, filled_total;
+            CONTINUE;
         ELSE
             -- 全部已填但合计不等于 100 → 存量数据等比缩放
             scope_even := FALSE;

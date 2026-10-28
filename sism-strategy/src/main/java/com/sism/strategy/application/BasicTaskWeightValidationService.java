@@ -92,10 +92,8 @@ public class BasicTaskWeightValidationService {
                 .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
                 .collect(Collectors.toList());
 
-        BigDecimal totalWeight = planIndicators.stream()
-                .map(indicator -> resolveEffectiveWeight(indicator, overrides))
-                .filter(weight -> weight != null)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        WeightSum weightSum = sumEffectiveWeights(planIndicators, overrides);
+        BigDecimal totalWeight = weightSum.total();
 
         if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
             BigDecimal diff = REQUIRED_TOTAL_WEIGHT.subtract(totalWeight);
@@ -105,9 +103,42 @@ public class BasicTaskWeightValidationService {
                             + totalWeight.stripTrailingZeros().toPlainString() + "%（"
                             + direction + diff.abs().stripTrailingZeros().toPlainString()
                             + "%，共 " + planIndicators.size() + " 项指标）。"
+                            + pendingHint(weightSum.pendingCount())
                             + "请在指标列表中调整权重，或导入时留空由系统自动等分"
             );
         }
+    }
+
+    /** 权重合计结果：有效合计与「待分配」条数。 */
+    private record WeightSum(BigDecimal total, long pendingCount) {
+    }
+
+    /**
+     * 汇总参与合计的权重。
+     *
+     * <p>2026-10-28：导入时留空的权重会落「待分配」标记 0.01，它代表还没分配，
+     * 不应计入合计 —— 否则报错数值失真（100.01% 看起来像超额 0.01%，而不是"还有 1 项没分配"）。
+     */
+    private WeightSum sumEffectiveWeights(List<Indicator> indicators, java.util.Map<Long, BigDecimal> overrides) {
+        List<BigDecimal> weights = indicators.stream()
+                .map(indicator -> resolveEffectiveWeight(indicator, overrides))
+                .filter(weight -> weight != null)
+                .collect(Collectors.toList());
+        BigDecimal total = weights.stream()
+                .filter(weight -> weight.compareTo(PENDING_WEIGHT) > 0)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        long pending = weights.stream()
+                .filter(weight -> weight.compareTo(PENDING_WEIGHT) <= 0)
+                .count();
+        return new WeightSum(total, pending);
+    }
+
+    /** 待分配标记：与导入侧 BusinessImportApplicationService#PENDING_WEIGHT 保持一致。 */
+    private static final BigDecimal PENDING_WEIGHT = new BigDecimal("0.01");
+
+    /** 追加「仍有 N 项权重未分配」的提示。 */
+    private String pendingHint(long pendingCount) {
+        return pendingCount > 0 ? "（另有 " + pendingCount + " 项权重未分配，请先完成分配）" : "";
     }
 
     /** 拟变更权重优先（异动快照口径），未覆盖的取表值。 */
@@ -160,10 +191,8 @@ public class BasicTaskWeightValidationService {
                 .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
                 .collect(Collectors.toList());
 
-        BigDecimal totalWeight = planIndicators.stream()
-                .map(indicator -> resolveEffectiveWeight(indicator, weightOverrides))
-                .filter(weight -> weight != null)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        WeightSum weightSum = sumEffectiveWeights(planIndicators, weightOverrides);
+        BigDecimal totalWeight = weightSum.total();
 
         if (totalWeight.compareTo(BigDecimal.ZERO) == 0) {
             throw new IllegalStateException("当前计划不存在学院指标，不能下发");
@@ -177,6 +206,7 @@ public class BasicTaskWeightValidationService {
                             + totalWeight.stripTrailingZeros().toPlainString() + "%（"
                             + direction + diff.abs().stripTrailingZeros().toPlainString()
                             + "%，共 " + planIndicators.size() + " 项指标）。"
+                            + pendingHint(weightSum.pendingCount())
                             + "请在指标列表中调整权重，或导入时留空由系统自动等分"
             );
         }

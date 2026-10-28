@@ -278,13 +278,105 @@ public class BusinessImportApplicationService {
         }
     }
 
+    /** 权重分配方式。 */
+    enum WeightAllocationMode {
+        /** 全部指标等分（权重全空时）。 */
+        EVEN_ALL,
+        /** 仅留空项等分剩余额度（保留手填值）。 */
+        EVEN_BLANKS,
+        /** 不自动改写，交由校验拦截（手填值须被尊重）。 */
+        KEEP_MANUAL
+    }
+
+    /**
+     * 权重分配方案（纯计算结果，便于单测）。
+     *
+     * @param mode        分配方式
+     * @param remaining   待分配额度（仅 EVEN_BLANKS 有意义）
+     * @param blankCount  留空/待分配的指标条数
+     * @param totalCount  参与分配的指标总条数
+     */
+    record WeightAllocationPlan(WeightAllocationMode mode,
+                                BigDecimal remaining,
+                                int blankCount,
+                                int totalCount) {
+    }
+
+    /**
+     * 决定权重分配方式（纯函数）。
+     *
+     * <p>口径来自需求方确认：「等分，但保留手动覆盖」——
+     * 手填的权重不得被系统改写，因此只有在「有留空项且已填合计未满 100」时才做分配；
+     * 已满/超额一律不改写，交给下发校验拦截。
+     *
+     * @param weights 参与分配的权重值（null 视为留空；<= 0.01 视为待分配标记）
+     * @param target  目标合计（100）
+     */
+    static WeightAllocationPlan decideAllocation(List<BigDecimal> weights, BigDecimal target) {
+        int totalCount = weights.size();
+        if (totalCount == 0) {
+            return new WeightAllocationPlan(WeightAllocationMode.KEEP_MANUAL, BigDecimal.ZERO, 0, 0);
+        }
+        int blankCount = 0;
+        BigDecimal filledTotal = BigDecimal.ZERO;
+        for (BigDecimal weight : weights) {
+            if (weight == null || weight.compareTo(PENDING_WEIGHT) <= 0) {
+                blankCount++;
+            } else {
+                filledTotal = filledTotal.add(weight);
+            }
+        }
+
+        if (blankCount == 0) {
+            // 全部手填：合计正好 100 就无需动；否则不改写，交校验拦截
+            return new WeightAllocationPlan(WeightAllocationMode.KEEP_MANUAL, BigDecimal.ZERO, 0, totalCount);
+        }
+        if (blankCount == totalCount) {
+            return new WeightAllocationPlan(WeightAllocationMode.EVEN_ALL, target, blankCount, totalCount);
+        }
+        BigDecimal remaining = target.subtract(filledTotal);
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            return new WeightAllocationPlan(WeightAllocationMode.EVEN_BLANKS, remaining, blankCount, totalCount);
+        }
+        // 手填合计已满/超额：保留手填值，不自动改写
+        return new WeightAllocationPlan(WeightAllocationMode.KEEP_MANUAL, BigDecimal.ZERO, blankCount, totalCount);
+    }
+
+    /**
+     * 把 target 等分到 size 份，每份不小于 {@link #MIN_WEIGHT}，余数计入最后一份。
+     *
+     * @return 额度不足以保证每份保底时返回空列表（不分配，交给校验拦截）
+     */
+    static List<BigDecimal> splitEvenly(int size, BigDecimal target) {
+        List<BigDecimal> result = new ArrayList<>(size);
+        if (size <= 0) {
+            return result;
+        }
+        BigDecimal minimumTotal = MIN_WEIGHT.multiply(BigDecimal.valueOf(size));
+        if (target.compareTo(minimumTotal) < 0) {
+            return result;
+        }
+        BigDecimal distributable = target.subtract(minimumTotal);
+        BigDecimal each = distributable.divide(BigDecimal.valueOf(size), 2, java.math.RoundingMode.DOWN);
+        BigDecimal assigned = BigDecimal.ZERO;
+        for (int i = 0; i < size; i++) {
+            BigDecimal weight = (i == size - 1) ? target.subtract(assigned) : each.add(MIN_WEIGHT);
+            if (weight.compareTo(MIN_WEIGHT) < 0) {
+                weight = MIN_WEIGHT;
+            }
+            result.add(weight);
+            assigned = assigned.add(weight);
+        }
+        return result;
+    }
+
     /**
      * 2026-10-28 用户定案：导入后把权重自动对齐到「计划合计 100%」。
      *
      * <ul>
      *   <li>权重全部为空（或为待分配标记）→ 按指标数量<b>等分</b>，余数补到最后一项；</li>
      *   <li>用户手填了部分权重 → <b>保留手填值</b>，其余留空项平分剩余额度；</li>
-     *   <li>手填合计已超 100 → 不自动改写，交由下发/异动校验拦截。</li>
+     *   <li>手填合计已满/超额 → <b>不自动改写</b>（包括不整体等分），交由下发/异动校验拦截。</li>
      * </ul>
      *
      * 目的：让「导入即合规」，用户不必自己凑 100；同时保留手动覆盖的表达能力
@@ -300,87 +392,49 @@ public class BusinessImportApplicationService {
         }
 
         BigDecimal target = BigDecimal.valueOf(100);
-        BigDecimal total = indicators.stream()
+        List<BigDecimal> weights = indicators.stream()
                 .map(Indicator::getWeightPercent)
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (total.compareTo(target) == 0) {
-            return;
-        }
-
-        Set<Long> blankIds = indicators.stream()
-                .filter(indicator -> indicator.getWeightPercent() == null
-                        || indicator.getWeightPercent().compareTo(PENDING_WEIGHT) <= 0)
-                .map(Indicator::getId)
-                .collect(Collectors.toSet());
-        List<Indicator> blanks = indicators.stream()
-                .filter(indicator -> blankIds.contains(indicator.getId()))
                 .collect(Collectors.toList());
-        BigDecimal filledTotal = indicators.stream()
-                .filter(indicator -> !blankIds.contains(indicator.getId()))
-                .map(Indicator::getWeightPercent)
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        WeightAllocationPlan planAllocation = decideAllocation(weights, target);
 
-        // 情形一：全部留空 → 按条数等分
-        if (blanks.size() == indicators.size() || filledTotal.compareTo(BigDecimal.ZERO) == 0) {
-            assignEvenly(indicators, target);
-            log.info("[Import] 权重全部留空，已按 {} 项等分到 100%：planId={}", indicators.size(), plan.getId());
-            return;
-        }
-
-        // 情形二：存在留空指标
-        if (!blanks.isEmpty()) {
-            BigDecimal remaining = target.subtract(filledTotal);
-            if (remaining.compareTo(BigDecimal.ZERO) > 0) {
-                // 手填合计未满 100 → 保留手填值，空值平分剩余额度
-                assignEvenly(blanks, remaining);
-                log.info("[Import] 已保留手填权重 {}%，其余 {} 项平分剩余 {}%：planId={}",
-                        filledTotal.stripTrailingZeros().toPlainString(),
-                        blanks.size(),
-                        remaining.stripTrailingZeros().toPlainString(),
-                        plan.getId());
-            } else {
-                // 计划已被填满（或超额）仍有新指标 → 无法再挤出份额，整体重新等分，
-                // 保证「导入后计划合计一定为 100」这一硬约束成立
-                assignEvenly(indicators, target);
-                log.info("[Import] 计划权重已满/超额（手填 {}%），为保证合计 100% 已整体等分 {} 项：planId={}",
-                        filledTotal.stripTrailingZeros().toPlainString(), indicators.size(), plan.getId());
+        if (planAllocation.mode() == WeightAllocationMode.KEEP_MANUAL) {
+            BigDecimal total = weights.stream()
+                    .filter(Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            if (planAllocation.blankCount() > 0) {
+                log.warn("[Import] 手填权重合计 {}% 已满/超额，无法在不改动手填值的前提下分配剩余额度，"
+                        + "本次不自动分配，将由校验拦截：planId={}",
+                        total.stripTrailingZeros().toPlainString(), plan.getId());
+            } else if (total.compareTo(target) != 0) {
+                log.warn("[Import] 手填权重合计 {}% 超过 100%，未自动归一化，将由校验拦截：planId={}",
+                        total.stripTrailingZeros().toPlainString(), plan.getId());
             }
             return;
         }
 
-        // 情形三：手填合计已超 100 → 不自动改写，交由下发/异动校验拦截，
-        // 让用户自己去调整（符合「手动覆盖须自行保证合计 100」的约定）
-        log.warn("[Import] 手填权重合计 {}% 超过 100%，未自动归一化，将由校验拦截：planId={}",
-                total.stripTrailingZeros().toPlainString(), plan.getId());
-    }
+        List<Indicator> targets = planAllocation.mode() == WeightAllocationMode.EVEN_ALL
+                ? indicators
+                : indicators.stream()
+                        .filter(indicator -> indicator.getWeightPercent() == null
+                                || indicator.getWeightPercent().compareTo(PENDING_WEIGHT) <= 0)
+                        .collect(Collectors.toList());
 
-    /**
-     * 把给定指标等分到 target，保证每项 &gt; 0 且合计精确等于 target。
-     * 余数计入最后一项；每项先保底 MIN_WEIGHT（表上有 weight_percent &gt; 0 的 CHECK 约束），
-     * 其余额度按条数平分（保留两位，余数给最后一项）。
-     */
-    private void assignEvenly(List<Indicator> targets, BigDecimal target) {
-        int size = targets.size();
-        if (size == 0) {
+        BigDecimal remaining = planAllocation.mode() == WeightAllocationMode.EVEN_ALL
+                ? target
+                : planAllocation.remaining();
+        List<BigDecimal> shares = splitEvenly(targets.size(), remaining);
+        if (shares.size() != targets.size()) {
+            log.warn("[Import] 额度 {}% 不足以给 {} 项各保底 {}%，本次不自动分配",
+                    remaining.stripTrailingZeros().toPlainString(),
+                    targets.size(), MIN_WEIGHT.toPlainString());
             return;
         }
-        BigDecimal minimumTotal = MIN_WEIGHT.multiply(BigDecimal.valueOf(size));
-        if (target.compareTo(minimumTotal) < 0) {
-            // 目标额度不足以给每项保底权重（指标条数异常多），不做分配，交给校验拦截
-            log.warn("[Import] 目标权重 {}% 不足以给 {} 项各保底 {}%，本次不自动分配",
-                    target.stripTrailingZeros().toPlainString(), size, MIN_WEIGHT.toPlainString());
-            return;
+        for (int i = 0; i < targets.size(); i++) {
+            indicatorsWeightUpdate(targets.get(i), shares.get(i));
         }
-        BigDecimal distributable = target.subtract(minimumTotal);
-        BigDecimal each = distributable.divide(BigDecimal.valueOf(size), 2, java.math.RoundingMode.DOWN);
-        BigDecimal assigned = BigDecimal.ZERO;
-        for (int i = 0; i < size; i++) {
-            BigDecimal weight = (i == size - 1) ? target.subtract(assigned) : each.add(MIN_WEIGHT);
-            indicatorsWeightUpdate(targets.get(i), weight);
-            assigned = assigned.add(weight);
-        }
+        log.info("[Import] 权重自动分配完成：planId={} 方式={} 项数={} 额度={}%",
+                plan.getId(), planAllocation.mode(), targets.size(),
+                remaining.stripTrailingZeros().toPlainString());
     }
 
     private void indicatorsWeightUpdate(Indicator indicator, BigDecimal weight) {
@@ -399,6 +453,7 @@ public class BusinessImportApplicationService {
             return List.of();
         }
         Long targetOrgId = plan.getTargetOrgId();
+        Long createdByOrgId = plan.getCreatedByOrgId();
         return indicatorRepository.findByTaskIds(taskIds).stream()
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
                 .filter(indicator -> indicator.getTargetOrg() != null)
@@ -406,6 +461,13 @@ public class BusinessImportApplicationService {
                 .filter(indicator -> type == ImportType.STRATEGIC_TASK
                         ? indicator.getParentIndicatorId() == null
                         : indicator.getParentIndicatorId() != null)
+                // 2026-10-28：学院链只算本部门创建的子指标 —— 必须与校验侧
+                // （BasicTaskWeightValidationService）与存量迁移侧（V100）保持同一集合，
+                // 否则会出现「分配完又被校验拦下」。
+                .filter(indicator -> type == ImportType.STRATEGIC_TASK
+                        || createdByOrgId == null
+                        || (indicator.getOwnerOrg() != null
+                                && createdByOrgId.equals(indicator.getOwnerOrg().getId())))
                 .sorted(Comparator.comparing(Indicator::getId))
                 .collect(Collectors.toList());
     }
@@ -805,7 +867,9 @@ public class BusinessImportApplicationService {
                 indicator = strategyApplicationService.updateIndicator(
                         target.getId(),
                         normalized.indicatorName(),
-                        normalized.weight(),
+                        // 2026-10-28：学院链更新既有指标时若本次留空权重，同样落「待分配」标记，
+                        // 否则 updateIndicator 会保留旧权重，「留空由系统自动分配」对既有行完全无效。
+                        defaultWeight(normalized.weight()),
                         null,
                         null,
                         normalized.remark(),
@@ -1178,7 +1242,8 @@ public class BusinessImportApplicationService {
      */
     private static final BigDecimal MIN_WEIGHT = new BigDecimal("0.01");
 
-    private BigDecimal defaultWeight(BigDecimal weight) {
+    /** 包级可见以便单测：留空权重落「待分配」标记。 */
+    static BigDecimal defaultWeight(BigDecimal weight) {
         return weight == null ? PENDING_WEIGHT : weight;
     }
 
