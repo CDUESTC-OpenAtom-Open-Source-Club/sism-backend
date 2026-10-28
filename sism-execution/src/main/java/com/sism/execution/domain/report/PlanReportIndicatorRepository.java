@@ -35,6 +35,18 @@ public interface PlanReportIndicatorRepository {
      */
     void applyAppraisalLevelForIndicators(Long reportId, List<Long> indicatorIds, String appraisalLevel);
 
+    /**
+     * 2026-10-28 用户定案：读取某报告轮次下已评定的逐指标鉴定等级。
+     * 用于「上级覆盖下级、未改动沿用上一级」的审批校验。
+     */
+    Map<Long, String> findAppraisalLevelsByReport(Long reportId);
+
+    /**
+     * 2026-10-28 用户定案：审批链上的行内鉴定——直接更新当前报告轮次的单指标等级。
+     * level 为 null 表示恢复未评定。
+     */
+    void updateAppraisalLevel(Long reportId, Long indicatorId, String appraisalLevel);
+
     void attachFiles(Long planReportIndicatorId, java.util.List<Long> attachmentIds, Long createdBy);
 
     List<PlanReportIndicatorSnapshot> findByReportId(Long reportId);

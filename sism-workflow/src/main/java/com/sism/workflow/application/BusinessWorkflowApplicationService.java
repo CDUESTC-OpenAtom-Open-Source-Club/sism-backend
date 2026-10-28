@@ -369,18 +369,24 @@ public class BusinessWorkflowApplicationService {
             });
         }
 
-        // 2026-10-27 用户定案：上报链（PLAN_APPROVAL_*）最后一个节点通过时，
-        // 本报告实例下全部指标的鉴定进度等级必须已评定——存在「未评定」则阻止通过，
-        // 审批人需在审批详情中逐条完成鉴定。@Transactional 保证校验失败整单回滚。
+        // 2026-10-28 用户定案：上报链（PLAN_APPROVAL_*）每个节点通过前都校验——
+        // 本报告实例下全部指标必须有鉴定进度等级；上一节点已评定的沿用，本级改动覆盖。
+        // @Transactional 保证校验失败整单回滚。
         boolean reportApprovalChain =
                 detailBeforeApproval != null
                 && detailBeforeApproval.getFlowCode() != null
                 && detailBeforeApproval.getFlowCode().toUpperCase().startsWith("PLAN_APPROVAL");
-        if (terminalApproved && reportApprovalChain) {
-            assertAllIndicatorsAppraised(instance, normalizedLevels);
+        if (reportApprovalChain) {
+            java.util.Map<Long, String> effectiveLevels = new java.util.LinkedHashMap<>();
+            workflowBusinessContextPorts.forEach(port ->
+                    effectiveLevels.putAll(port.findIndicatorAppraisalLevels(instance.getEntityId())));
+            effectiveLevels.putAll(normalizedLevels);
+            assertAllIndicatorsAppraised(instance, effectiveLevels);
         }
 
-        if (terminalApproved && !normalizedLevels.isEmpty()) {
+        // 2026-10-28：逐指标等级在**每个节点**都投影——上级改了的覆盖下级，
+        // 未改动的保留原值；不再等终态才落库。
+        if (reportApprovalChain && !normalizedLevels.isEmpty()) {
             workflowBusinessContextPorts.forEach(port -> port.applyAppraisalLevelForIndicators(
                     instance.getEntityType(), instance.getEntityId(), normalizedLevels));
         } else if (terminalApproved && appraisalLevel != null && !appraisalLevel.isBlank()) {
@@ -407,15 +413,17 @@ public class BusinessWorkflowApplicationService {
     }
 
     /**
-     * 2026-10-27 用户定案：上报链最后一个节点（本次通过即实例终态）通过前，
-     * 本报告实例下全部指标的鉴定进度等级必须已评定（超前完成/正常/延期）。
-     * 存在「未评定」的指标时阻止通过，并提示审批人补齐鉴定。
+     * 2026-10-28 用户定案：上报链每个节点通过前，本报告实例下全部指标的鉴定进度
+     * 等级必须已评定（超前完成/正常/延期）。
      *
-     * @param instance      本次审批的实例（entityType=PLAN_REPORT）
-     * @param normalizedLevels 本次 decision 携带的逐指标鉴定等级（已归一）
+     * 口径是「有效等级」：上一节点已评定的沿用，本级本次提交的覆盖。
+     * 因此下级已填、上级不改也能直接通过；下级漏填时，本级会被拦下补齐。
+     *
+     * @param instance        本次审批的实例（entityType=PLAN_REPORT）
+     * @param effectiveLevels 已评定的有效等级（历史 + 本次提交）
      */
     private void assertAllIndicatorsAppraised(AuditInstance instance,
-                                              java.util.Map<Long, String> normalizedLevels) {
+                                              java.util.Map<Long, String> effectiveLevels) {
         java.util.List<Long> requiredIndicatorIds = workflowBusinessContextPorts.stream()
                 .map(port -> port.findIndicatorIdsByReport(instance.getEntityId()))
                 .flatMap(java.util.List::stream)
@@ -428,7 +436,7 @@ public class BusinessWorkflowApplicationService {
 
         java.util.List<Long> unappraised = requiredIndicatorIds.stream()
                 .filter(indicatorId -> {
-                    String level = normalizedLevels.get(indicatorId);
+                    String level = effectiveLevels.get(indicatorId);
                     return level == null || level.isBlank();
                 })
                 .toList();
@@ -437,7 +445,7 @@ public class BusinessWorkflowApplicationService {
                     "存在未评定的鉴定进度等级（指标 "
                             + unappraised.stream().map(String::valueOf)
                             .collect(java.util.stream.Collectors.joining("、"))
-                            + "），请在审批详情中完成全部指标的鉴定后再通过");
+                            + "），请先在指标列表中完成全部指标的鉴定后再通过");
         }
     }
 

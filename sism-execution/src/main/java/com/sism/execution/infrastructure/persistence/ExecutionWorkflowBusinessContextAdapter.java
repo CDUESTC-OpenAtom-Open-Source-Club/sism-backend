@@ -97,6 +97,17 @@ public class ExecutionWorkflowBusinessContextAdapter implements WorkflowBusiness
                 .toList();
     }
 
+    /**
+     * 2026-10-28：审批侧读取本报告已评定的逐指标等级，用于逐级覆盖校验。
+     */
+    @Override
+    public java.util.Map<Long, String> findIndicatorAppraisalLevels(Long entityId) {
+        if (entityId == null || entityId <= 0) {
+            return java.util.Map.of();
+        }
+        return planReportIndicatorRepository.findAppraisalLevelsByReport(entityId);
+    }
+
     @Override
     public Optional<BusinessSummary> getBusinessSummary(String entityType, Long entityId) {
         if (entityId == null || entityType == null || entityType.isBlank()) {

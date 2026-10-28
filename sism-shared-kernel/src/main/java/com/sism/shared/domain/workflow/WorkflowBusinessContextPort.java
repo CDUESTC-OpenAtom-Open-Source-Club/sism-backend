@@ -69,4 +69,12 @@ public interface WorkflowBusinessContextPort {
     default java.util.List<Long> findIndicatorIdsByReport(Long entityId) {
         return java.util.List.of();
     }
+
+    /**
+     * 2026-10-28 用户定案：读取该报告轮次下已评定的逐指标鉴定等级。
+     * 审批侧用它与本次提交的等级合并，实现「未改动沿用上一级、改动覆盖」。
+     */
+    default java.util.Map<Long, String> findIndicatorAppraisalLevels(Long entityId) {
+        return java.util.Map.of();
+    }
 }
