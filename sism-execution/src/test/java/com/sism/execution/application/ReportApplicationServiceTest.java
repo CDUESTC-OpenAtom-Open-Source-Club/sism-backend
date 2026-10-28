@@ -747,6 +747,42 @@ class ReportApplicationServiceTest {
     }
 
     @Test
+    void submitReport_shouldRejectWhenMutationApprovalInFlight() {
+        // 2026-10-28 迭代计划 M8-③ 回归：部门存在 IN_REVIEW 的 PLAN_MUTATION_STRATEGY
+        // 异动审批时，提交上报必须被互斥校验拦截（上报/异动二选一）。
+        PlanReport report = PlanReport.createDraft("202610", 44L, ReportOrgType.FUNC_DEPT, 111L);
+        report.setId(62L);
+        when(planReportRepository.findById(62L)).thenReturn(Optional.of(report));
+        // 明细完整（自评+说明齐全），确保拦截点落在互斥校验而非完整性校验
+        when(planReportIndicatorRepository.findByReportId(62L)).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(2001L, 50, "内容", "NORMAL", "说明", null, List.of())
+        ));
+        org.springframework.jdbc.core.JdbcTemplate jdbcTemplate =
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        when(jdbcTemplate.queryForObject(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(Integer.class),
+                org.mockito.ArgumentMatchers.eq(44L),
+                org.mockito.ArgumentMatchers.eq(44L),
+                org.mockito.ArgumentMatchers.eq(44L)))
+                .thenReturn(1);
+        ReportApplicationService service = new ReportApplicationService(
+                planReportRepository,
+                planReportIndicatorRepository,
+                indicatorRepository,
+                eventPublisher,
+                workflowApprovalMetadataQuery,
+                workflowAuditSyncGateway,
+                jdbcTemplate,
+                java.util.List.of());
+
+        assertThatThrownBy(() -> service.submitReport(62L, 8001L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("存在进行中的异动审批");
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    @Test
     void updateReportBatch_shouldNotBeBlockedByOrgMutationLock() {
         // 2026-10-20 定案：异动期间不再锁死批量修改
         PlanReport report = PlanReport.createDraft("202603", 39L, ReportOrgType.FUNC_DEPT, 111L);
