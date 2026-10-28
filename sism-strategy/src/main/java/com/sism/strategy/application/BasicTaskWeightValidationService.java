@@ -199,17 +199,19 @@ public class BasicTaskWeightValidationService {
         WeightSum weightSum = sumEffectiveWeights(planIndicators, weightOverrides);
         BigDecimal totalWeight = weightSum.total();
 
-        if (totalWeight.compareTo(BigDecimal.ZERO) == 0) {
-            throw new IllegalStateException("当前计划不存在学院指标，不能下发");
-        }
-
         // 与战略链一致：存在待分配项时直接拒绝（否则合计可能刚好 100 而被误放行）
+        // —— 该判定必须排在「合计为 0」之前：全部为待分配标记时，
+        // 剔除待分配后的合计恰好为 0，若先判 0 会误报「不存在学院指标」。
         if (weightSum.pendingCount() > 0) {
             throw new IllegalStateException(
                     "计划内指标权重合计必须为 100%，当前有 " + weightSum.pendingCount()
                             + " 项权重未分配（导入时留空）。"
                             + "请在指标列表中调整权重，或导入时留空由系统自动等分"
             );
+        }
+
+        if (totalWeight.compareTo(BigDecimal.ZERO) == 0) {
+            throw new IllegalStateException("当前计划不存在学院指标，不能下发");
         }
 
         if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {

@@ -1,6 +1,6 @@
 package com.sism.main.application;
 
-import com.sism.main.application.BusinessImportApplicationService.ImportType;
+import com.sism.main.interfaces.dto.BusinessImportDtos.ImportType;
 import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.SysOrg;
 import com.sism.strategy.domain.indicator.Indicator;
@@ -71,15 +71,15 @@ class BusinessImportWeightScopeTest {
 
         // 本部门创建的子指标 → 计入
         assertTrue(BusinessImportApplicationService.isInWeightScope(
-                indicator(36L, 59L, false, false), plan, ImportType.FUNC_TO_COLLEGE));
+                indicator(36L, 59L, false, false), plan, ImportType.DISTRIBUTION));
         // 其它部门创建的子指标 → 不计入（与校验侧、迁移侧同口径）
         assertFalse(BusinessImportApplicationService.isInWeightScope(
-                indicator(37L, 59L, false, false), plan, ImportType.FUNC_TO_COLLEGE));
+                indicator(37L, 59L, false, false), plan, ImportType.DISTRIBUTION));
         // 父指标在学院链不计入
         assertFalse(BusinessImportApplicationService.isInWeightScope(
-                indicator(36L, 59L, true, false), plan, ImportType.FUNC_TO_COLLEGE));
+                indicator(36L, 59L, true, false), plan, ImportType.DISTRIBUTION));
         // 目标学院不一致 → 不计入
         assertFalse(BusinessImportApplicationService.isInWeightScope(
-                indicator(36L, 61L, false, false), plan, ImportType.FUNC_TO_COLLEGE));
+                indicator(36L, 61L, false, false), plan, ImportType.DISTRIBUTION));
     }
 }

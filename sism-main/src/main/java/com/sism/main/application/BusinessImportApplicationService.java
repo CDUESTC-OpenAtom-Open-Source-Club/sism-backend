@@ -446,7 +446,11 @@ public class BusinessImportApplicationService {
 
     /** 取该计划下参与权重合计的指标：战略链取父指标，学院链取子指标。 */
     private List<Indicator> loadPlanIndicatorsForPlan(Plan plan, ImportType type) {
+        // 2026-10-28：排除软删任务 —— 与校验侧、存量迁移侧同口径。
+        // 软删任务不级联软删其指标，若不排除，分配集合会大于校验集合，
+        // 造成「分配完又被校验拦下」且改动了口径外的指标权重。
         List<Long> taskIds = taskRepository.findByPlanId(plan.getId()).stream()
+                .filter(task -> !Boolean.TRUE.equals(task.getIsDeleted()))
                 .map(StrategicTask::getId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
@@ -461,7 +465,7 @@ public class BusinessImportApplicationService {
     }
 
     /**
-     * 判���指标是否属于「计划内权重合计」的参与集合（2026-10-28）。
+     * 判断指标是否属于「计划内权重合计」的参与集合（2026-10-28）。
      *
      * <p>口径必须与校验侧（BasicTaskWeightValidationService）和存量迁移侧（V100）完全一致：
      * <ul>
@@ -747,9 +751,10 @@ public class BusinessImportApplicationService {
                 indicator = strategyApplicationService.updateIndicator(
                         target.getId(),
                         normalized.indicatorName(),
-                        // 2026-10-28：更新既有指标时若本次留空权重，同样落「待分配」标记，
-                        // 否则 updateIndicator 会保留旧权重，「留空由系统自动分配」对既有行完全无效。
-                        defaultWeight(normalized.weight()),
+                        // 2026-10-28：更新既有指标时「留空」= 保留原权重（updateIndicator 对 null 是保留语义）。
+                        // 若在此处落待分配标记，会先冲掉用户先前手填的值、再被等分重算，
+                        // 等于改写了用户没有重新填写过的权重。
+                        normalized.weight(),
                         null,
                         null,
                         normalized.remark(),
@@ -805,7 +810,12 @@ public class BusinessImportApplicationService {
     /** 按计划+可选学院范围列出现有未删指标（覆盖删除的作用域口径，与预览 existing 查询一致） */
     private List<Indicator> indicatorsInPlanScope(Plan plan, Long targetCollegeOrgId) {
         List<StrategicTask> tasks = taskRepository.findByPlanId(plan.getId());
-        List<Long> taskIds = tasks.stream().map(StrategicTask::getId).filter(Objects::nonNull).toList();
+        // 2026-10-28：与权重参与集合同口径，排除软删任务
+        List<Long> taskIds = tasks.stream()
+                .filter(task -> !Boolean.TRUE.equals(task.getIsDeleted()))
+                .map(StrategicTask::getId)
+                .filter(Objects::nonNull)
+                .toList();
         if (taskIds.isEmpty()) {
             return List.of();
         }
@@ -891,9 +901,8 @@ public class BusinessImportApplicationService {
                 indicator = strategyApplicationService.updateIndicator(
                         target.getId(),
                         normalized.indicatorName(),
-                        // 2026-10-28：学院链更新既有指标时若本次留空权重，同样落「待分配」标记，
-                        // 否则 updateIndicator 会保留旧权重，「留空由系统自动分配」对既有行完全无效。
-                        defaultWeight(normalized.weight()),
+                        // 2026-10-28：更新既有指标时「留空」= 保留原权重（与战略链同口径）
+                        normalized.weight(),
                         null,
                         null,
                         normalized.remark(),
