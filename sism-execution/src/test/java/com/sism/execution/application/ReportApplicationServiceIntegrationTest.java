@@ -4,6 +4,8 @@ import com.sism.execution.domain.report.PlanReport;
 import com.sism.execution.domain.report.PlanReportIndicatorRepository;
 import com.sism.execution.domain.report.PlanReportRepository;
 import com.sism.execution.domain.report.ReportOrgType;
+import com.sism.execution.interfaces.dto.IndicatorLatestAttachmentResponse;
+import com.sism.execution.interfaces.dto.ReportAttachmentResponse;
 import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.SysOrg;
 import com.sism.strategy.domain.indicator.Indicator;
@@ -25,6 +27,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -298,6 +301,112 @@ class ReportApplicationServiceIntegrationTest {
         assertThat(hydrated.getIndicatorDetails().get(0).attachments().get(0).id()).isEqualTo(attachmentId);
         assertThat(hydrated.getIndicatorDetails().get(0).attachments().get(0).fileName())
                 .isEqualTo("evidence-" + sequence + ".pdf");
+    }
+
+    @Test
+    @DisplayName("可见附件查询：草稿只对填报组织本人可见，上级拿到上一轮已上报快照")
+    void findLatestVisibleIndicatorAttachments_shouldRespectDraftVisibility() {
+        long sequence = TEST_SEQUENCE.getAndIncrement();
+        SysOrg ownerOrg = persistOrg("owner-visible-" + sequence, OrgType.functional);
+        SysOrg targetOrg = persistOrg("target-visible-" + sequence, OrgType.functional);
+        SysOrg viewerOrg = persistOrg("viewer-visible-" + sequence, OrgType.functional);
+
+        Indicator indicator = Indicator.create("indicator-visible-" + sequence, ownerOrg, targetOrg, "定量");
+        indicator.setStatus(IndicatorStatus.DISTRIBUTED);
+        indicator = indicatorRepository.save(indicator);
+
+        // 已提交轮次：上级/其他组织可见
+        PlanReport submitted = PlanReport.createDraft(
+                "202602", targetOrg.getId(), ReportOrgType.FUNC_DEPT, 60_000L + sequence);
+        submitted.validate();
+        submitted = planReportRepository.save(submitted);
+        submitted.submit(9_100L + sequence);
+        submitted = planReportRepository.save(submitted);
+
+        long submittedIndicatorRowId = 73_000L + sequence;
+        jdbcTemplate.update(
+                """
+                INSERT INTO public.plan_report_indicator
+                    (id, report_id, indicator_id, progress, comment, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                submittedIndicatorRowId,
+                submitted.getId(),
+                indicator.getId(),
+                40,
+                "已提交说明"
+        );
+        insertAttachment(submittedIndicatorRowId, 83_000L + sequence, "submitted.pdf");
+
+        // 草稿轮次：仅填报组织本人可见；报告 id 更大，updated_at 相同时仍排最新
+        PlanReport draft = PlanReport.createDraft(
+                "202603", targetOrg.getId(), ReportOrgType.FUNC_DEPT, 60_100L + sequence);
+        draft.validate();
+        draft = planReportRepository.save(draft);
+
+        long draftIndicatorRowId = 74_000L + sequence;
+        jdbcTemplate.update(
+                """
+                INSERT INTO public.plan_report_indicator
+                    (id, report_id, indicator_id, progress, comment, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                draftIndicatorRowId,
+                draft.getId(),
+                indicator.getId(),
+                60,
+                "草稿说明"
+        );
+        insertAttachment(draftIndicatorRowId, 84_000L + sequence, "draft.pdf");
+
+        flushAndClear();
+
+        // 上级/其他组织：只看得到已提交轮次
+        List<IndicatorLatestAttachmentResponse> forOther =
+                reportApplicationService.findLatestVisibleIndicatorAttachments(
+                        List.of(indicator.getId()), false, viewerOrg.getId());
+        assertThat(forOther).hasSize(1);
+        assertThat(forOther.get(0).getReportId()).isEqualTo(submitted.getId());
+        assertThat(forOther.get(0).getAttachments())
+                .extracting(ReportAttachmentResponse::getFileName)
+                .containsExactly("submitted.pdf");
+
+        // 填报组织本人：看到最新草稿轮次
+        List<IndicatorLatestAttachmentResponse> forOwner =
+                reportApplicationService.findLatestVisibleIndicatorAttachments(
+                        List.of(indicator.getId()), false, targetOrg.getId());
+        assertThat(forOwner).hasSize(1);
+        assertThat(forOwner.get(0).getReportId()).isEqualTo(draft.getId());
+        assertThat(forOwner.get(0).getAttachments())
+                .extracting(ReportAttachmentResponse::getFileName)
+                .containsExactly("draft.pdf");
+    }
+
+    private void insertAttachment(long planReportIndicatorId, long attachmentId, String fileName) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO public.attachment
+                    (id, original_name, size_bytes, content_type, public_url, is_deleted, uploaded_by, uploaded_at)
+                VALUES (?, ?, ?, ?, NULL, FALSE, ?, CURRENT_TIMESTAMP)
+                """,
+                attachmentId,
+                fileName,
+                1024L,
+                "application/pdf",
+                9_000L
+        );
+        jdbcTemplate.update(
+                """
+                INSERT INTO public.plan_report_indicator_attachment
+                    (id, plan_report_indicator_id, attachment_id, sort_order, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                attachmentId + 100_000L,
+                planReportIndicatorId,
+                attachmentId,
+                0,
+                9_000L
+        );
     }
 
     private TestFixture createSubmittedReportWithIndicator(int progress) {

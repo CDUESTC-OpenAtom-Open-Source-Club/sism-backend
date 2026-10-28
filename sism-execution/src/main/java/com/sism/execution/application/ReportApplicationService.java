@@ -12,6 +12,8 @@ import com.sism.execution.domain.report.WorkflowApprovalMetadata;
 import com.sism.execution.domain.report.WorkflowApprovalMetadataQuery;
 import com.sism.execution.domain.report.WorkflowAuditSyncGateway;
 import com.sism.execution.interfaces.dto.PlanReportQueryRequest;
+import com.sism.execution.interfaces.dto.IndicatorLatestAttachmentResponse;
+import com.sism.execution.interfaces.dto.ReportAttachmentResponse;
 import com.sism.enums.ProgressLevel;
 import com.sism.execution.interfaces.dto.UpdatePlanReportIndicatorDetailRequest;
 import com.sism.shared.application.dto.CurrentUser;
@@ -775,6 +777,169 @@ public class ReportApplicationService {
 
     public List<PlanReport> findReportsByPlanIdForOrg(Long planId, Long reportOrgId) {
         return enrichReportList(planReportRepository.findByPlanId(planId));
+    }
+
+    /**
+     * 2026-10-28 用户定案：导出附件必须与页面可见性同构。
+     *
+     * 返回每个指标「当前查看人可见」的最新一轮填报及其附件：
+     * ① 填报组织本人：最新一轮（含尚未发起审批的草稿，页面实时可见）；
+     * ② 上级/其他组织：最新一轮非草稿（即上一轮已上报快照）；
+     * ③ 系统管理员：不按组织过滤。
+     *
+     * 注意：不能简单取「最新一条 plan_report_indicator」，因为最新报告可能不包含该指标
+     * （例如本轮只填了部分指标），必须取「包含该指标的报告里最新的一条」。
+     */
+    public List<IndicatorLatestAttachmentResponse> findLatestVisibleIndicatorAttachments(
+            List<Long> indicatorIds, boolean systemAdmin, Long viewerOrgId) {
+        if (indicatorIds == null || indicatorIds.isEmpty()) {
+            return List.of();
+        }
+
+        List<Long> normalizedIds = indicatorIds.stream()
+                .filter(Objects::nonNull)
+                .filter(id -> id > 0)
+                .distinct()
+                .limit(2000)
+                .toList();
+        if (normalizedIds.isEmpty()) {
+            return List.of();
+        }
+
+        String placeholders = String.join(", ",
+                java.util.Collections.nCopies(normalizedIds.size(), "?"));
+        // 2026-10-27 定案沿用：草稿只对填报组织自身可见，链上审批角色不享受草稿豁免
+        String visibilityCondition = systemAdmin
+                ? ""
+                : " AND (pr.status <> 'DRAFT' OR pr.report_org_id = ?)";
+
+        String sql = """
+                WITH visible_reports AS (
+                    SELECT pr.id AS report_id,
+                           pr.report_month,
+                           pr.status,
+                           pr.report_org_id,
+                           pr.submitted_at
+                    FROM public.plan_report pr
+                    WHERE pr.is_deleted = false
+                    %s
+                ),
+                ranked AS (
+                    SELECT pri.indicator_id,
+                           vr.report_id,
+                           vr.report_month,
+                           vr.status,
+                           vr.submitted_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY pri.indicator_id
+                               ORDER BY vr.report_month ASC, vr.report_id ASC
+                           ) AS round_no,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY pri.indicator_id
+                               ORDER BY vr.report_month DESC, vr.report_id DESC
+                           ) AS latest_rank
+                    FROM public.plan_report_indicator pri
+                    JOIN visible_reports vr ON vr.report_id = pri.report_id
+                    WHERE pri.indicator_id IN (%s)
+                )
+                SELECT r.indicator_id,
+                       r.report_id,
+                       r.report_month,
+                       r.status,
+                       r.submitted_at,
+                       r.round_no,
+                       a.id AS attachment_id,
+                       a.original_name,
+                       a.content_type,
+                       a.size_bytes
+                FROM ranked r
+                LEFT JOIN public.plan_report_indicator pri
+                       ON pri.report_id = r.report_id
+                      AND pri.indicator_id = r.indicator_id
+                LEFT JOIN public.plan_report_indicator_attachment pria
+                       ON pria.plan_report_indicator_id = pri.id
+                LEFT JOIN public.attachment a
+                       ON a.id = pria.attachment_id
+                      AND COALESCE(a.is_deleted, false) = false
+                WHERE r.latest_rank = 1
+                ORDER BY r.indicator_id ASC, pria.sort_order ASC, a.id ASC
+                """.formatted(visibilityCondition, placeholders);
+
+        List<Object> params = new ArrayList<>();
+        if (!systemAdmin) {
+            params.add(viewerOrgId);
+        }
+        params.addAll(normalizedIds);
+
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, params.toArray());
+        Map<Long, IndicatorLatestAttachmentResponse> summaries = new java.util.LinkedHashMap<>();
+
+        for (Map<String, Object> row : rows) {
+            Long indicatorId = toLong(row.get("indicator_id"));
+            if (indicatorId == null) {
+                continue;
+            }
+
+            IndicatorLatestAttachmentResponse summary = summaries.computeIfAbsent(
+                    indicatorId,
+                    id -> IndicatorLatestAttachmentResponse.builder()
+                            .indicatorId(id)
+                            .reportId(toLong(row.get("report_id")))
+                            .reportMonth(toText(row.get("report_month")))
+                            .fillDate(resolveFillDate(
+                                    row.get("submitted_at"),
+                                    toText(row.get("report_month"))))
+                            .round(toInteger(row.get("round_no")))
+                            .status(toText(row.get("status")))
+                            .attachments(new ArrayList<>())
+                            .build()
+            );
+
+            Long attachmentId = toLong(row.get("attachment_id"));
+            if (attachmentId != null) {
+                summary.getAttachments().add(ReportAttachmentResponse.builder()
+                        .id(attachmentId)
+                        .fileName(toText(row.get("original_name")))
+                        .fileSize(toLong(row.get("size_bytes")))
+                        .fileType(toText(row.get("content_type")))
+                        .url("/api/v1/attachments/" + attachmentId + "/download")
+                        .build());
+            }
+        }
+
+        return new ArrayList<>(summaries.values());
+    }
+
+    private static Long toLong(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
+    }
+
+    private static Integer toInteger(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private static String toText(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    /** 提交时间优先，草稿回退到填报期间（YYYYMM → YYYY-MM-01） */
+    private static String resolveFillDate(Object submittedAt, String reportMonth) {
+        if (submittedAt instanceof java.sql.Timestamp timestamp) {
+            return timestamp.toLocalDateTime().toLocalDate().toString();
+        }
+        if (submittedAt instanceof java.time.OffsetDateTime offsetDateTime) {
+            return offsetDateTime.toLocalDate().toString();
+        }
+        if (submittedAt instanceof java.time.LocalDateTime localDateTime) {
+            return localDateTime.toLocalDate().toString();
+        }
+        if (submittedAt instanceof java.time.LocalDate localDate) {
+            return localDate.toString();
+        }
+        if (reportMonth != null && reportMonth.length() == 6) {
+            return reportMonth.substring(0, 4) + "-" + reportMonth.substring(4) + "-01";
+        }
+        return null;
     }
 
     /**

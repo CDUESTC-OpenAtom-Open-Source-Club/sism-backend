@@ -352,6 +352,25 @@ public class ReportController {
         return ResponseEntity.ok(ApiResponse.success(responses));
     }
 
+    /**
+     * 2026-10-28：导出专用——批量返回每个指标「当前登录人可见」的最新一轮填报附件。
+     * 可见性口径与页面完全一致：草稿只对填报组织自身可见，上级拿到的是上一轮已上报快照。
+     */
+    @PostMapping("/indicator-attachments/latest")
+    @Operation(summary = "批量查询指标最新可见填报附件",
+            description = "导出用：按当前登录人可见范围返回每个指标最新一轮填报的附件")
+    @PreAuthorize(REPORT_WRITE_ACCESS)
+    public ResponseEntity<ApiResponse<List<IndicatorLatestAttachmentResponse>>> getLatestVisibleIndicatorAttachments(
+            @Valid @RequestBody IndicatorAttachmentQueryRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        boolean systemAdmin = isSystemAdmin(currentUser);
+        Long viewerOrgId = systemAdmin ? null : requireCurrentOrgId(currentUser);
+        List<IndicatorLatestAttachmentResponse> summaries =
+                reportApplicationService.findLatestVisibleIndicatorAttachments(
+                        request.getIndicatorIds(), systemAdmin, viewerOrgId);
+        return ResponseEntity.ok(ApiResponse.success(summaries));
+    }
+
     @GetMapping("/count/status/{status}")
     @Operation(summary = "统计指定状态的报告数量", description = "获取指定状态的报告总数")
     @PreAuthorize(REPORT_WRITE_ACCESS)
