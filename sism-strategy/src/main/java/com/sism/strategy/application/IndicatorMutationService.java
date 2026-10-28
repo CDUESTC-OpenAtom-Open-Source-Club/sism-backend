@@ -303,6 +303,16 @@ public class IndicatorMutationService {
         if (planId == null) {
             return;
         }
+        assertReportApprovalNotInFlightForPlan(planId);
+    }
+
+    /**
+     * 2026-10-27 修复（上报/异动互斥对齐）：任务改名异动路径此前缺失上报在途校验——
+     * 指标新增/修改/删除三路径均有 assertReportApprovalNotInFlightForIndicator，
+     * 实测上报审批在审时任务改名异动仍可发起，同一计划出现「上报在审 + 异动在审」
+     * 两条流程并存。互斥按计划维度判定，此处为指标与任务两条入口的共用核心。
+     */
+    private void assertReportApprovalNotInFlightForPlan(Long planId) {
         Integer inFlight = jdbcTemplate.queryForObject(
                 """
                 SELECT COUNT(*)
@@ -371,6 +381,14 @@ public class IndicatorMutationService {
         }
         if (current.get("mutation_status") != null) {
             throw new IllegalStateException("该任务已有异动在审批中");
+        }
+        // 2026-10-27 修复（上报/异动互斥对齐）：任务改名异动补上报在途校验，
+        // 与指标三路径（新增/修改/删除）同口径——上报在审期间不允许异动改动表内容。
+        Long planId = current.get("plan_id") == null
+                ? null
+                : ((Number) current.get("plan_id")).longValue();
+        if (planId != null) {
+            assertReportApprovalNotInFlightForPlan(planId);
         }
         assertNoActiveMutationFlow(TASK_ENTITY_TYPE, taskId, "战略任务");
         String previousName = current.get("name") == null ? null : String.valueOf(current.get("name"));
