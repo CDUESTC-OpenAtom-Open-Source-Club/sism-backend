@@ -43,7 +43,7 @@ public class IndicatorMutationService {
     private static final String MUTATION_LOCK_NOTICE_TYPE = "INDICATOR_MUTATION";
 
     private final JdbcTemplate jdbcTemplate;
-    /** 2026-10-20：异动同样必须满足基础性权重合计=100 的闭合校验 */
+    /** 2026-10-20：异动同样必须满足计划内权重合计=100 的闭合校验（2026-10-28 口径由「基础性子集」改为「计划内全部指标」） */
     private final BasicTaskWeightValidationService basicTaskWeightValidationService;
     private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final com.sism.shared.domain.user.UserProvider userProvider;
@@ -158,7 +158,7 @@ public class IndicatorMutationService {
 
     /**
      * 2026-10-21 用户定案：一次异动可同时调整多条指标——多条字段攒改与新增指标
-     * 整批一次提交：先全部应用（原地落库 + 打异动标记），再统一做基础性权重合计
+     * 整批一次提交：先全部应用（原地落库 + 打异动标记），再统一做计划内权重合计
      * =100 校验，最后逐条启动审批链；任一失败整批回滚（@Transactional）。
      * item 结构：{id: 指标ID, create?: true 表示新增指标,
      *           indicator_desc?/weight_percent?/remark?: 变更值}
@@ -763,7 +763,7 @@ public class IndicatorMutationService {
         );
 
         // 2026-10-20 用户定案：异动与下发共用同一闭合口径——
-        // 基础性指标权重合计必须为 100；校验按「本批变更生效后的快照」计算，
+        // 计划内指标权重合计必须为 100；校验按「本批变更生效后的快照」计算，
         // 修改条目的拟变更权重以 override 形式参与合计（发起不再原地落库）。
         assertPlanBasicWeightStillClosed(List.of(indicatorId), Set.of(), collectProposedWeights(indicatorId, changes));
 
