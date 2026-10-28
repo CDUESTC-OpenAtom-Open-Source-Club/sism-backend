@@ -98,6 +98,52 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
     }
 
     @Override
+    public Map<Long, String> findAppraisalLevelsByReport(Long reportId) {
+        if (reportId == null || reportId <= 0) {
+            return Map.of();
+        }
+        return jdbcTemplate.query(
+                """
+                SELECT indicator_id, appraisal_level
+                FROM public.plan_report_indicator
+                WHERE report_id = ?
+                """,
+                rs -> {
+                    Map<Long, String> result = new LinkedHashMap<>();
+                    while (rs.next()) {
+                        String level = rs.getString("appraisal_level");
+                        if (level != null && !level.isBlank()) {
+                            result.put(rs.getLong("indicator_id"), level.trim().toUpperCase());
+                        }
+                    }
+                    return result;
+                },
+                reportId
+        );
+    }
+
+    @Override
+    public void updateAppraisalLevel(Long reportId, Long indicatorId, String appraisalLevel) {
+        if (reportId == null || reportId <= 0 || indicatorId == null || indicatorId <= 0) {
+            return;
+        }
+        String normalized = appraisalLevel == null || appraisalLevel.isBlank()
+                ? null
+                : appraisalLevel.trim().toUpperCase();
+        jdbcTemplate.update(
+                """
+                UPDATE public.plan_report_indicator
+                SET appraisal_level = ?
+                WHERE report_id = ?
+                  AND indicator_id = ?
+                """,
+                normalized,
+                reportId,
+                indicatorId
+        );
+    }
+
+    @Override
     public void attachFiles(Long planReportIndicatorId, List<Long> attachmentIds, Long createdBy) {
         if (planReportIndicatorId == null) {
             return;

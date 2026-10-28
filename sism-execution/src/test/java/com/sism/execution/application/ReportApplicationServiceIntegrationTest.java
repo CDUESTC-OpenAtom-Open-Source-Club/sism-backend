@@ -1,5 +1,6 @@
 package com.sism.execution.application;
 
+import com.sism.execution.application.IndicatorAppraisalApplicationService;
 import com.sism.execution.domain.report.PlanReport;
 import com.sism.execution.domain.report.PlanReportIndicatorRepository;
 import com.sism.execution.domain.report.PlanReportRepository;
@@ -42,6 +43,13 @@ class ReportApplicationServiceIntegrationTest {
 
     @Autowired
     private ReportApplicationService reportApplicationService;
+
+    /**
+     * 2026-10-28：本集成测试只覆盖报告主链路；鉴定上下文服务依赖工作流仓储，
+     * 测试上下文未装配，用 mock 顶替，避免 ApplicationContext 启动失败。
+     */
+    @org.springframework.boot.test.mock.mockito.MockBean
+    private IndicatorAppraisalApplicationService indicatorAppraisalApplicationService;
 
     @Autowired
     private PlanReportRepository planReportRepository;

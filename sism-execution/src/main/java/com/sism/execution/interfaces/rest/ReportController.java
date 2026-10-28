@@ -4,6 +4,7 @@ import com.sism.common.ApiResponse;
 import com.sism.common.PageResult;
 import com.sism.exception.ResourceNotFoundException;
 import com.sism.execution.application.ReportApplicationService;
+import com.sism.execution.application.IndicatorAppraisalApplicationService;
 import com.sism.execution.domain.report.PlanReport;
 import com.sism.execution.domain.report.ReportOrgType;
 import com.sism.execution.interfaces.dto.*;
@@ -47,6 +48,8 @@ public class ReportController {
             "hasAnyRole('APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')";
 
     private final ReportApplicationService reportApplicationService;
+    /** 2026-10-28：审批链行内鉴定等级（当前节点负责人可改） */
+    private final IndicatorAppraisalApplicationService indicatorAppraisalApplicationService;
     /** 2026-10-24：审批链上的组织可查阅报告内容（否则审批详情内容区空白） */
     private final com.sism.execution.domain.report.ReportApprovalChainAccessQuery
             reportApprovalChainAccessQuery;
@@ -369,6 +372,39 @@ public class ReportController {
                 reportApplicationService.findLatestVisibleIndicatorAttachments(
                         request.getIndicatorIds(), systemAdmin, viewerOrgId);
         return ResponseEntity.ok(ApiResponse.success(summaries));
+    }
+
+    /**
+     * 2026-10-28：列表页/填报页批量查询鉴定上下文。
+     * 返回当前有效等级 + 当前用户是否为当前审批节点的负责人（决定行内下拉是否解锁）。
+     */
+    @PostMapping("/indicator-appraisal/context")
+    @Operation(summary = "批量查询指标鉴定进度上下文",
+            description = "返回当前有效鉴定等级、当前审批节点，以及当前用户是否可调整")
+    @PreAuthorize(REPORT_WRITE_ACCESS)
+    public ResponseEntity<ApiResponse<List<IndicatorAppraisalContextResponse>>> getIndicatorAppraisalContexts(
+            @Valid @RequestBody IndicatorAppraisalContextRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        return ResponseEntity.ok(ApiResponse.success(
+                indicatorAppraisalApplicationService.getContexts(
+                        request.getIndicatorIds(), requireCurrentUserId(currentUser))));
+    }
+
+    /**
+     * 2026-10-28：审批链上的行内鉴定——只有当前审批节点负责人可改。
+     * 改了就覆盖上一级，不改则沿用；同时同步 Alert 手动等级供看板/列表展示。
+     */
+    @PutMapping("/indicators/{indicatorId}/appraisal-level")
+    @Operation(summary = "调整指标鉴定进度等级",
+            description = "仅当前审批节点负责人可调整；null/空表示恢复未评定")
+    @PreAuthorize(REPORT_WRITE_ACCESS)
+    public ResponseEntity<ApiResponse<IndicatorAppraisalContextResponse>> setIndicatorAppraisalLevel(
+            @Parameter(description = "指标ID") @PathVariable Long indicatorId,
+            @Valid @RequestBody SetIndicatorAppraisalLevelRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        return ResponseEntity.ok(ApiResponse.success(
+                indicatorAppraisalApplicationService.setLevel(
+                        indicatorId, request.getLevel(), requireCurrentUserId(currentUser))));
     }
 
     @GetMapping("/count/status/{status}")
