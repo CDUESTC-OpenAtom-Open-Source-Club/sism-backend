@@ -406,8 +406,9 @@ public class BusinessImportApplicationService {
                         + "本次不自动分配，将由校验拦截：planId={}",
                         total.stripTrailingZeros().toPlainString(), plan.getId());
             } else if (total.compareTo(target) != 0) {
-                log.warn("[Import] 手填权重合计 {}% 超过 100%，未自动归一化，将由校验拦截：planId={}",
-                        total.stripTrailingZeros().toPlainString(), plan.getId());
+                String direction = total.compareTo(target) > 0 ? "超过" : "不足";
+                log.warn("[Import] 手填权重合计 {}% {} 100%，未自动归一化，将由校验拦截：planId={}",
+                        total.stripTrailingZeros().toPlainString(), direction, plan.getId());
             }
             return;
         }
@@ -453,23 +454,46 @@ public class BusinessImportApplicationService {
             return List.of();
         }
         Long targetOrgId = plan.getTargetOrgId();
-        Long createdByOrgId = plan.getCreatedByOrgId();
         return indicatorRepository.findByTaskIds(taskIds).stream()
-                .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
-                .filter(indicator -> indicator.getTargetOrg() != null)
-                .filter(indicator -> targetOrgId == null || targetOrgId.equals(indicator.getTargetOrg().getId()))
-                .filter(indicator -> type == ImportType.STRATEGIC_TASK
-                        ? indicator.getParentIndicatorId() == null
-                        : indicator.getParentIndicatorId() != null)
-                // 2026-10-28：学院链只算本部门创建的子指标 —— 必须与校验侧
-                // （BasicTaskWeightValidationService）与存量迁移侧（V100）保持同一集合，
-                // 否则会出现「分配完又被校验拦下」。
-                .filter(indicator -> type == ImportType.STRATEGIC_TASK
-                        || createdByOrgId == null
-                        || (indicator.getOwnerOrg() != null
-                                && createdByOrgId.equals(indicator.getOwnerOrg().getId())))
+                .filter(indicator -> isInWeightScope(indicator, plan, type))
                 .sorted(Comparator.comparing(Indicator::getId))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 判���指标是否属于「计划内权重合计」的参与集合（2026-10-28）。
+     *
+     * <p>口径必须与校验侧（BasicTaskWeightValidationService）和存量迁移侧（V100）完全一致：
+     * <ul>
+     *   <li>排除软删；</li>
+     *   <li>只算归属该计划目标部门（target_org）的指标；</li>
+     *   <li>战略链取父指标；</li>
+     *   <li>学院链取本部门创建（owner_org = plan.created_by_org_id）的子指标。</li>
+     * </ul>
+     */
+    static boolean isInWeightScope(Indicator indicator, Plan plan, ImportType type) {
+        if (Boolean.TRUE.equals(indicator.getIsDeleted())) {
+            return false;
+        }
+        if (indicator.getTargetOrg() == null) {
+            return false;
+        }
+        Long targetOrgId = plan.getTargetOrgId();
+        if (targetOrgId != null && !targetOrgId.equals(indicator.getTargetOrg().getId())) {
+            return false;
+        }
+        if (type == ImportType.STRATEGIC_TASK) {
+            return indicator.getParentIndicatorId() == null;
+        }
+        if (indicator.getParentIndicatorId() == null) {
+            return false;
+        }
+        Long createdByOrgId = plan.getCreatedByOrgId();
+        if (createdByOrgId == null) {
+            return true;
+        }
+        return indicator.getOwnerOrg() != null
+                && createdByOrgId.equals(indicator.getOwnerOrg().getId());
     }
 
     private Optional<Plan> findPlanForImportContext(PreviewContext context) {

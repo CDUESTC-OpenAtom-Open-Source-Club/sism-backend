@@ -262,8 +262,9 @@ class IndicatorMutationServiceTest {
                 any()))
                 .thenReturn(TARGET_ORG_ID);
 
-        // 模拟「剔除待删指标后合计=60」的闭合校验失败
-        doThrow(new IllegalStateException("基础性任务指标权重合计必须为100，当前为60"))
+        // 模拟「剔除待删指标后合计=60」的闭合校验失败（2026-10-28 文案同步为计划内合计口径）
+        doThrow(new IllegalStateException("计划内指标权重合计必须为 100%，当前为 60%（还差 40%，共 2 项指标）。"
+                + "请在指标列表中调整权重，或导入时留空由系统自动等分"))
                 .when(basicTaskWeightValidationService)
                 .validatePlanBasicWeight(eq(4040L), eq(TARGET_ORG_ID), any(), any());
 

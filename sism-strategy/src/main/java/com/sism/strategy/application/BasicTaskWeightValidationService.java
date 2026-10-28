@@ -95,6 +95,17 @@ public class BasicTaskWeightValidationService {
         WeightSum weightSum = sumEffectiveWeights(planIndicators, overrides);
         BigDecimal totalWeight = weightSum.total();
 
+        // 2026-10-28：存在「待分配」项（导入时留空落的 0.01 标记）时必须直接拒绝。
+        // 待分配项不计入合计，若只看合计可能因为「其余项刚好 100」而被误放行，
+        // 而库内实际合计并非 100 —— 这违背「权重加起来只能是 100」这条硬口径。
+        if (weightSum.pendingCount() > 0) {
+            throw new IllegalStateException(
+                    "计划内指标权重合计必须为 100%，当前有 " + weightSum.pendingCount()
+                            + " 项权重未分配（导入时留空）。"
+                            + "请在指标列表中调整权重，或导入时留空由系统自动等分"
+            );
+        }
+
         if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
             BigDecimal diff = REQUIRED_TOTAL_WEIGHT.subtract(totalWeight);
             String direction = diff.signum() > 0 ? "还差 " : "超出 ";
@@ -103,7 +114,6 @@ public class BasicTaskWeightValidationService {
                             + totalWeight.stripTrailingZeros().toPlainString() + "%（"
                             + direction + diff.abs().stripTrailingZeros().toPlainString()
                             + "%，共 " + planIndicators.size() + " 项指标）。"
-                            + pendingHint(weightSum.pendingCount())
                             + "请在指标列表中调整权重，或导入时留空由系统自动等分"
             );
         }
@@ -135,11 +145,6 @@ public class BasicTaskWeightValidationService {
 
     /** 待分配标记：与导入侧 BusinessImportApplicationService#PENDING_WEIGHT 保持一致。 */
     private static final BigDecimal PENDING_WEIGHT = new BigDecimal("0.01");
-
-    /** 追加「仍有 N 项权重未分配」的提示。 */
-    private String pendingHint(long pendingCount) {
-        return pendingCount > 0 ? "（另有 " + pendingCount + " 项权重未分配，请先完成分配）" : "";
-    }
 
     /** 拟变更权重优先（异动快照口径），未覆盖的取表值。 */
     private BigDecimal resolveEffectiveWeight(Indicator indicator, java.util.Map<Long, BigDecimal> overrides) {
@@ -198,6 +203,15 @@ public class BasicTaskWeightValidationService {
             throw new IllegalStateException("当前计划不存在学院指标，不能下发");
         }
 
+        // 与战略链一致：存在待分配项时直接拒绝（否则合计可能刚好 100 而被误放行）
+        if (weightSum.pendingCount() > 0) {
+            throw new IllegalStateException(
+                    "计划内指标权重合计必须为 100%，当前有 " + weightSum.pendingCount()
+                            + " 项权重未分配（导入时留空）。"
+                            + "请在指标列表中调整权重，或导入时留空由系统自动等分"
+            );
+        }
+
         if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
             BigDecimal diff = REQUIRED_TOTAL_WEIGHT.subtract(totalWeight);
             String direction = diff.signum() > 0 ? "还差 " : "超出 ";
@@ -206,7 +220,6 @@ public class BasicTaskWeightValidationService {
                             + totalWeight.stripTrailingZeros().toPlainString() + "%（"
                             + direction + diff.abs().stripTrailingZeros().toPlainString()
                             + "%，共 " + planIndicators.size() + " 项指标）。"
-                            + pendingHint(weightSum.pendingCount())
                             + "请在指标列表中调整权重，或导入时留空由系统自动等分"
             );
         }

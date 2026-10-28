@@ -115,7 +115,9 @@ class BusinessImportApplicationServiceTest {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
         stubCommitDependencies(fixture);
-        doThrow(new IllegalStateException("学院指标权重合计必须为100，当前为70"))
+        // 2026-10-28：mock 同步为新的报错文案（计划内合计口径）
+        doThrow(new IllegalStateException("计划内指标权重合计必须为 100%，当前为 70%（超出 30%，共 2 项指标）。"
+                + "请在指标列表中调整权重，或导入时留空由系统自动等分"))
                 .when(basicTaskWeightValidationService)
                 .validatePlanBasicWeight(900L, fixture.college().getId());
 
@@ -142,7 +144,9 @@ class BusinessImportApplicationServiceTest {
         assertEquals(0, result.updatedCount());
         assertNotNull(result.workflow());
         assertEquals("BLOCKED", result.workflow().status());
-        assertEquals("学院指标权重合计必须为100，当前为70", result.workflow().message());
+        assertEquals("计划内指标权重合计必须为 100%，当前为 70%（超出 30%，共 2 项指标）。"
+                + "请在指标列表中调整权重，或导入时留空由系统自动等分",
+                result.workflow().message());
         verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
     }
 
