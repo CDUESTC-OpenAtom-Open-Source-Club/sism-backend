@@ -15,7 +15,14 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Validates the "basic task indicators must sum to 100" rule for a plan + target organization.
+ * Validates the "plan indicators must sum to 100" rule for a plan + target organization.
+ *
+ * <p>2026-10-28 口径调整（用户定案）：类名沿用历史命名，但实际校验范围已由
+ * 「基础性任务下的指标」改为「**计划内全部指标**」——
+ * 战略链（STRAT_TO_FUNC）取计划内全部任务的父指标；
+ * 学院链（FUNC_TO_COLLEGE）取计划内全部任务（本部门创建、目标为该学院）的子指标。
+ * 两条链的口径必须与导入时的自动分配（BusinessImportApplicationService#normalizePlanWeights）
+ * 完全一致，否则会出现「分配完就被校验拦下」的死锁。
  */
 @Service
 @RequiredArgsConstructor
@@ -123,25 +130,27 @@ public class BasicTaskWeightValidationService {
     private void validateFuncToCollegeIndicators(Plan plan, Long targetOrgId, Set<Long> excluded,
                                                  java.util.Map<Long, BigDecimal> weightOverrides) {
         if (plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
-            throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
+            throw new IllegalStateException("当前计划不是下发到学院的计划，不能下发");
         }
 
-        Set<Long> basicTaskIds = jdbcTemplate.queryForList("""
+        // 2026-10-28 口径调整（用户定案）：与战略链一致，权重按「整个计划合计 100」校验，
+        // 不再只取基础性任务的子指标——否则「基础性子集合计 100、计划内全部子指标合计 100」
+        // 两套口径并存，导入时的自动分配与下发校验会互相打架。
+        Set<Long> taskIds = jdbcTemplate.queryForList("""
                         SELECT t.task_id
                         FROM public.sys_task t
                         WHERE t.plan_id = ?
                           AND COALESCE(t.is_deleted, false) = false
-                          AND t.task_type = 'BASIC'
                         """,
                 Long.class,
                 plan.getId()
         ).stream().collect(Collectors.toSet());
 
-        if (basicTaskIds.isEmpty()) {
-            throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
+        if (taskIds.isEmpty()) {
+            throw new IllegalStateException("当前计划不存在任务，不能下发");
         }
 
-        BigDecimal totalWeight = indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
+        List<Indicator> planIndicators = indicatorRepository.findByTaskIds(List.copyOf(taskIds)).stream()
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
                 .filter(indicator -> !excluded.contains(indicator.getId()))
                 .filter(indicator -> indicator.getParentIndicatorId() != null)
@@ -149,6 +158,9 @@ public class BasicTaskWeightValidationService {
                 .filter(indicator -> plan.getCreatedByOrgId().equals(indicator.getOwnerOrg().getId()))
                 .filter(indicator -> indicator.getTargetOrg() != null)
                 .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
+                .collect(Collectors.toList());
+
+        BigDecimal totalWeight = planIndicators.stream()
                 .map(indicator -> resolveEffectiveWeight(indicator, weightOverrides))
                 .filter(weight -> weight != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -158,8 +170,14 @@ public class BasicTaskWeightValidationService {
         }
 
         if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
+            BigDecimal diff = REQUIRED_TOTAL_WEIGHT.subtract(totalWeight);
+            String direction = diff.signum() > 0 ? "还差 " : "超出 ";
             throw new IllegalStateException(
-                    "学院指标权重合计必须为100，当前为" + totalWeight.stripTrailingZeros().toPlainString()
+                    "计划内指标权重合计必须为 100%，当前为 "
+                            + totalWeight.stripTrailingZeros().toPlainString() + "%（"
+                            + direction + diff.abs().stripTrailingZeros().toPlainString()
+                            + "%，共 " + planIndicators.size() + " 项指标）。"
+                            + "请在指标列表中调整权重，或导入时留空由系统自动等分"
             );
         }
     }

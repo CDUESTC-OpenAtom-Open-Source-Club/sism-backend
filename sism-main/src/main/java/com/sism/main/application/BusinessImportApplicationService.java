@@ -194,7 +194,7 @@ public class BusinessImportApplicationService {
                         ? commitStrategic(context, conflictMode, currentUser)
                         : commitDistribution(context, conflictMode);
                 // 2026-10-28 用户定案：导入后权重自动对齐到「计划合计 100」。
-                // 规则：权重全空 → 等分；手填部分 → 按现有比例归一化，保留相对关系。
+                // 规则：权重全空 → 等分；手填部分 → 保留手填值，其余平分剩余额度。
                 normalizePlanWeights(committed.plan(), context.type());
                 if (autoSubmitAndApprove) {
                     validateCommittedPlanForAutoDispatch(committed.plan());
@@ -282,12 +282,13 @@ public class BusinessImportApplicationService {
      * 2026-10-28 用户定案：导入后把权重自动对齐到「计划合计 100%」。
      *
      * <ul>
-     *   <li>权重全部为空（或为 0）→ 按指标数量<b>等分</b>，余数补到最后一项；</li>
-     *   <li>用户手填了部分权重 → 按现有值<b>等比归一化</b>到 100，保留相对关系；</li>
-     *   <li>合计已经正好 100 → 不做任何改动。</li>
+     *   <li>权重全部为空（或为待分配标记）→ 按指标数量<b>等分</b>，余数补到最后一项；</li>
+     *   <li>用户手填了部分权重 → <b>保留手填值</b>，其余留空项平分剩余额度；</li>
+     *   <li>手填合计已超 100 → 不自动改写，交由下发/异动校验拦截。</li>
      * </ul>
      *
-     * 目的：让「导入即合规」，用户不必自己凑 100；同时保留手动覆盖的表达能力。
+     * 目的：让「导入即合规」，用户不必自己凑 100；同时保留手动覆盖的表达能力
+     * （用户手填的权重不会被系统改写）。
      */
     private void normalizePlanWeights(Plan plan, ImportType type) {
         if (plan == null) {
@@ -307,12 +308,16 @@ public class BusinessImportApplicationService {
             return;
         }
 
-        List<Indicator> blanks = indicators.stream()
+        Set<Long> blankIds = indicators.stream()
                 .filter(indicator -> indicator.getWeightPercent() == null
                         || indicator.getWeightPercent().compareTo(PENDING_WEIGHT) <= 0)
+                .map(Indicator::getId)
+                .collect(Collectors.toSet());
+        List<Indicator> blanks = indicators.stream()
+                .filter(indicator -> blankIds.contains(indicator.getId()))
                 .collect(Collectors.toList());
         BigDecimal filledTotal = indicators.stream()
-                .filter(indicator -> !blanks.contains(indicator))
+                .filter(indicator -> !blankIds.contains(indicator.getId()))
                 .map(Indicator::getWeightPercent)
                 .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -351,44 +356,35 @@ public class BusinessImportApplicationService {
                 total.stripTrailingZeros().toPlainString(), plan.getId());
     }
 
-    /** 把给定指标等分到 target，余数计入最后一条，保证精确等于 target。 */
+    /**
+     * 把给定指标等分到 target，保证每项 &gt; 0 且合计精确等于 target。
+     * 余数计入最后一项；每项先保底 MIN_WEIGHT（表上有 weight_percent &gt; 0 的 CHECK 约束），
+     * 其余额度按条数平分（保留两位，余数给最后一项）。
+     */
     private void assignEvenly(List<Indicator> targets, BigDecimal target) {
         int size = targets.size();
         if (size == 0) {
             return;
         }
-        BigDecimal each = target.divide(BigDecimal.valueOf(size), 2, java.math.RoundingMode.DOWN);
+        BigDecimal minimumTotal = MIN_WEIGHT.multiply(BigDecimal.valueOf(size));
+        if (target.compareTo(minimumTotal) < 0) {
+            // 目标额度不足以给每项保底权重（指标条数异常多），不做分配，交给校验拦截
+            log.warn("[Import] 目标权重 {}% 不足以给 {} 项各保底 {}%，本次不自动分配",
+                    target.stripTrailingZeros().toPlainString(), size, MIN_WEIGHT.toPlainString());
+            return;
+        }
+        BigDecimal distributable = target.subtract(minimumTotal);
+        BigDecimal each = distributable.divide(BigDecimal.valueOf(size), 2, java.math.RoundingMode.DOWN);
         BigDecimal assigned = BigDecimal.ZERO;
         for (int i = 0; i < size; i++) {
-            BigDecimal weight = (i == size - 1) ? target.subtract(assigned) : each;
+            BigDecimal weight = (i == size - 1) ? target.subtract(assigned) : each.add(MIN_WEIGHT);
             indicatorsWeightUpdate(targets.get(i), weight);
             assigned = assigned.add(weight);
         }
     }
 
-    /** 按现有值等比缩放到 target，保留手填的相对关系。 */
-    private void assignProportionally(List<Indicator> targets, BigDecimal target, BigDecimal total) {
-        if (total.compareTo(BigDecimal.ZERO) <= 0) {
-            assignEvenly(targets, target);
-            return;
-        }
-        BigDecimal scale = target.divide(total, 8, java.math.RoundingMode.HALF_UP);
-        int size = targets.size();
-        BigDecimal assigned = BigDecimal.ZERO;
-        for (int i = 0; i < size; i++) {
-            Indicator indicator = targets.get(i);
-            BigDecimal weight = (i == size - 1)
-                    ? target.subtract(assigned)
-                    : (indicator.getWeightPercent() == null ? BigDecimal.ZERO : indicator.getWeightPercent())
-                            .multiply(scale)
-                            .setScale(2, java.math.RoundingMode.HALF_UP);
-            indicatorsWeightUpdate(indicator, weight);
-            assigned = assigned.add(weight);
-        }
-    }
-
     private void indicatorsWeightUpdate(Indicator indicator, BigDecimal weight) {
-        BigDecimal safe = weight == null || weight.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : weight;
+        BigDecimal safe = weight == null ? MIN_WEIGHT : weight.max(MIN_WEIGHT);
         indicator.setWeightPercent(safe);
         indicatorRepository.save(indicator);
     }
@@ -665,7 +661,9 @@ public class BusinessImportApplicationService {
                 indicator = strategyApplicationService.updateIndicator(
                         target.getId(),
                         normalized.indicatorName(),
-                        normalized.weight(),
+                        // 2026-10-28：更新既有指标时若本次留空权重，同样落「待分配」标记，
+                        // 否则 updateIndicator 会保留旧权重，「留空由系统自动分配」对既有行完全无效。
+                        defaultWeight(normalized.weight()),
                         null,
                         null,
                         normalized.remark(),
@@ -1173,6 +1171,12 @@ public class BusinessImportApplicationService {
      * {@link #normalizePlanWeights} 会把这类待分配指标统一纳入 100% 的分配中。
      */
     private static final BigDecimal PENDING_WEIGHT = new BigDecimal("0.01");
+
+    /**
+     * 2026-10-28：权重写入的最小值。表上有 {@code CHECK (weight_percent > 0)} 约束，
+     * 任何写入都不能为 0 或负数，否则整条语句失败。
+     */
+    private static final BigDecimal MIN_WEIGHT = new BigDecimal("0.01");
 
     private BigDecimal defaultWeight(BigDecimal weight) {
         return weight == null ? PENDING_WEIGHT : weight;

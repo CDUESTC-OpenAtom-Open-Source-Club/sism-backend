@@ -98,8 +98,31 @@ class BasicTaskWeightValidationServiceTest {
     }
 
     @Test
-    @DisplayName("Should ignore development child indicators when validating func-to-college plan")
-    void shouldIgnoreDevelopmentChildIndicatorsWhenValidatingFuncToCollegePlan() {
+    @DisplayName("Should count development child indicators when validating func-to-college plan")
+    void shouldCountDevelopmentChildIndicatorsWhenValidatingFuncToCollegePlan() {
+        // 2026-10-28 口径调整：学院链与战略链一致，取计划内全部任务（基础性 + 发展性）的子指标。
+        Plan plan = Plan.create(4L, 55L, 36L, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(403655L);
+
+        Indicator basicChildA = buildChildIndicator(2042L, 41001L, 36L, 55L, BigDecimal.valueOf(50));
+        Indicator developmentChild = buildChildIndicator(2041L, 41023L, 36L, 55L, BigDecimal.valueOf(50));
+
+        when(planRepository.findById(403655L)).thenReturn(java.util.Optional.of(plan));
+        when(jdbcTemplate.queryForList(
+                org.mockito.ArgumentMatchers.contains("t.plan_id = ?"),
+                org.mockito.ArgumentMatchers.eq(Long.class),
+                org.mockito.ArgumentMatchers.eq(403655L)))
+                .thenReturn(List.of(41001L, 41023L));
+        when(indicatorRepository.findByTaskIds(List.of(41001L, 41023L)))
+                .thenReturn(List.of(basicChildA, developmentChild));
+
+        assertDoesNotThrow(() -> service.validatePlanBasicWeight(403655L, 55L));
+        verify(indicatorRepository).findByTaskIds(List.of(41001L, 41023L));
+    }
+
+    @Test
+    @DisplayName("Should fail when func-to-college plan child weights exceed 100")
+    void shouldFailWhenFuncToCollegePlanChildWeightsExceed100() {
         Plan plan = Plan.create(4L, 55L, 36L, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(403655L);
 
@@ -112,12 +135,20 @@ class BasicTaskWeightValidationServiceTest {
                 org.mockito.ArgumentMatchers.contains("t.plan_id = ?"),
                 org.mockito.ArgumentMatchers.eq(Long.class),
                 org.mockito.ArgumentMatchers.eq(403655L)))
-                .thenReturn(List.of(41001L));
-        when(indicatorRepository.findByTaskIds(List.of(41001L)))
-                .thenReturn(List.of(basicChildA, basicChildB));
+                .thenReturn(List.of(41001L, 41023L));
+        when(indicatorRepository.findByTaskIds(List.of(41001L, 41023L)))
+                .thenReturn(List.of(basicChildA, basicChildB, developmentChild));
 
-        assertDoesNotThrow(() -> service.validatePlanBasicWeight(403655L, 55L));
-        verify(indicatorRepository).findByTaskIds(List.of(41001L));
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> service.validatePlanBasicWeight(403655L, 55L)
+        );
+
+        // 报错文案与战略链统一：带当前值、差额、指标条数与自动分配提示
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("计划内指标权重合计必须为 100%"));
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("当前为 140%"));
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("超出 40%"));
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("共 3 项指标"));
     }
 
     private Indicator buildIndicator(Long id, Long taskId, Long targetOrgId, BigDecimal weight) {
