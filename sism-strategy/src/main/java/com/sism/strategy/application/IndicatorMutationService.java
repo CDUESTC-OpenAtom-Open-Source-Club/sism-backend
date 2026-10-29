@@ -995,6 +995,9 @@ public class IndicatorMutationService {
                 ) log ON true
                 WHERE (i.target_org_id = ? OR i.owner_org_id = ?)
                    OR (t.org_id = ? OR t.created_by_org_id = ?)
+                  -- 2026-10-29 收口：本查询的消费方（填报页在途信号/异动在审判定）
+                  -- 均只使用 IN_REVIEW 在途项，服务端直接过滤，缩小返回面
+                  AND ai.status = 'IN_REVIEW'
                 ORDER BY ai.created_at DESC
                 LIMIT 50
                 """,
