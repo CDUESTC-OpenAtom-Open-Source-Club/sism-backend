@@ -125,4 +125,48 @@ class IndicatorTest {
             Indicator.create("测试指标", "指标描述", BigDecimal.valueOf(100), ownerOrg, targetOrg, null)
         );
     }
+
+    // ==================== 2026-10-30 回归：层级判定（N-25） ====================
+
+    @Test
+    @DisplayName("N-25 回归：职能部门→学院 的子指标应判为 SECOND")
+    void shouldCalculateSecondLevelForFunctionalDeptToCollege() {
+        // 职能部门 → 二级学院 = 二级指标
+        SysOrg funcDept = SysOrg.create("教务处", OrgType.functional);
+        SysOrg college = SysOrg.create("工学院", OrgType.academic);
+
+        Indicator indicator = Indicator.create(
+                "学院子指标", "子指标描述", BigDecimal.valueOf(100), funcDept, college, "定性");
+
+        assertEquals(IndicatorLevel.SECOND, indicator.calculateLevel(),
+                "职能部门→学院的指标必须是 SECOND（修复前恒为 FIRST）");
+    }
+
+    @Test
+    @DisplayName("N-25 回归：战略发展部→职能部门 的指标应判为 FIRST")
+    void shouldCalculateFirstLevelForStrategyDeptToFunctionalDept() {
+        SysOrg strategyDept = SysOrg.create("战略发展部", OrgType.admin);
+        SysOrg funcDept = SysOrg.create("教务处", OrgType.functional);
+
+        Indicator indicator = Indicator.create(
+                "核心指标", "核心指标描述", BigDecimal.valueOf(100), strategyDept, funcDept, "定性");
+
+        assertEquals(IndicatorLevel.FIRST, indicator.calculateLevel());
+    }
+
+    @Test
+    @DisplayName("N-25 回归：枚举值大小写漂移不会再把层级判错")
+    void shouldNotDependOnStringLiteralOrgTypeMatching() {
+        // 回归要点：原实现拿 org_type 与 "STRATEGY_DEPT"/"FUNCTIONAL_DEPT" 等字符串字面量比较，
+        // 而真实枚举值是小写 admin/functional/academic，比较永不命中 → 全部兜底 FIRST。
+        // 现改为直接比较枚举常量，语义只取决于枚举定义本身。
+        SysOrg funcDept = SysOrg.create("教务处", OrgType.functional);
+        SysOrg college = SysOrg.create("工学院", OrgType.academic);
+        Indicator indicator = Indicator.create(
+                "学院子指标", "子指标描述", BigDecimal.valueOf(100), funcDept, college, "定性");
+
+        assertEquals("functional", funcDept.getOrgType(),
+                "getOrgType() 返回枚举名（小写），不再是 STRATEGY_DEPT 之类的大写字面量");
+        assertEquals(IndicatorLevel.SECOND, indicator.calculateLevel());
+    }
 }

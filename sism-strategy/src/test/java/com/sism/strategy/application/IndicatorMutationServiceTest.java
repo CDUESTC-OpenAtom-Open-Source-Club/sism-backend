@@ -79,7 +79,7 @@ class IndicatorMutationServiceTest {
 
     @Test
     @DisplayName("2026-10-30 定案：职能部门下发审批在途时，战略部不能异动该部门指标")
-    void initiate_shouldRejectWhenFunctionalDeptDispatchApprovalInFlight() {
+    void initiateBatch_shouldRejectWhenFunctionalDeptDispatchApprovalInFlight() {
         when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
         when(jdbcTemplate.queryForList(
                 contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
@@ -105,8 +105,12 @@ class IndicatorMutationServiceTest {
                 eq(TARGET_ORG_ID), eq(2026L)))
                 .thenReturn(1);
 
+        // 2026-10-30：单条异动入口已整体移除（batch_id 为 null → 快照落库 JOIN 不上 →
+        // 变更值静默丢失），异动统一走批量提交；本守卫在批量路径上同口径生效。
         IllegalStateException error = assertThrows(IllegalStateException.class, () ->
-                service.initiate(INDICATOR_ID, Map.of("indicator_desc", "新描述"), OPERATOR_ID));
+                service.initiateBatch(
+                        List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述")),
+                        OPERATOR_ID));
 
         assertTrue(error.getMessage().contains("下发审批正在进行中"));
         // 不允许出现「下发在审 + 异动在审」并存：不得启动审批链、不得打异动标记
@@ -116,11 +120,13 @@ class IndicatorMutationServiceTest {
     }
 
     @Test
-    @DisplayName("initiate 不再向被锁组织写站内通知（通知只随整体审批链发送）")
-    void initiate_shouldNotWriteLockNotice() {
+    @DisplayName("批量异动不再向被锁组织写站内通知（通知只随整体审批链发送）")
+    void initiateBatch_shouldNotWriteLockNotice() {
         stubSuccessfulInitiation(List.of(TARGET_ORG_ID));
 
-        service.initiate(INDICATOR_ID, Map.of("indicator_desc", "新描述"), OPERATOR_ID);
+        service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述")),
+                OPERATOR_ID);
 
         verify(jdbcTemplate, never()).update(
                 contains("INSERT INTO public.sys_user_notification"), any(Object[].class));
