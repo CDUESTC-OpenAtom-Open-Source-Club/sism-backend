@@ -259,6 +259,7 @@ public class PlanApplicationService {
     })
     public PlanResponse publishPlan(Long id) {
         Plan plan = requirePlan(id);
+        assertFunctionalDeptMutationNotInFlight(plan, "PLAN_DISPATCH_FUNCDEPT");
 
         basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
         plan.activate();
@@ -299,6 +300,7 @@ public class PlanApplicationService {
                                                    Long currentUserId,
                                                    Long currentOrgId) {
         Plan plan = requirePlan(id);
+        assertFunctionalDeptMutationNotInFlight(plan, request == null ? null : request.getWorkflowCode());
         PlanWorkflowSnapshotQueryService.WorkflowSnapshot existingSnapshot =
                 planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(id);
 
@@ -484,6 +486,56 @@ public class PlanApplicationService {
             eventPublisher.publish(event);
         }
         plan.clearEvents();
+    }
+
+    /**
+     * 2026-10-30 定案：职能部门下发到学院的异动锁。
+     *
+     * 判定口径：
+     * 1. 仅拦截 FUNC_TO_COLLEGE 计划 + PLAN_DISPATCH_FUNCDEPT 下发动作；
+     *    PLAN_APPROVAL_FUNCDEPT、PLAN_DISPATCH_STRATEGY、TASK 改名异动均不受影响。
+     * 2. 战略部对职能部门指标发起异动时，指标的 target_org_id = 职能部门，异动审批实例
+     *    flow_code = PLAN_MUTATION_STRATEGY 且 status = IN_REVIEW；此时该职能部门暂不能
+     *    再向学院下发，否则学院拿到的指标口径会与异动审批后的口径冲突。
+     * 3. 按 cycle_id 精确匹配，避免跨年度误伤（同一部门不同年度的异动互不影响）。
+     *
+     * 为什么用 audit_instance 而不是 mutation_status：mutation_status 只是指标上的汇总状态，
+     * 无法区分「战略部对职能部门发起的异动」与「职能部门向学院发起的异动」，也无法按年度
+     * 隔离；审批实例表才是异动流程是否仍在审批中的唯一事实来源。
+     */
+    private void assertFunctionalDeptMutationNotInFlight(Plan plan, String workflowCode) {
+        if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
+            return;
+        }
+        if (workflowCode != null && !workflowCode.trim().isEmpty()
+                && !"PLAN_DISPATCH_FUNCDEPT".equals(workflowCode.trim().toUpperCase(Locale.ROOT))) {
+            return;
+        }
+        Long functionalDeptOrgId = plan.getCreatedByOrgId();
+        if (functionalDeptOrgId == null) {
+            return;
+        }
+
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                JOIN public.indicator i ON ai.entity_type = 'INDICATOR' AND i.id = ai.entity_id
+                JOIN public.sys_task t ON t.task_id = i.task_id
+                JOIN public.plan p ON p.id = t.plan_id
+                WHERE ai.status = 'IN_REVIEW'
+                  AND i.target_org_id = ?
+                  AND p.cycle_id = ?
+                  AND COALESCE(i.is_deleted, false) = false
+                """,
+                Integer.class,
+                functionalDeptOrgId,
+                plan.getCycleId()
+        );
+        if (count != null && count > 0) {
+            throw new IllegalStateException("该职能部门的指标正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
+        }
     }
 
     /**

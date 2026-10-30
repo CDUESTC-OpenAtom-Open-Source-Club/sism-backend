@@ -78,6 +78,44 @@ class IndicatorMutationServiceTest {
     }
 
     @Test
+    @DisplayName("2026-10-30 定案：职能部门下发审批在途时，战略部不能异动该部门指标")
+    void initiate_shouldRejectWhenFunctionalDeptDispatchApprovalInFlight() {
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+        when(jdbcTemplate.queryForList(
+                contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
+                .thenReturn(List.of("ROLE_REPORTER"));
+        Map<String, Object> indicatorRow = new HashMap<>();
+        indicatorRow.put("id", INDICATOR_ID);
+        indicatorRow.put("indicator_desc", "旧描述");
+        indicatorRow.put("weight_percent", null);
+        indicatorRow.put("remark", null);
+        indicatorRow.put("status", "DISTRIBUTED");
+        indicatorRow.put("mutation_status", null);
+        indicatorRow.put("plan_status", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
+                .thenReturn(indicatorRow);
+
+        // 该指标属于职能部门自己的指标：target_org_id = 职能部门，所属计划 cycle=2026
+        when(jdbcTemplate.queryForList(
+                contains("SELECT i.target_org_id, p.cycle_id"), eq(INDICATOR_ID)))
+                .thenReturn(List.of(Map.of("target_org_id", TARGET_ORG_ID, "cycle_id", 2026L)));
+        // 该职能部门存在 IN_REVIEW 的 PLAN_DISPATCH_FUNCDEPT 下发审批
+        when(jdbcTemplate.queryForObject(
+                contains("PLAN_DISPATCH_FUNCDEPT"), eq(Integer.class),
+                eq(TARGET_ORG_ID), eq(2026L)))
+                .thenReturn(1);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.initiate(INDICATOR_ID, Map.of("indicator_desc", "新描述"), OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("下发审批正在进行中"));
+        // 不允许出现「下发在审 + 异动在审」并存：不得启动审批链、不得打异动标记
+        verifyNoInteractions(businessWorkflowApplicationService);
+        verify(jdbcTemplate, never()).update(
+                contains("SET mutation_status = ?"), any(Object[].class));
+    }
+
+    @Test
     @DisplayName("initiate 不再向被锁组织写站内通知（通知只随整体审批链发送）")
     void initiate_shouldNotWriteLockNotice() {
         stubSuccessfulInitiation(List.of(TARGET_ORG_ID));

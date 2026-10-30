@@ -147,6 +147,45 @@ class BusinessImportApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("Should fail auto approval when functional dept mutation is in review")
+    void shouldFailAutoApprovalWhenFunctionalDeptMutationInReview() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        stubCommitDependencies(fixture);
+        // 战略部对该职能部门指标发起的 PLAN_MUTATION_STRATEGY 审批仍在 IN_REVIEW
+        when(importBatchJdbcTemplate.queryForObject(
+                contains("PLAN_MUTATION_STRATEGY"),
+                eq(Integer.class),
+                eq(fixture.functionalOrg().getId()),
+                eq(2026L)))
+                .thenReturn(1);
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("mutation-in-review.xlsx"),
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                null,
+                Map.of(),
+                fixture.currentUser());
+
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(
+                        preview.confirmToken(),
+                        ConflictMode.APPEND,
+                        true,
+                        "导入后自动下发审批"),
+                fixture.currentUser());
+
+        assertNotNull(result.workflow());
+        assertEquals("FAILED", result.workflow().status());
+        assertTrue(result.workflow().message().contains("正在异动审批中"));
+        // 守卫在启动审批实例之前生效，不应触碰审批流程
+        verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
+    }
+
+    @Test
     @DisplayName("Should allow normal import when persisted basic weights do not equal 100")
     void shouldAllowNormalImportWhenPersistedBasicWeightsDoNotEqual100() {
         Fixture fixture = fixture();

@@ -114,6 +114,7 @@ public class IndicatorMutationService {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
         assertReportApprovalNotInFlightForIndicator(indicatorId);
+        assertDispatchApprovalNotInFlightForIndicator(indicatorId);
         assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
@@ -342,6 +343,58 @@ public class IndicatorMutationService {
         }
     }
 
+    /**
+     * 2026-10-30 定案（下发/异动互斥）：职能部门向学院下发（PLAN_DISPATCH_FUNCDEPT）审批在途时，
+     * 战略部不得再异动该职能部门自己的指标。
+     *
+     * 判定口径：异动指标的目标部门（target_org_id）即职能部门；若该职能部门在当前考核周期
+     * 内存在任一 FUNC_TO_COLLEGE 计划的 PLAN_DISPATCH_FUNCDEPT 实例 IN_REVIEW，则拒绝异动。
+     * 下发审批审的是「该职能部门指标拆给学院」的稳定快照；异动会改动源指标，使审批对象失效。
+     *
+     * 仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
+     */
+    private void assertDispatchApprovalNotInFlightForIndicator(Long indicatorId) {
+        java.util.List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                """
+                SELECT i.target_org_id, p.cycle_id
+                FROM public.indicator i
+                JOIN public.sys_task t ON t.task_id = i.task_id
+                JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ?
+                """,
+                indicatorId);
+        if (rows.isEmpty()) {
+            return;
+        }
+        Object targetOrgId = rows.get(0).get("target_org_id");
+        Object cycleId = rows.get(0).get("cycle_id");
+        if (!(targetOrgId instanceof Number) || !(cycleId instanceof Number)) {
+            return;
+        }
+
+        Integer inFlight = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_DISPATCH_FUNCDEPT'
+                JOIN public.plan p ON p.id = ai.entity_id
+                WHERE ai.entity_type = 'PLAN'
+                  AND ai.status = 'IN_REVIEW'
+                  AND p.plan_level = 'FUNC_TO_COLLEGE'
+                  AND p.created_by_org_id = ?
+                  AND p.cycle_id = ?
+                  AND COALESCE(p.is_deleted, false) = false
+                """,
+                Integer.class,
+                ((Number) targetOrgId).longValue(),
+                ((Number) cycleId).longValue());
+        if (inFlight != null && inFlight > 0) {
+            throw new IllegalStateException(
+                    "该职能部门的下发审批正在进行中，暂不能发起异动；请等下发审批结束或撤回后再操作");
+        }
+    }
+
     private void assertNoActiveMutationFlow(String entityType, Long entityId, String label) {
         Integer activeCount = jdbcTemplate.queryForObject(
                 """
@@ -436,6 +489,7 @@ public class IndicatorMutationService {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
         assertReportApprovalNotInFlightForIndicator(indicatorId);
+        assertDispatchApprovalNotInFlightForIndicator(indicatorId);
         assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
@@ -486,6 +540,7 @@ public class IndicatorMutationService {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
         assertReportApprovalNotInFlightForIndicator(indicatorId);
+        assertDispatchApprovalNotInFlightForIndicator(indicatorId);
         assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
@@ -536,6 +591,7 @@ public class IndicatorMutationService {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
         assertReportApprovalNotInFlightForIndicator(indicatorId);
+        assertDispatchApprovalNotInFlightForIndicator(indicatorId);
         assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         Map<String, Object> before = new LinkedHashMap<>();
@@ -745,6 +801,7 @@ public class IndicatorMutationService {
             throw new IllegalStateException("该指标已有异动在审批中");
         }
         assertReportApprovalNotInFlightForIndicator(indicatorId);
+        assertDispatchApprovalNotInFlightForIndicator(indicatorId);
         assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
 
         // 快照：before = 当前值，after = 应用变更后的值，changed_fields = 变更字段名

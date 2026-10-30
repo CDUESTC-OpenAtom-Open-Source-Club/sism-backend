@@ -326,6 +326,112 @@ class PlanApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("Should block functional-dept dispatch to college when strategy mutation is in review")
+    void shouldBlockFunctionalDeptDispatchWhenStrategyMutationInReview() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 35L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9101L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+
+        when(planRepository.findById(9101L)).thenReturn(Optional.of(plan));
+        when(jdbcTemplate.queryForObject(
+                contains("PLAN_MUTATION_STRATEGY"),
+                eq(Integer.class),
+                eq(functionalDeptOrgId),
+                eq(cycleId)
+        )).thenReturn(1);
+
+        assertThrows(IllegalStateException.class,
+                () -> service.submitPlanForApproval(9101L, request, 188L, functionalDeptOrgId));
+
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("Should allow functional-dept dispatch when no strategy mutation is in review")
+    void shouldAllowFunctionalDeptDispatchWhenNoStrategyMutationInReview() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 35L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9102L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+
+        when(planRepository.findById(9102L)).thenReturn(Optional.of(plan));
+        when(jdbcTemplate.queryForObject(
+                contains("PLAN_MUTATION_STRATEGY"),
+                eq(Integer.class),
+                eq(functionalDeptOrgId),
+                eq(cycleId)
+        )).thenReturn(0);
+        when(planRepository.save(same(plan))).thenReturn(plan);
+
+        PlanResponse response = service.submitPlanForApproval(9102L, request, 188L, functionalDeptOrgId);
+
+        assertEquals(PlanStatus.PENDING.value(), plan.getStatus());
+        assertEquals(PlanStatus.PENDING.value(), response.getStatus());
+        verify(planRepository).save(same(plan));
+        verify(eventPublisher, times(2)).publish(any());
+    }
+
+    @Test
+    @DisplayName("Should not check strategy mutation lock for functional-dept approval workflow")
+    void shouldNotCheckMutationLockForFunctionalDeptApprovalWorkflow() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 35L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9103L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_APPROVAL_FUNCDEPT");
+
+        when(planRepository.findById(9103L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(same(plan))).thenReturn(plan);
+
+        PlanResponse response = service.submitPlanForApproval(9103L, request, 191L, functionalDeptOrgId);
+
+        assertEquals(PlanStatus.PENDING.value(), response.getStatus());
+        verify(planRepository).save(same(plan));
+        verify(jdbcTemplate, never()).queryForObject(
+                contains("PLAN_MUTATION_STRATEGY"),
+                eq(Integer.class),
+                any(),
+                any());
+    }
+
+    @Test
+    @DisplayName("Should not check strategy mutation lock for non functional-to-college plan")
+    void shouldNotCheckMutationLockForNonFunctionalToCollegePlan() {
+        Long cycleId = 2026L;
+        Plan plan = Plan.create(cycleId, 36L, 35L, PlanLevel.STRAT_TO_FUNC);
+        plan.setId(9104L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+
+        when(planRepository.findById(9104L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(same(plan))).thenReturn(plan);
+
+        PlanResponse response = service.submitPlanForApproval(9104L, request, 188L, 35L);
+
+        assertEquals(PlanStatus.PENDING.value(), response.getStatus());
+        verify(planRepository).save(same(plan));
+        verify(jdbcTemplate, never()).queryForObject(
+                contains("PLAN_MUTATION_STRATEGY"),
+                eq(Integer.class),
+                any(),
+                any());
+    }
+
+    @Test
     @DisplayName("Should allow functional department approval submission from distributed state")
     void shouldAllowFunctionalDepartmentApprovalSubmissionFromDistributedState() {
         Plan plan = Plan.create(2026L, 36L, 35L, PlanLevel.STRAT_TO_FUNC);
