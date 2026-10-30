@@ -30,7 +30,7 @@ import java.util.Set;
  * 指标鉴定进度（2026-10-28 用户定案）。
  *
  * 业务口径：
- * ① 鉴定等级以当前上报轮次的 {@code plan_report_indicator.appraisal_level} 为准；
+ * ① 审核进度以当前上报轮次的 {@code plan_report_indicator.appraisal_level} 为准；
  * ② 只有「当前审批节点的负责人」可以调整，是审批手段，不是普通编辑；
  * ③ 上级覆盖下级：每个节点都可以改，改了就覆盖，不改则沿用上一节点；
  * ④ 看板/列表仍读 Alert 手动等级，所以每次调整同步写 Alert（尽力而为）。
@@ -87,7 +87,7 @@ public class IndicatorAppraisalApplicationService {
         return result;
     }
 
-    /** 行内调整鉴定等级：仅当前审批节点负责人可改 */
+    /** 行内调整审核进度：仅当前审批节点负责人可改 */
     public IndicatorAppraisalContextResponse setLevel(Long indicatorId, String level, Long userId) {
         if (indicatorId == null || indicatorId <= 0) {
             throw new IllegalArgumentException("指标 ID 无效");
@@ -101,12 +101,12 @@ public class IndicatorAppraisalApplicationService {
         // 2026-10-30 修复：前置校验改为「审批实例在途」（上报已提交 + 审批实例 IN_REVIEW），
         // 不再拿 IN_REVIEW 去比 plan_report.status（那是上报侧 SUBMITTED 的 legacy 别名）。
         if (!isApprovalInFlight(row)) {
-            throw new ConflictException("当前指标没有处于审批中的上报，无法调整鉴定等级");
+            throw new ConflictException("当前指标没有处于审批中的上报，无法调整审核进度");
         }
 
         AppraisalPermission permission = resolvePermission(row, userId);
         if (!permission.canAppraise()) {
-            throw new AccessDeniedException("只有当前审批节点的负责人才能调整鉴定等级");
+            throw new AccessDeniedException("只有当前审批节点的负责人才能调整审核进度");
         }
 
         planReportIndicatorRepository.updateAppraisalLevel(row.reportId(), indicatorId, normalizedLevel);
@@ -265,27 +265,27 @@ public class IndicatorAppraisalApplicationService {
             return new AppraisalPermission(false, null, "未找到该指标的上报记录");
         }
         if (row.auditInstanceId() == null) {
-            return new AppraisalPermission(false, null, "上报审批尚未启动，暂不能调整鉴定进度等级");
+            return new AppraisalPermission(false, null, "上报审批尚未启动，暂不能调整审核进度");
         }
 
         AuditInstance instance = auditInstanceRepository.findById(row.auditInstanceId()).orElse(null);
         if (instance == null) {
-            return new AppraisalPermission(false, null, "上报审批实例不存在，暂不能调整鉴定进度等级");
+            return new AppraisalPermission(false, null, "上报审批实例不存在，暂不能调整审核进度");
         }
         if (!AuditInstance.STATUS_PENDING.equalsIgnoreCase(String.valueOf(instance.getStatus()))) {
             return new AppraisalPermission(
                     false,
                     null,
-                    "本轮上报审批已结束（当前状态：" + instance.getStatus() + "），暂不能调整鉴定进度等级"
+                    "本轮上报审批已结束（当前状态：" + instance.getStatus() + "），暂不能调整审核进度"
             );
         }
         if (!isReportStatus(row.status(), PlanReportStatus.SUBMITTED)) {
-            return new AppraisalPermission(false, null, "上报尚未提交或已重置，暂不能调整鉴定进度等级");
+            return new AppraisalPermission(false, null, "上报尚未提交或已重置，暂不能调整审核进度");
         }
 
         AuditStepInstance pendingStep = instance.resolveCurrentPendingStep().orElse(null);
         if (pendingStep == null) {
-            return new AppraisalPermission(false, null, "审批在途但没有待审节点，暂不能调整鉴定进度等级");
+            return new AppraisalPermission(false, null, "审批在途但没有待审节点，暂不能调整审核进度");
         }
 
         AuditFlowDef flowDef = workflowDefinitionQueryService.getAuditFlowDefById(instance.getFlowDefId());
@@ -308,7 +308,7 @@ public class IndicatorAppraisalApplicationService {
             return new AppraisalPermission(
                     false,
                     stepDef.getStepName(),
-                    "当前节点只审核，不能修改鉴定等级"
+                    "当前节点只审核，不能修改审核进度"
             );
         }
 
@@ -317,7 +317,7 @@ public class IndicatorAppraisalApplicationService {
         return new AppraisalPermission(
                 canApprove,
                 stepDef.getStepName(),
-                canApprove ? null : "当前审批节点不是你，暂不能调整鉴定进度等级"
+                canApprove ? null : "当前审批节点不是你，暂不能调整审核进度"
         );
     }
 
@@ -339,7 +339,7 @@ public class IndicatorAppraisalApplicationService {
         }
         String normalized = level.trim().toUpperCase();
         if (!ALLOWED_LEVELS.contains(normalized)) {
-            throw new IllegalArgumentException("不支持的鉴定等级: " + level);
+            throw new IllegalArgumentException("不支持的审核进度: " + level);
         }
         return normalized;
     }

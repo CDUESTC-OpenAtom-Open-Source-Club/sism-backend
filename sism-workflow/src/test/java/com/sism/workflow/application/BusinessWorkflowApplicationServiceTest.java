@@ -723,7 +723,7 @@ class BusinessWorkflowApplicationServiceTest {
 
     @Test
     void approveTask_shouldProjectAppraisalLevelWhenInstanceReachesTerminalApproved() {
-        // B9：整条链走完（终态 APPROVED）时，本次 decision 的鉴定等级才投影到业务明细行
+        // B9：整条链走完（终态 APPROVED）时，本次 decision 的审核进度才投影到业务明细行
         AuditInstance instance = approvableInstance(8100L, 801L, AuditInstance.STATUS_APPROVED);
         AuditFlowDef flowDef = stepDefOf(instance);
 

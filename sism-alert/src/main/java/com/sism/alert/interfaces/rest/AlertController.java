@@ -249,7 +249,7 @@ public class AlertController {
     // ==================== Update ====================
 
     @PutMapping("/indicator/{indicatorId}/manual-level")
-    @Operation(summary = "设置指标手动预警等级", description = "战略发展部、分管校领导及指标所属填报部门可手动设置或取消进度鉴定等级（后写覆盖，2026-10-07 裁决 B）")
+    @Operation(summary = "设置指标手动预警等级", description = "战略发展部、分管校领导及指标所属填报部门可手动设置或取消审核进度（后写覆盖，2026-10-07 裁决 B）")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<AlertResponse>> setManualAlertLevel(
             @PathVariable Long indicatorId,
@@ -279,7 +279,7 @@ public class AlertController {
                 && STRATEGIC_DEPT_ORG_ID.equals(currentUser.getOrgId())) {
             return;
         }
-        // 2026-10-07 裁决（鉴定等级 B）：每个审核节点与指标所属填报部门均可鉴定，
+        // 2026-10-07 裁决（审核进度 B）：每个审核节点与指标所属填报部门均可鉴定，
         // 后写覆盖先写；无该指标访问权的一律拒绝
         alertAccessService.ensureIndicatorAccess(indicatorId, authentication);
     }

@@ -21,7 +21,7 @@ public interface PlanReportIndicatorRepository {
                               String description);
 
     /**
-     * P1 上报链改造：报告审批通过时，将终审鉴定等级回写到该报告全部明细行
+     * P1 上报链改造：报告审批通过时，将终审审核进度回写到该报告全部明细行
      * （ appraisal_level 仅在比原值更新时覆盖，保证多轮上报互不污染）。
      *
      * @deprecated 2026-10-24 用户定案：整体鉴定废弃，改用 {@link #applyAppraisalLevelForIndicators}。
@@ -30,13 +30,13 @@ public interface PlanReportIndicatorRepository {
     void applyAppraisalLevel(Long reportId, String appraisalLevel);
 
     /**
-     * 2026-10-24 用户定案（指标级鉴定）：把逐指标鉴定等级回写到指定明细行，
+     * 2026-10-24 用户定案（指标级鉴定）：把逐指标审核进度回写到指定明细行，
      * 只触碰给出的 indicator_id，未评定的指标保持原值/空。
      */
     void applyAppraisalLevelForIndicators(Long reportId, List<Long> indicatorIds, String appraisalLevel);
 
     /**
-     * 2026-10-28 用户定案：读取某报告轮次下已评定的逐指标鉴定等级。
+     * 2026-10-28 用户定案：读取某报告轮次下已评定的逐指标审核进度。
      * 用于「上级覆盖下级、未改动沿用上一级」的审批校验。
      */
     Map<Long, String> findAppraisalLevelsByReport(Long reportId);

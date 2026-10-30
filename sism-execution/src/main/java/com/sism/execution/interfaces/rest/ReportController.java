@@ -48,7 +48,7 @@ public class ReportController {
             "hasAnyRole('APPROVER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')";
 
     private final ReportApplicationService reportApplicationService;
-    /** 2026-10-28：审批链行内鉴定等级（当前节点负责人可改） */
+    /** 2026-10-28：审批链行内审核进度（当前节点负责人可改） */
     private final IndicatorAppraisalApplicationService indicatorAppraisalApplicationService;
     /** 2026-10-24：审批链上的组织可查阅报告内容（否则审批详情内容区空白） */
     private final com.sism.execution.domain.report.ReportApprovalChainAccessQuery
@@ -380,7 +380,7 @@ public class ReportController {
      */
     @PostMapping("/indicator-appraisal/context")
     @Operation(summary = "批量查询指标鉴定进度上下文",
-            description = "返回当前有效鉴定等级、当前审批节点，以及当前用户是否可调整")
+            description = "返回当前有效审核进度、当前审批节点，以及当前用户是否可调整")
     @PreAuthorize(REPORT_WRITE_ACCESS)
     public ResponseEntity<ApiResponse<List<IndicatorAppraisalContextResponse>>> getIndicatorAppraisalContexts(
             @Valid @RequestBody IndicatorAppraisalContextRequest request,
@@ -395,7 +395,7 @@ public class ReportController {
      * 改了就覆盖上一级，不改则沿用；同时同步 Alert 手动等级供看板/列表展示。
      */
     @PutMapping("/indicators/{indicatorId}/appraisal-level")
-    @Operation(summary = "调整指标鉴定进度等级",
+    @Operation(summary = "调整指标审核进度",
             description = "仅当前审批节点负责人可调整；null/空表示恢复未评定")
     @PreAuthorize(REPORT_WRITE_ACCESS)
     public ResponseEntity<ApiResponse<IndicatorAppraisalContextResponse>> setIndicatorAppraisalLevel(

@@ -240,7 +240,7 @@ public class ReportApplicationService {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report not found with id: " + reportId));
 
-        // 2026-10-24 用户定案：上报时每条指标的「自评等级」与「进度说明」都必须有值，
+        // 2026-10-24 用户定案：上报时每条指标的「自评进度」与「进度说明」都必须有值，
         // 不能空报——前端一键提交已有同口径闸门，此处兜底拦住绕过前端的提交。
         assertIndicatorDetailsCompleteForSubmit(reportId);
 
@@ -256,7 +256,7 @@ public class ReportApplicationService {
 
     /**
      * 2026-10-24 用户定案：提交上报前校验全部指标明细完整——
-     * 每条明细的 selfRating（自评等级）与 description/comment（进度说明）不得为空。
+     * 每条明细的 selfRating（自评进度）与 description/comment（进度说明）不得为空。
      * 报错带上具体缺口（缺等级 N 条 / 缺说明 M 条），填报人可对照补齐。
      */
     /**
@@ -312,14 +312,14 @@ public class ReportApplicationService {
         if (missingRating > 0 || missingDescription > 0) {
             java.util.List<String> gaps = new java.util.ArrayList<>();
             if (missingRating > 0) {
-                gaps.add(missingRating + " 条指标未选择自评等级");
+                gaps.add(missingRating + " 条指标未选择自评进度");
             }
             if (missingDescription > 0) {
                 gaps.add(missingDescription + " 条指标未填写进度说明");
             }
             throw new IllegalStateException(
                     "上报被拦下：" + String.join("、", gaps)
-                            + "。请在指标填报页逐条补齐自评等级与进度说明后再提交");
+                            + "。请在指标填报页逐条补齐自评进度与进度说明后再提交");
         }
     }
 

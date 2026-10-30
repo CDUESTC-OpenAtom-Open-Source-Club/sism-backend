@@ -32,7 +32,7 @@ public class ApproveWorkflowUseCase {
     }
 
     /**
-     * 审批通过；appraisalLevel 非空时写入当前节点的鉴定进度等级（P1 上报链改造）。
+     * 审批通过；appraisalLevel 非空时写入当前节点的审核进度（P1 上报链改造）。
      */
     @Transactional
     public AuditInstance approve(AuditInstance instance, Long userId, String comment, String appraisalLevel) {

@@ -22,7 +22,7 @@ public interface WorkflowBusinessContextPort {
     Optional<BusinessSummary> getBusinessSummary(String entityType, Long entityId);
 
     /**
-     * P1 上报链改造：审批携带鉴定进度等级时，投影到业务明细行。
+     * P1 上报链改造：审批携带审核进度时，投影到业务明细行。
      * 默认空实现；仅关心该实体类型的上下文适配器覆写。
      *
      * @deprecated 2026-10-24 用户定案：整体鉴定废弃，改用 {@link #applyAppraisalLevelForIndicators}。
@@ -42,7 +42,7 @@ public interface WorkflowBusinessContextPort {
     }
 
     /**
-     * P5 指标异动：审批携带鉴定等级时（或异动发起/结束时）的业务侧通知钩子。
+     * P5 指标异动：审批携带审核进度时（或异动发起/结束时）的业务侧通知钩子。
      */
     default void applyAppraisalLevelBatch(String entityType, java.util.List<Long> entityIds, String appraisalLevel) {
     }
@@ -62,7 +62,7 @@ public interface WorkflowBusinessContextPort {
 
     /**
      * 2026-10-27 用户定案：上报链最后一个节点通过前，必须校验本报告实例下
-     * 全部指标的鉴定进度等级已评定（不允许「未评定」通过）。
+     * 全部指标的审核进度已评定（不允许「未评定」通过）。
      * 本方法返回该业务实体（entityId=报告ID）下全部指标 ID，供审批侧做完整性校验。
      * 默认空列表；仅报告类实体（PLAN_REPORT）的上下文适配器覆写。
      */
@@ -71,7 +71,7 @@ public interface WorkflowBusinessContextPort {
     }
 
     /**
-     * 2026-10-28 用户定案：读取该报告轮次下已评定的逐指标鉴定等级。
+     * 2026-10-28 用户定案：读取该报告轮次下已评定的逐指标审核进度。
      * 审批侧用它与本次提交的等级合并，实现「未改动沿用上一级、改动覆盖」。
      */
     default java.util.Map<Long, String> findIndicatorAppraisalLevels(Long entityId) {
