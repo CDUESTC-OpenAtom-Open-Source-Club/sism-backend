@@ -35,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -503,6 +504,85 @@ class StrategyApplicationServiceTest {
         // 存活父 + 软删父 + 其孤儿子 都应作为根返回；父存活的子不提升
         assertTrue(ids.containsAll(List.of(101L, 990001L, 990002L)));
         assertFalse(ids.contains(990003L));
+    }
+
+    @Test
+    @DisplayName("D10: 已下发计划下新增指标必须保持基础性权重合计=100（合计≠100 时抛异常）")
+    void shouldBlockIndicatorCreationWhenDistributedPlanWeightNotHundred() {
+        StrategyApplicationService service = createService();
+
+        SysOrg ownerOrg = SysOrg.create("纪委办公室", OrgType.functional);
+        ownerOrg.setId(37L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(57L);
+
+        StrategicTask task = createTask(41023L, 403757L, targetOrg, ownerOrg);
+        Plan distributedPlan = createPlan(403757L, PlanStatus.DISTRIBUTED);
+
+        when(taskRepository.findById(41023L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(403757L)).thenReturn(Optional.of(distributedPlan));
+        when(indicatorRepository.save(any(Indicator.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        doThrow(new IllegalStateException("基础性任务指标权重合计必须为100，当前为110"))
+                .when(basicTaskWeightValidationService)
+                .validatePlanBasicWeight(403757L, 57L);
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> service.createIndicator(
+                        "新增指标",
+                        ownerOrg,
+                        targetOrg,
+                        41023L,
+                        null,
+                        "定量",
+                        BigDecimal.valueOf(10),
+                        1,
+                        "备注",
+                        0
+                )
+        );
+
+        // 报错文案沿用 BasicTaskWeightValidationService 既有口径
+        assertEquals("基础性任务指标权重合计必须为100，当前为110", exception.getMessage());
+        // 校验不通过 → 不发布领域事件（等于没落库）
+        verify(eventStore, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("D10: DRAFT 计划下新增指标允许中间态合计≠100（导入批量路径不被拦）")
+    void shouldAllowIntermediateWeightWhenPlanDraft() {
+        StrategyApplicationService service = createService();
+
+        SysOrg ownerOrg = SysOrg.create("纪委办公室", OrgType.functional);
+        ownerOrg.setId(37L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(57L);
+
+        StrategicTask task = createTask(41023L, 403757L, targetOrg, ownerOrg);
+        Plan draftPlan = createPlan(403757L, PlanStatus.DRAFT);
+
+        when(taskRepository.findById(41023L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(403757L)).thenReturn(Optional.of(draftPlan));
+        when(indicatorRepository.save(any(Indicator.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        Indicator created = service.createIndicator(
+                "新增指标",
+                ownerOrg,
+                targetOrg,
+                41023L,
+                null,
+                "定量",
+                BigDecimal.valueOf(10),
+                1,
+                "备注",
+                0
+        );
+
+        assertNotNull(created);
+        // DRAFT 计划不触发合计校验（导入是批量逐条建指标，中间态合计必然≠100）
+        verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(any(), any());
     }
 
     private StrategyApplicationService createService() {

@@ -140,8 +140,37 @@ public class StrategyApplicationService {
         indicator.setLevel(indicator.calculateLevel());
         indicator.validate();
         indicator = indicatorRepository.save(indicator);
+        // 2026-10-30（D10）：基础性权重合计校验前移到单条新增指标。
+        // 校验放在 save 之后、发布事件之前：新指标的权重必须计入合计才有意义；
+        // 校验不通过时抛异常，@Transactional 会把本次插入整体回滚（等于「没落库」）。
+        validateBasicWeightForDistributedPlan(resolvedTaskId, targetOrg);
         publishAndSaveEvents(indicator);
         return indicator;
+    }
+
+    /**
+     * 2026-10-30（D10）：把「基础性权重合计必须为 100」的校验前移到单条新增指标。
+     *
+     * <p>触发条件：该指标所属计划已处于 <b>DISTRIBUTED（已下发）</b> 状态。
+     * 已下发计划下新增指标会立刻改变生效口径的合计，必须保持 = 100；
+     * DRAFT 计划允许中间态——导入是批量逐条建指标的，中间态合计必然 ≠ 100，
+     * 若无差别加校验会把导入路径全部打挂。
+     *
+     * <p>口径与报错文案完全沿用 {@link BasicTaskWeightValidationService} 既有实现，
+     * 这里不另算一套合计口径。
+     */
+    private void validateBasicWeightForDistributedPlan(Long taskId, SysOrg targetOrg) {
+        if (taskId == null || targetOrg == null || targetOrg.getId() == null) {
+            return;
+        }
+        Plan plan = taskRepository.findById(taskId)
+                .map(StrategicTask::getPlanId)
+                .flatMap(planRepository::findById)
+                .orElse(null);
+        if (plan == null || PlanStatus.fromRaw(plan.getStatus()) != PlanStatus.DISTRIBUTED) {
+            return;
+        }
+        basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), targetOrg.getId());
     }
 
     @Transactional

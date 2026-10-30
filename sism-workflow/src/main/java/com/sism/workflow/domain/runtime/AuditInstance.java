@@ -111,9 +111,9 @@ public class AuditInstance extends AggregateRoot<Long> {
     }
 
     /**
-     * 审批通过并留痕鉴定进度等级（P1 上报链改造）。
+     * 审批通过并留痕审核进度（P1 上报链改造）。
      *
-     * @param appraisalLevel 本节点鉴定等级 AHEAD/NORMAL/DELAYED，可为空（非鉴定场景）
+     * @param appraisalLevel 本节点审核进度 AHEAD/NORMAL/DELAYED，可为空（非鉴定场景）
      */
     public void approve(Long userId, String comment, String appraisalLevel) {
         approve(userId, comment, appraisalLevel, false);

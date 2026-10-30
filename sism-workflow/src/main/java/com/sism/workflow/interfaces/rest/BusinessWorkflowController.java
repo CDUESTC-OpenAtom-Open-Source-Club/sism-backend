@@ -129,8 +129,8 @@ public class BusinessWorkflowController {
             @Valid @RequestBody ApprovalRequest request,
             @AuthenticationPrincipal CurrentUser currentUser
     ) {
-        // 透传鉴定进度等级（P1）：中间节点仅留痕，终审由 B9 逻辑投影到业务明细行
-        // 2026-10-27 修复：此前用旧四参签名把逐指标鉴定等级（indicatorLevels）丢掉了——
+        // 透传审核进度（P1）：中间节点仅留痕，终审由 B9 逻辑投影到业务明细行
+        // 2026-10-27 修复：此前用旧四参签名把逐指标审核进度（indicatorLevels）丢掉了——
         // 「按指标逐条评定」上线以来等级从未到达后端，末节点校验也因此永远拦下。
         WorkflowInstanceResponse response = workflowService.approveTask(
                 taskId, request, currentUser.getId(), request.getAppraisalLevel(),

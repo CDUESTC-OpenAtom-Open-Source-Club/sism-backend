@@ -284,7 +284,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(256L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(3L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 9L, 35L, instance)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 9L, instance)).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("128").status("IN_REVIEW").build()
@@ -331,7 +331,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(workflowTaskRepository.findById(392L)).thenReturn(Optional.of(workflowTask));
         when(auditInstanceRepository.findById(133L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 9L, 35L, instance)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 9L, instance)).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("133").status("IN_REVIEW").build()
@@ -388,7 +388,7 @@ class BusinessWorkflowApplicationServiceTest {
         // 用 lenient：修复生效时这个桩本就不该被调用，这本身就是要断言的结果。
         lenient().when(auditInstanceRepository.findByStepInstanceId(25L)).thenReturn(Optional.of(colliding));
         when(workflowDefinitionQueryService.getAuditFlowDefById(5L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 189L, 35L, target)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 189L, target)).thenReturn(true);
         when(workflowApplicationService.rejectAuditInstance(target, 189L, "不同意新增")).thenReturn(target);
         when(workflowReadModelMapper.toInstanceResponse(target)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("25").status("IN_REVIEW").build()
@@ -434,7 +434,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(5L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(3L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 192L, 36L, instance)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 192L, instance)).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 192L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("4036").status("IN_REVIEW").build()
@@ -478,7 +478,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(3L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 401L, 35L, instance)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 401L, instance)).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 401L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("7036").status("IN_REVIEW").build()
@@ -521,7 +521,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(400L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 9L, 22L, instance)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 9L, instance)).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 9L, "同意", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("140").status("IN_REVIEW").build()
@@ -592,7 +592,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(501L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 11L, 56L, instance)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 11L, instance)).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 11L, "通过", null)).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("88").status("IN_REVIEW").build()
@@ -631,7 +631,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(601L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(2L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(stepDef, 12L, 44L, instance)).thenReturn(true);
+        when(approverResolver.canUserApprove(stepDef, 12L, instance)).thenReturn(true);
         when(workflowApplicationService.rejectAuditInstance(instance, 12L, "打回")).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("89").status("IN_REVIEW").build()
@@ -723,7 +723,7 @@ class BusinessWorkflowApplicationServiceTest {
 
     @Test
     void approveTask_shouldProjectAppraisalLevelWhenInstanceReachesTerminalApproved() {
-        // B9：整条链走完（终态 APPROVED）时，本次 decision 的鉴定等级才投影到业务明细行
+        // B9：整条链走完（终态 APPROVED）时，本次 decision 的审核进度才投影到业务明细行
         AuditInstance instance = approvableInstance(8100L, 801L, AuditInstance.STATUS_APPROVED);
         AuditFlowDef flowDef = stepDefOf(instance);
 
@@ -732,7 +732,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(801L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(51L), eq(35L), eq(instance))).thenReturn(true);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(51L), eq(instance))).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 51L, "同意", "NORMAL")).thenReturn(instance);
         when(userProvider.getUserOrgId(51L)).thenReturn(Optional.empty());
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
@@ -759,7 +759,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(auditInstanceRepository.findByStepInstanceId(821L)).thenReturn(Optional.of(instance));
         when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
-        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(52L), eq(35L), eq(instance))).thenReturn(true);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(52L), eq(instance))).thenReturn(true);
         when(workflowApplicationService.approveAuditInstance(instance, 52L, "同意", "AHEAD")).thenReturn(instance);
         when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("8200").status("IN_REVIEW").build()

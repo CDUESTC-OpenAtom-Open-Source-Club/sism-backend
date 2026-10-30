@@ -18,7 +18,7 @@ public class WorkflowTaskDecisionRequest {
     private String comment;
 
     /**
-     * 鉴定进度等级（P1 上报链改造）：审批通过时可选填写，
+     * 审核进度（P1 上报链改造）：审批通过时可选填写，
      * 取值 AHEAD / NORMAL / DELAYED（服务端用 ProgressLevel 归一校验，
      * 同时兼容旧预警档位码并归并为 DELAYED）。
      *
@@ -28,7 +28,7 @@ public class WorkflowTaskDecisionRequest {
     private String appraisalLevel;
 
     /**
-     * 2026-10-24 用户定案：鉴定等级按指标逐条评定——
+     * 2026-10-24 用户定案：审核进度按指标逐条评定——
      * key=指标ID（plan_report_indicator.indicator_id），value=AHEAD/NORMAL/DELAYED。
      * 仅末级审批节点（上级部门鉴定环节）提交；实例到达终态 APPROVED 时按指标投影，
      * 与旧的整单 appraisalLevel 互斥时以本字段优先。

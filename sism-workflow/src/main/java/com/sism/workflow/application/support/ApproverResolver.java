@@ -21,6 +21,8 @@ public class ApproverResolver {
 
     private static final String PLAN_ENTITY_TYPE = "PLAN";
     private static final String PLAN_REPORT_ENTITY_TYPE = "PLAN_REPORT";
+    /** 存量月报实例沿用的旧实体类型（与 execution 侧 adapter / workflow 侧口径一致） */
+    private static final String LEGACY_PLAN_REPORT_ENTITY_TYPE = "PlanReport";
     private static final String COLLEGE_FINAL_APPROVAL_STEP_NAME = "职能部门终审";
     private static final String FUNCTIONAL_DEPT_STEP_NAME = "职能部门";
     /** 2026-10-26 用户定案：学院链第 4 环「分管职能部门校领导审批」——席位归职能部门本级 */
@@ -54,7 +56,7 @@ public class ApproverResolver {
             throw new IllegalStateException("Workflow step is missing role assignment: " + stepDef.getStepName());
         }
 
-        Long scopeOrgId = resolveScopeOrgId(stepDef, requesterOrgId, instance);
+        Long scopeOrgId = resolveStepScopeOrgId(stepDef, requesterOrgId, instance);
         return resolveByRoleId(roleId, scopeOrgId, stepDef.getStepName());
     }
 
@@ -116,7 +118,7 @@ public class ApproverResolver {
             return requesterOrgId;
         }
 
-        Long scopeOrgId = resolveScopeOrgId(stepDef, requesterOrgId, instance);
+        Long scopeOrgId = resolveStepScopeOrgId(stepDef, requesterOrgId, instance);
         Long roleId = stepDef.getRoleId();
         if (getStrategyDeptHeadRoleId().equals(roleId)) {
             return getStrategyOrgId();
@@ -136,12 +138,26 @@ public class ApproverResolver {
      * 真正缺失角色配置（roleId 未设置）仍视为配置错误并抛异常。
      */
     public List<ApproverCandidateResponse> resolveCandidates(AuditStepDef stepDef, Long requesterOrgId) {
+        return resolveCandidates(stepDef, requesterOrgId, null);
+    }
+
+    /**
+     * N-03（2026-10-30）：候选审批人解析与派单、鉴权共用同一个范围组织解析入口。
+     * 传入实例时，学院上报链里归属职能部门的节点会解析到职能部门本级，
+     * 避免「界面显示的是学院的人、后端派的却是职能部门的人」这类口径漂移。
+     */
+    public List<ApproverCandidateResponse> resolveCandidates(
+            AuditStepDef stepDef,
+            Long requesterOrgId,
+            AuditInstance instance) {
         Long roleId = stepDef.getRoleId();
         if (roleId == null || roleId <= 0) {
             throw new IllegalStateException("Workflow step is missing role assignment: " + stepDef.getStepName());
         }
 
-        return findScopedActiveUsersByRole(roleId, requesterOrgId).stream()
+        Long scopeOrgId = resolveStepScopeOrgId(stepDef, requesterOrgId, instance);
+
+        return findScopedActiveUsersByRole(roleId, scopeOrgId).stream()
                 .sorted(Comparator.comparing(UserIdentity::id))
                 .map(user -> ApproverCandidateResponse.builder()
                         .userId(user.id())
@@ -154,6 +170,14 @@ public class ApproverResolver {
 
     public boolean canUserApprove(AuditStepDef stepDef, Long userId, Long requesterOrgId) {
         return canUserApprove(stepDef, userId, requesterOrgId, null);
+    }
+
+    /**
+     * N-03（2026-10-30）：审批鉴权入口。范围组织一律由 {@link #resolveStepScopeOrgId} 统一解析，
+     * 调用方不再自行传 requesterOrgId 决定「谁能审这一步」。
+     */
+    public boolean canUserApprove(AuditStepDef stepDef, Long userId, AuditInstance instance) {
+        return canUserApprove(stepDef, userId, instance == null ? null : instance.getRequesterOrgId(), instance);
     }
 
     public boolean canUserApprove(AuditStepDef stepDef, Long userId, Long requesterOrgId, AuditInstance instance) {
@@ -172,7 +196,7 @@ public class ApproverResolver {
                 .filter(user -> Boolean.TRUE.equals(user.isActive()))
                 .filter(user -> roleIds.contains(roleId))
                 .filter(user -> {
-                    Long scopeOrgId = resolveScopeOrgId(stepDef, requesterOrgId, instance);
+                    Long scopeOrgId = resolveStepScopeOrgId(stepDef, requesterOrgId, instance);
                     return matchesRoleScope(user, roleId, scopeOrgId);
                 })
                 .isPresent();
@@ -220,14 +244,100 @@ public class ApproverResolver {
                 .toList();
     }
 
-    private Long resolveScopeOrgId(AuditStepDef stepDef, Long requesterOrgId, AuditInstance instance) {
-        if (!isCollegeFinalApprovalStep(stepDef, instance)
-                && !isCollegeFunctionalVicePresidentStep(stepDef, instance)) {
+    // ==================== N-03：步骤审批范围组织（唯一解析入口） ====================
+
+    /**
+     * N-03（2026-10-30）：唯一的「步骤审批范围组织」解析入口。
+     *
+     * <p>同一个节点此前在三处各算各的：
+     * <ul>
+     *   <li>派单（resolveApproverId / resolveAssignedApproverId）</li>
+     *   <li>预览候选（resolveCandidates）</li>
+     *   <li>审批鉴权（canUserApprove）</li>
+     * </ul>
+     * 三者一旦口径漂移，就会出现「前端卡片显示可审批 → 点下去后端 403」的死锁
+     * （线上现象：二级学院上报链第 4 环「职能部门审批人审批」无人能推进）。
+     * 现在三处一律调用本函数，不允许各自换算。
+     *
+     * <p>解析口径：
+     * <ol>
+     *   <li>学院上报链（PLAN_APPROVAL_COLLEGE）中归属「职能部门」的节点
+     *       （职能部门审批人审批 / 分管职能部门负责人审批 / 分管职能部门校领导审批 / 职能部门终审）
+     *       → scopeOrgId = 该学院计划所属的职能部门
+     *       （业务摘要 sourceOrgId = plan.createdByOrgId，即下发该学院的职能部门）；</li>
+     *   <li>其余节点 → scopeOrgId = 请求方组织（requesterOrgId）。</li>
+     * </ol>
+     */
+    public Long resolveStepScopeOrgId(AuditStepDef stepDef, AuditInstance instance) {
+        return resolveStepScopeOrgId(stepDef, instance == null ? null : instance.getRequesterOrgId(), instance);
+    }
+
+    /**
+     * @param requesterOrgId 请求方组织兜底值（实例缺失时用它；实例存在时以实例为准）
+     */
+    public Long resolveStepScopeOrgId(AuditStepDef stepDef, Long requesterOrgId, AuditInstance instance) {
+        if (!isFunctionalDeptScopedStep(stepDef, instance)) {
             return requesterOrgId;
         }
+        return resolveFunctionalDeptOrgId(instance, requesterOrgId);
+    }
+
+    /**
+     * 职能部门本级组织 = 业务摘要里的 sourceOrgId（= plan.createdByOrgId）。
+     */
+    private Long resolveFunctionalDeptOrgId(AuditInstance instance, Long fallbackOrgId) {
+        if (instance == null) {
+            return fallbackOrgId;
+        }
         return resolveBusinessSummary(instance.getEntityType(), instance.getEntityId())
-                .map(summary -> summary.sourceOrgId() != null ? summary.sourceOrgId() : requesterOrgId)
-                .orElse(requesterOrgId);
+                .map(summary -> summary.sourceOrgId() != null ? summary.sourceOrgId() : fallbackOrgId)
+                .orElse(fallbackOrgId);
+    }
+
+    /**
+     * 是否是「审批范围应指到职能部门」的节点。
+     * 保留既有两个特判（学院终审步 / 分管职能部门校领导步），
+     * 再叠加一条不依赖 roleId 的兜底：学院上报链里步骤名含「职能部门」的席位节点。
+     */
+    private boolean isFunctionalDeptScopedStep(AuditStepDef stepDef, AuditInstance instance) {
+        return isCollegeFinalApprovalStep(stepDef, instance)
+                || isCollegeFunctionalVicePresidentStep(stepDef, instance)
+                || isCollegeFunctionalDeptApprovalStep(stepDef, instance);
+    }
+
+    /**
+     * 学院上报链里归属「职能部门」的席位节点（不限 roleId）。
+     *
+     * <p>覆盖存量链与新链的多种命名，避免步骤改名 / 角色调整后出现
+     * 「派单按职能部门、鉴权按学院」的口径漂移：
+     * <ul>
+     *   <li>职能部门审批人审批（存量第 4 环，role 2）</li>
+     *   <li>分管职能部门负责人审批（role 2）</li>
+     *   <li>分管职能部门校领导审批（role 4）</li>
+     *   <li>职能部门终审（存量终审步）</li>
+     * </ul>
+     * 判定只依赖「学院上报链 + 步骤名含职能部门」，学院本级席位
+     * （学院审核人审批 / 二级学院审批人审批）不含该关键字，不会被误伤。
+     */
+    private boolean isCollegeFunctionalDeptApprovalStep(AuditStepDef stepDef, AuditInstance instance) {
+        if (stepDef == null || instance == null) {
+            return false;
+        }
+        if (!isPlanOrPlanReportEntityType(instance.getEntityType())) {
+            return false;
+        }
+        if (!isCollegeApprovalFlow(instance)) {
+            return false;
+        }
+        String stepName = stepDef.getStepName();
+        return stepName != null && stepName.contains(FUNCTIONAL_DEPT_STEP_NAME);
+    }
+
+    private boolean isPlanOrPlanReportEntityType(String entityType) {
+        return entityType != null
+                && (PLAN_ENTITY_TYPE.equalsIgnoreCase(entityType)
+                    || PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType)
+                    || LEGACY_PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType));
     }
 
     /**
@@ -241,8 +351,7 @@ public class ApproverResolver {
         if (stepDef == null || instance == null) {
             return false;
         }
-        if (!PLAN_ENTITY_TYPE.equalsIgnoreCase(instance.getEntityType())
-                && !PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(instance.getEntityType())) {
+        if (!isPlanOrPlanReportEntityType(instance.getEntityType())) {
             return false;
         }
         if (!getVicePresidentRoleId().equals(stepDef.getRoleId())) {
@@ -273,8 +382,7 @@ public class ApproverResolver {
         if (stepDef == null || instance == null) {
             return false;
         }
-        if (!PLAN_ENTITY_TYPE.equalsIgnoreCase(instance.getEntityType())
-                && !PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(instance.getEntityType())) {
+        if (!isPlanOrPlanReportEntityType(instance.getEntityType())) {
             return false;
         }
 

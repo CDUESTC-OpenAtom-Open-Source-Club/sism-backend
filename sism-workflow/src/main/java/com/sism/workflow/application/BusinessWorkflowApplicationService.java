@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.Comparator;
 
@@ -34,6 +35,17 @@ import java.util.Comparator;
 @Service
 @RequiredArgsConstructor
 public class BusinessWorkflowApplicationService {
+    /**
+     * 2026-10-29 定案修正（与 execution 侧 IndicatorAppraisalApplicationService
+     * 的 APPRAISAL_ALLOWED_STEP_ORDERS 保持同步）：审核进度可评定的节点序号——
+     * 职能部门链=步骤 4；学院链=步骤 3、5。其余节点只审核不评级，
+     * 鉴定完整性校验仅在可评级节点通过前执行，避免「不能通过、也不能评级」的死锁。
+     */
+    private static final Map<String, Set<Integer>> APPRAISAL_REQUIRED_STEP_ORDERS = Map.of(
+            "PLAN_APPROVAL_FUNCDEPT", Set.of(4),
+            "PLAN_APPROVAL_COLLEGE", Set.of(3, 5)
+    );
+
     private static final String SUBMIT_COMMENT_VARIABLE = "submitComment";
 
     private static final String PLAN_ENTITY_TYPE = "PLAN";
@@ -225,7 +237,7 @@ public class BusinessWorkflowApplicationService {
     }
 
     /**
-     * 审批任务（可携带本节点鉴定进度等级，P1 上报链改造）
+     * 审批任务（可携带本节点审核进度，P1 上报链改造）
      */
     /**
      * 2026-10-19 用户定案：自动审批（导入一键下发）与人工审批走同一套通知。
@@ -234,7 +246,7 @@ public class BusinessWorkflowApplicationService {
      * b) 下一环节全部候选审批人收到「待审批」；
      * c) 终态时通知提交人结果。
      *
-     * 与 approveTask 的区别：跳过权限校验与鉴定等级投影（系统管理员模拟人工处理）。
+     * 与 approveTask 的区别：跳过权限校验与审核进度投影（系统管理员模拟人工处理）。
      * 返回 null 表示该实例已不在待审状态（无需再处理）。
      */
     @Transactional
@@ -303,7 +315,7 @@ public class BusinessWorkflowApplicationService {
                         businessName, stepName, operatorName);
                 return;
             }
-            approverResolver.resolveCandidates(handledStepDef, approved.getRequesterOrgId())
+            approverResolver.resolveCandidates(handledStepDef, approved.getRequesterOrgId(), approved)
                     .stream()
                     .map(candidate -> candidate.getUserId())
                     .filter(userId -> userId != null && !userId.equals(systemAdminUserId))
@@ -346,7 +358,10 @@ public class BusinessWorkflowApplicationService {
         WorkflowInstanceDetailResponse detailBeforeApproval =
                 workflowReadModelService.getInstanceDetail(String.valueOf(instance.getId()));
 
-        if (!approverResolver.canUserApprove(currentStepDef, userId, instance.getRequesterOrgId(), instance)) {
+        // N-03（2026-10-30）：审批范围组织统一由 ApproverResolver.resolveStepScopeOrgId 解析，
+        // 这里不再用 instance.getRequesterOrgId() 直接决定「谁能审这一步」
+        // （学院上报链的职能部门席位节点必须按职能部门本级判定，否则必然 403 死锁）。
+        if (!approverResolver.canUserApprove(currentStepDef, userId, instance)) {
             throw new SecurityException("You are not authorized to approve this task");
         }
 
@@ -354,7 +369,7 @@ public class BusinessWorkflowApplicationService {
         AuditInstance approved = workflowApplicationService.approveAuditInstance(
                 instance, userId, resolvedComment, appraisalLevel);
         // B9 鉴定投影口径：仅当审批后实例到达终态（status == APPROVED，整条链走完）时，
-        // 才把本次 decision 的鉴定等级投影到业务明细行；
+        // 才把本次 decision 的审核进度投影到业务明细行；
         // 中间节点的鉴定仅写入 audit_step_instance.appraisal_level 留痕（approveAuditInstance 内既有逻辑）。
         // 2026-10-24 用户定案（指标级鉴定）：逐指标等级优先；整单等级仅作旧客户端兼容。
         boolean terminalApproved = AuditInstance.STATUS_APPROVED.equalsIgnoreCase(approved.getStatus());
@@ -370,18 +385,31 @@ public class BusinessWorkflowApplicationService {
         }
 
         // 2026-10-28 用户定案：上报链（PLAN_APPROVAL_*）每个节点通过前都校验——
-        // 本报告实例下全部指标必须有鉴定进度等级；上一节点已评定的沿用，本级改动覆盖。
+        // 本报告实例下全部指标必须有审核进度；上一节点已评定的沿用，本级改动覆盖。
         // @Transactional 保证校验失败整单回滚。
+        // 2026-10-29 定案修正（异动专项链路实测发现的死锁）：审核进度的评定权分布为
+        // 「上级部门接手后的第一个节点 + 末节点」（FUNCDEPT=步骤4；COLLEGE=步骤3、5），
+        // 其余节点（如学院链步骤 2 学院审核人）只审核、无评级权——若这些节点也要求
+        // 「全部已评定」，审核人既不能通过、也无权评级，链路死锁。故校验收窄到
+        // 「可评级的节点」通过前执行；末节点（最后一个可评级节点）通过前仍保证
+        // 出系统时全部已评定。
         boolean reportApprovalChain =
                 detailBeforeApproval != null
                 && detailBeforeApproval.getFlowCode() != null
                 && detailBeforeApproval.getFlowCode().toUpperCase().startsWith("PLAN_APPROVAL");
         if (reportApprovalChain) {
-            java.util.Map<Long, String> effectiveLevels = new java.util.LinkedHashMap<>();
-            workflowBusinessContextPorts.forEach(port ->
-                    effectiveLevels.putAll(port.findIndicatorAppraisalLevels(instance.getEntityId())));
-            effectiveLevels.putAll(normalizedLevels);
-            assertAllIndicatorsAppraised(instance, effectiveLevels);
+            boolean currentStepCanAppraise = currentStepDef != null
+                    && currentStepDef.getStepOrder() != null
+                    && APPRAISAL_REQUIRED_STEP_ORDERS
+                            .getOrDefault(detailBeforeApproval.getFlowCode().toUpperCase(), Set.of())
+                            .contains(currentStepDef.getStepOrder());
+            if (currentStepCanAppraise) {
+                java.util.Map<Long, String> effectiveLevels = new java.util.LinkedHashMap<>();
+                workflowBusinessContextPorts.forEach(port ->
+                        effectiveLevels.putAll(port.findIndicatorAppraisalLevels(instance.getEntityId())));
+                effectiveLevels.putAll(normalizedLevels);
+                assertAllIndicatorsAppraised(instance, effectiveLevels);
+            }
         }
 
         // 2026-10-28：逐指标等级在**每个节点**都投影——上级改了的覆盖下级，
@@ -442,7 +470,7 @@ public class BusinessWorkflowApplicationService {
                 .toList();
         if (!unappraised.isEmpty()) {
             throw new com.sism.exception.ConflictException(
-                    "存在未评定的鉴定进度等级（指标 "
+                    "存在未评定的审核进度（指标 "
                             + unappraised.stream().map(String::valueOf)
                             .collect(java.util.stream.Collectors.joining("、"))
                             + "），请先在指标列表中完成全部指标的鉴定后再通过");
@@ -453,7 +481,7 @@ public class BusinessWorkflowApplicationService {
     public WorkflowInstanceResponse decideTask(
             String taskId, WorkflowTaskDecisionRequest request, Long userId) {
         if (Boolean.TRUE.equals(request.getApproved())) {
-            // 鉴定进度等级（P1 上报链改造）：通过时可选填写，归一校验（旧预警档位码归并为 DELAYED）
+            // 审核进度（P1 上报链改造）：通过时可选填写，归一校验（旧预警档位码归并为 DELAYED）
             String appraisalLevel = com.sism.enums.ProgressLevel
                     .normalize(request.getAppraisalLevel()) == null
                     ? null
@@ -487,7 +515,8 @@ public class BusinessWorkflowApplicationService {
         WorkflowInstanceDetailResponse detailBeforeRejection =
                 workflowReadModelService.getInstanceDetail(String.valueOf(instance.getId()));
 
-        if (!approverResolver.canUserApprove(currentStepDef, userId, instance.getRequesterOrgId(), instance)) {
+        // N-03（2026-10-30）：与通过同一口径，范围组织由 ApproverResolver 统一解析
+        if (!approverResolver.canUserApprove(currentStepDef, userId, instance)) {
             throw new SecurityException("You are not authorized to reject this task");
         }
 
@@ -746,7 +775,7 @@ public class BusinessWorkflowApplicationService {
 
             approved.resolveCurrentPendingStep().ifPresent(nextStep -> {
                 AuditStepDef nextStepDef = resolveStepDefinition(approved, nextStep);
-                approverResolver.resolveCandidates(nextStepDef, approved.getRequesterOrgId())
+                approverResolver.resolveCandidates(nextStepDef, approved.getRequesterOrgId(), approved)
                         .forEach(candidate -> notificationProvider.createFlowAdvancedNotification(
                                 candidate.getUserId(),
                                 approverUserId,
@@ -851,7 +880,7 @@ public class BusinessWorkflowApplicationService {
     ) {
         try {
             AuditStepDef stepDef = resolveStepDefinition(instance, stepInstance);
-            approverResolver.resolveCandidates(stepDef, instance.getRequesterOrgId())
+            approverResolver.resolveCandidates(stepDef, instance.getRequesterOrgId(), instance)
                     .forEach(candidate -> pushDingTalkTodoToUser(
                             instance, stepInstance, detailSnapshot, candidate.getUserId()));
         } catch (Exception ex) {

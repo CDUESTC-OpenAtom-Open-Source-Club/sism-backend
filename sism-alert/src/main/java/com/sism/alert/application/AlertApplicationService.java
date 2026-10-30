@@ -187,7 +187,7 @@ public class AlertApplicationService {
                             Integer.class, orgId, orgId);
                     if (count != null && count > 0) {
                         throw new IllegalStateException(
-                                "上级正在对该部门的指标进行异动审批，期间暂不能调整鉴定等级，请稍后再试");
+                                "上级正在对该部门的指标进行异动审批，期间暂不能调整审核进度，请稍后再试");
                     }
                     // 2026-10-11 同口径学院级联锁：二级学院在任意异动审批期间全锁
                     String orgType = jdbcTemplate.queryForObject(
@@ -199,7 +199,7 @@ public class AlertApplicationService {
                                 Integer.class);
                         if (anyMutation != null && anyMutation > 0) {
                             throw new IllegalStateException(
-                                    "上级正在对指标进行异动审批，期间暂不能调整学院指标鉴定等级，请稍后再试");
+                                    "上级正在对指标进行异动审批，期间暂不能调整学院指标审核进度，请稍后再试");
                         }
                     }
                 }
@@ -217,7 +217,7 @@ public class AlertApplicationService {
             throw new IllegalArgumentException("Indicator ID is required");
         }
 
-        // 2026-10-10 测试0927 第018条：异动审批期间全面锁死——被锁组织的指标禁止调整鉴定等级
+        // 2026-10-10 测试0927 第018条：异动审批期间全面锁死——被锁组织的指标禁止调整审核进度
         assertIndicatorOrgNotLockedByMutation(indicatorId);
 
         AlertSeverity normalizedSeverity = AlertSeverity.normalize(severity);

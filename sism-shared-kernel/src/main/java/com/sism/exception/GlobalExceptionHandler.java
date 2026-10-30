@@ -89,7 +89,7 @@ public class GlobalExceptionHandler {
         log.warn("Conflict: message={}, requestId={}, context=[{}]", 
                 e.getMessage(), requestId, requestContext);
         
-        // 2026-10-27：业务冲突的具体原因透传给前端（如「存在未评定的鉴定进度等级…」），
+        // 2026-10-27：业务冲突的具体原因透传给前端（如「存在未评定的审核进度…」），
         // 此前固定返回笼统的「资源冲突」，用户无法知道要做什么。
         String message = e.getMessage() == null || e.getMessage().isBlank()
                 ? MESSAGE_CONFLICT

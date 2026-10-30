@@ -721,6 +721,14 @@ public class BusinessImportApplicationService {
                 return new ImportWorkflowResult(true, workflowCode, plan.getAuditInstanceId(), "FAILED", 0, null, "当前计划已下发，不能重复发起自动审批");
             }
 
+            // 导入旁路守卫：与 PlanApplicationService.submitPlanForApprovalInTransaction 口径一致，
+            // 战略部对职能部门指标发起异动（PLAN_MUTATION_STRATEGY / IN_REVIEW）期间，
+            // 职能部门不得再向学院自动下发（仅拦 FUNC_TO_COLLEGE + PLAN_DISPATCH_FUNCDEPT）。
+            if (DISTRIBUTION_WORKFLOW_CODE.equalsIgnoreCase(workflowCode)
+                    && plan.getPlanLevel() == PlanLevel.FUNC_TO_COLLEGE) {
+                assertFunctionalDeptMutationNotInFlight(plan);
+            }
+
             User systemAdmin = resolveSystemAdmin();
             AuditFlowDef flowDef = workflowApplicationService.getAuditFlowDefByCode(workflowCode);
             if (flowDef == null || !Boolean.TRUE.equals(flowDef.getIsActive())) {
@@ -778,6 +786,39 @@ public class BusinessImportApplicationService {
             removeFailedAutoWorkflowInstance(startedInstance);
             restorePlanAfterAutoWorkflowFailure(plan, originalPlanStatus, originalAuditInstanceId);
             return new ImportWorkflowResult(true, workflowCode, null, "FAILED", 0, null, ex.getMessage());
+        }
+    }
+
+    /**
+     * 导入自动下发旁路守卫：与 PlanApplicationService.submitPlanForApprovalInTransaction 中的
+     * 同名守卫口径一致，防止「战略部发起异动审批期间，职能部门仍通过导入向学院下发」。
+     * 仅统计该职能部门（target_org_id = plan.createdByOrgId）在当前考核周期内、
+     * 状态为 IN_REVIEW 的 PLAN_MUTATION_STRATEGY 审批实例。
+     */
+    private void assertFunctionalDeptMutationNotInFlight(Plan plan) {
+        Long functionalDeptOrgId = plan.getCreatedByOrgId();
+        if (functionalDeptOrgId == null) {
+            return;
+        }
+        Integer count = importBatchJdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                JOIN public.indicator i ON ai.entity_type = 'INDICATOR' AND i.id = ai.entity_id
+                JOIN public.sys_task t ON t.task_id = i.task_id
+                JOIN public.plan p ON p.id = t.plan_id
+                WHERE ai.status = 'IN_REVIEW'
+                  AND i.target_org_id = ?
+                  AND p.cycle_id = ?
+                  AND COALESCE(i.is_deleted, false) = false
+                """,
+                Integer.class,
+                functionalDeptOrgId,
+                plan.getCycleId()
+        );
+        if (count != null && count > 0) {
+            throw new IllegalStateException("该职能部门的指标正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
         }
     }
 

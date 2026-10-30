@@ -3,6 +3,7 @@ package com.sism.execution.application;
 import com.sism.exception.ConflictException;
 import com.sism.exception.ResourceNotFoundException;
 import com.sism.execution.domain.report.PlanReportIndicatorRepository;
+import com.sism.execution.domain.report.PlanReportStatus;
 import com.sism.execution.interfaces.dto.IndicatorAppraisalContextResponse;
 import com.sism.shared.domain.indicator.IndicatorAppraisalLevelPort;
 import com.sism.workflow.application.definition.WorkflowDefinitionQueryService;
@@ -29,7 +30,7 @@ import java.util.Set;
  * 指标鉴定进度（2026-10-28 用户定案）。
  *
  * 业务口径：
- * ① 鉴定等级以当前上报轮次的 {@code plan_report_indicator.appraisal_level} 为准；
+ * ① 审核进度以当前上报轮次的 {@code plan_report_indicator.appraisal_level} 为准；
  * ② 只有「当前审批节点的负责人」可以调整，是审批手段，不是普通编辑；
  * ③ 上级覆盖下级：每个节点都可以改，改了就覆盖，不改则沿用上一节点；
  * ④ 看板/列表仍读 Alert 手动等级，所以每次调整同步写 Alert（尽力而为）。
@@ -39,8 +40,15 @@ import java.util.Set;
 @Slf4j
 public class IndicatorAppraisalApplicationService {
 
-    private static final String STATUS_IN_REVIEW = "IN_REVIEW";
-    private static final String STATUS_APPROVED = "APPROVED";
+    /*
+     * 2026-10-30 修复（P0 鉴定死锁）：上报状态与审批实例状态是两套词表，不能混用。
+     *   - plan_report.status：已提交待审批的权威值是 SUBMITTED
+     *     （legacy 别名 IN_REVIEW 由 PlanReportStatus 归一化成 SUBMITTED）；
+     *   - audit_instance.status：在审状态才是 IN_REVIEW（见 AuditInstance.STATUS_PENDING）。
+     * 旧代码拿 "IN_REVIEW" 去比 plan_report.status，恒不成立 →
+     * 「谁能评级」判定全部为 false → 可评级节点又强制「全部已评定」→ 结构性死锁。
+     * 现在一律：上报侧用 PlanReportStatus，在途侧用审批实例状态。
+     */
     private static final Set<String> ALLOWED_LEVELS = Set.of("AHEAD", "NORMAL", "DELAYED");
 
     /**
@@ -79,7 +87,7 @@ public class IndicatorAppraisalApplicationService {
         return result;
     }
 
-    /** 行内调整鉴定等级：仅当前审批节点负责人可改 */
+    /** 行内调整审核进度：仅当前审批节点负责人可改 */
     public IndicatorAppraisalContextResponse setLevel(Long indicatorId, String level, Long userId) {
         if (indicatorId == null || indicatorId <= 0) {
             throw new IllegalArgumentException("指标 ID 无效");
@@ -90,13 +98,15 @@ public class IndicatorAppraisalApplicationService {
         if (row == null) {
             throw new ResourceNotFoundException("Report indicator", indicatorId);
         }
-        if (!STATUS_IN_REVIEW.equalsIgnoreCase(row.status())) {
-            throw new ConflictException("当前指标没有处于审批中的上报，无法调整鉴定等级");
+        // 2026-10-30 修复：前置校验改为「审批实例在途」（上报已提交 + 审批实例 IN_REVIEW），
+        // 不再拿 IN_REVIEW 去比 plan_report.status（那是上报侧 SUBMITTED 的 legacy 别名）。
+        if (!isApprovalInFlight(row)) {
+            throw new ConflictException("当前指标没有处于审批中的上报，无法调整审核进度");
         }
 
         AppraisalPermission permission = resolvePermission(row, userId);
         if (!permission.canAppraise()) {
-            throw new AccessDeniedException("只有当前审批节点的负责人才能调整鉴定等级");
+            throw new AccessDeniedException("只有当前审批节点的负责人才能调整审核进度");
         }
 
         planReportIndicatorRepository.updateAppraisalLevel(row.reportId(), indicatorId, normalizedLevel);
@@ -131,7 +141,9 @@ public class IndicatorAppraisalApplicationService {
 
     /**
      * 取每个指标「当前应鉴定的报告轮次」：
-     * 优先审批中（IN_REVIEW），其次最近已通过（APPROVED，只读回显），最后任意最新轮次。
+     * 优先审批在途（audit_instance.status = IN_REVIEW），
+     * 其次已提交待审（plan_report.status = SUBMITTED，含 legacy IN_REVIEW），
+     * 再次最近已通过（APPROVED，只读回显），最后任意最新轮次。
      */
     private Map<Long, ReportRow> loadLatestReportRows(List<Long> indicatorIds) {
         String placeholders = String.join(", ",
@@ -142,15 +154,18 @@ public class IndicatorAppraisalApplicationService {
                        pr.report_month,
                        pr.status,
                        pr.audit_instance_id,
-                       pri.appraisal_level
+                       pri.appraisal_level,
+                       ai.status AS instance_status
                 FROM public.plan_report_indicator pri
                 JOIN public.plan_report pr ON pr.id = pri.report_id
+                LEFT JOIN public.audit_instance ai ON ai.id = pr.audit_instance_id
                 WHERE pri.indicator_id IN (%s)
                   AND pr.is_deleted = false
                 ORDER BY pri.indicator_id ASC, pr.report_month DESC, pr.id DESC
                 """.formatted(placeholders);
 
         Map<Long, ReportRow> inReview = new LinkedHashMap<>();
+        Map<Long, ReportRow> submitted = new LinkedHashMap<>();
         Map<Long, ReportRow> approved = new LinkedHashMap<>();
         Map<Long, ReportRow> latest = new LinkedHashMap<>();
 
@@ -162,12 +177,16 @@ public class IndicatorAppraisalApplicationService {
                     rs.getString("report_month"),
                     rs.getString("status"),
                     rs.getObject("audit_instance_id") == null ? null : rs.getLong("audit_instance_id"),
-                    normalizeStoredLevel(rs.getString("appraisal_level"))
+                    normalizeStoredLevel(rs.getString("appraisal_level")),
+                    rs.getString("instance_status")
             );
             latest.putIfAbsent(indicatorId, row);
-            if (STATUS_IN_REVIEW.equalsIgnoreCase(row.status())) {
+            // 权威判据：审批实例在审
+            if (isInstanceInReview(row.instanceStatus())) {
                 inReview.putIfAbsent(indicatorId, row);
-            } else if (STATUS_APPROVED.equalsIgnoreCase(row.status())) {
+            } else if (isReportStatus(row.status(), PlanReportStatus.SUBMITTED)) {
+                submitted.putIfAbsent(indicatorId, row);
+            } else if (isReportStatus(row.status(), PlanReportStatus.APPROVED)) {
                 approved.putIfAbsent(indicatorId, row);
             }
         }, indicatorIds.toArray());
@@ -175,6 +194,9 @@ public class IndicatorAppraisalApplicationService {
         Map<Long, ReportRow> result = new LinkedHashMap<>();
         for (Long indicatorId : indicatorIds) {
             ReportRow row = inReview.get(indicatorId);
+            if (row == null) {
+                row = submitted.get(indicatorId);
+            }
             if (row == null) {
                 row = approved.get(indicatorId);
             }
@@ -188,25 +210,82 @@ public class IndicatorAppraisalApplicationService {
         return result;
     }
 
+    /**
+     * 审批实例是否在审（权威判据）。
+     */
+    private boolean isInstanceInReview(String instanceStatus) {
+        return instanceStatus != null && AuditInstance.STATUS_PENDING.equalsIgnoreCase(instanceStatus.trim());
+    }
+
+    /**
+     * 上报侧状态判定，复用 {@link PlanReportStatus}（legacy "IN_REVIEW" 会被归一化成 SUBMITTED）。
+     */
+    private boolean isReportStatus(String rawStatus, PlanReportStatus expected) {
+        if (rawStatus == null || rawStatus.isBlank()) {
+            return false;
+        }
+        try {
+            return PlanReportStatus.from(rawStatus) == expected;
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    /**
+     * 审批是否在途：上报已提交（SUBMITTED，含 legacy IN_REVIEW）且审批实例处于 IN_REVIEW。
+     */
+    private boolean isApprovalInFlight(ReportRow row) {
+        if (row == null) {
+            return false;
+        }
+        if (!isReportStatus(row.status(), PlanReportStatus.SUBMITTED)) {
+            return false;
+        }
+        AuditInstance instance = resolveAuditInstance(row);
+        return instance != null
+                && AuditInstance.STATUS_PENDING.equalsIgnoreCase(String.valueOf(instance.getStatus()));
+    }
+
+    private AuditInstance resolveAuditInstance(ReportRow row) {
+        if (row == null || row.auditInstanceId() == null) {
+            return null;
+        }
+        return auditInstanceRepository.findById(row.auditInstanceId()).orElse(null);
+    }
+
+    /**
+     * 2026-10-30 修复：把「在途 / 无实例 / 非本节点」三种情况分开给出可读的 lockHint，
+     * 不要一律返回同一句——否则用户看不懂到底卡在哪。
+     *
+     * <p>权威判据是审批实例状态（{@link AuditInstance#STATUS_PENDING} = IN_REVIEW）；
+     * 上报侧状态用 {@link PlanReportStatus} 归一化（SUBMITTED，含 legacy IN_REVIEW）。
+     */
     private AppraisalPermission resolvePermission(ReportRow row, Long userId) {
         if (row == null) {
-            return new AppraisalPermission(false, null, "上报期间才能解锁鉴定进度等级");
-        }
-        if (!STATUS_IN_REVIEW.equalsIgnoreCase(row.status())) {
-            return new AppraisalPermission(false, null, "上报期间才能解锁鉴定进度等级");
+            return new AppraisalPermission(false, null, "未找到该指标的上报记录");
         }
         if (row.auditInstanceId() == null) {
-            return new AppraisalPermission(false, null, "上报审批尚未启动");
+            return new AppraisalPermission(false, null, "上报审批尚未启动，暂不能调整审核进度");
         }
 
         AuditInstance instance = auditInstanceRepository.findById(row.auditInstanceId()).orElse(null);
         if (instance == null) {
-            return new AppraisalPermission(false, null, "审批实例不存在");
+            return new AppraisalPermission(false, null, "上报审批实例不存在，暂不能调整审核进度");
+        }
+        if (!AuditInstance.STATUS_PENDING.equalsIgnoreCase(String.valueOf(instance.getStatus()))) {
+            return new AppraisalPermission(
+                    false,
+                    null,
+                    "本轮上报审批已结束（当前状态：" + instance.getStatus() + "），暂不能调整审核进度"
+            );
+        }
+        if (!isReportStatus(row.status(), PlanReportStatus.SUBMITTED)) {
+            return new AppraisalPermission(false, null, "上报尚未提交或已重置，暂不能调整审核进度");
         }
 
         AuditStepInstance pendingStep = instance.resolveCurrentPendingStep().orElse(null);
         if (pendingStep == null) {
-            return new AppraisalPermission(false, null, "上报期间才能解锁鉴定进度等级");
+            return new AppraisalPermission(false, null, "审批在途但没有待审节点，暂不能调整审核进度");
         }
 
         AuditFlowDef flowDef = workflowDefinitionQueryService.getAuditFlowDefById(instance.getFlowDefId());
@@ -229,16 +308,16 @@ public class IndicatorAppraisalApplicationService {
             return new AppraisalPermission(
                     false,
                     stepDef.getStepName(),
-                    "当前节点只审核，不能修改鉴定等级"
+                    "当前节点只审核，不能修改审核进度"
             );
         }
 
-        boolean canApprove = approverResolver.canUserApprove(
-                stepDef, userId, instance.getRequesterOrgId(), instance);
+        // N-03（2026-10-30）：范围组织由 ApproverResolver 统一解析，不再由调用方传 requesterOrgId
+        boolean canApprove = approverResolver.canUserApprove(stepDef, userId, instance);
         return new AppraisalPermission(
                 canApprove,
                 stepDef.getStepName(),
-                canApprove ? null : "当前审批节点不是你，暂不能调整鉴定进度等级"
+                canApprove ? null : "当前审批节点不是你，暂不能调整审核进度"
         );
     }
 
@@ -260,7 +339,7 @@ public class IndicatorAppraisalApplicationService {
         }
         String normalized = level.trim().toUpperCase();
         if (!ALLOWED_LEVELS.contains(normalized)) {
-            throw new IllegalArgumentException("不支持的鉴定等级: " + level);
+            throw new IllegalArgumentException("不支持的审核进度: " + level);
         }
         return normalized;
     }
@@ -279,7 +358,9 @@ public class IndicatorAppraisalApplicationService {
             String reportMonth,
             String status,
             Long auditInstanceId,
-            String appraisalLevel
+            String appraisalLevel,
+            /** audit_instance.status（审批实例侧的在途判据；无关联实例时为 null） */
+            String instanceStatus
     ) {
     }
 

@@ -35,7 +35,7 @@ public class ExecutionWorkflowBusinessContextAdapter implements WorkflowBusiness
     }
 
     /**
-     * P1 上报链改造：审批携带鉴定进度等级时，投影到该报告全部明细行的
+     * P1 上报链改造：审批携带审核进度时，投影到该报告全部明细行的
      * appraisal_level（终审/逐级鉴定均覆盖，与节点留痕互为补充）。
      *
      * @deprecated 2026-10-24 用户定案：整体鉴定废弃，改用 {@link #applyAppraisalLevelForIndicators}。

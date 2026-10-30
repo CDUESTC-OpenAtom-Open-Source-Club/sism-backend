@@ -7,7 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
- * 把审批链上的鉴定进度等级同步到 Alert 手动等级（2026-10-28）。
+ * 把审批链上的审核进度同步到 Alert 手动等级（2026-10-28）。
  * 尽力而为：失败只记日志，不回滚审批数据。
  */
 @Component
