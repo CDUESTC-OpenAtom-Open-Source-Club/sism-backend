@@ -252,7 +252,11 @@ public class ReportWorkflowEventListener {
             String businessName = resolveReportBusinessName(report, event);
 
             Long stepInstanceId = parseStepInstanceId(detail == null ? null : detail.getCurrentTaskId());
-            approverResolver.resolveCandidates(nextApprovalStep, event.getReportOrgId()).forEach(candidate -> {
+            // N-03（2026-10-30）：候选人与派单/鉴权共用同一范围组织解析入口
+            AuditInstance instance = instanceId == null
+                    ? null
+                    : auditInstanceRepository.findById(instanceId).orElse(null);
+            approverResolver.resolveCandidates(nextApprovalStep, event.getReportOrgId(), instance).forEach(candidate -> {
                 userNotificationService.createSubmissionNotification(
                         candidate.getUserId(),
                         event.getSubmitterId(),

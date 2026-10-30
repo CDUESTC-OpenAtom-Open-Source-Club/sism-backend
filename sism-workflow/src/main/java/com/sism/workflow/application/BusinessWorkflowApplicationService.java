@@ -315,7 +315,7 @@ public class BusinessWorkflowApplicationService {
                         businessName, stepName, operatorName);
                 return;
             }
-            approverResolver.resolveCandidates(handledStepDef, approved.getRequesterOrgId())
+            approverResolver.resolveCandidates(handledStepDef, approved.getRequesterOrgId(), approved)
                     .stream()
                     .map(candidate -> candidate.getUserId())
                     .filter(userId -> userId != null && !userId.equals(systemAdminUserId))
@@ -358,7 +358,10 @@ public class BusinessWorkflowApplicationService {
         WorkflowInstanceDetailResponse detailBeforeApproval =
                 workflowReadModelService.getInstanceDetail(String.valueOf(instance.getId()));
 
-        if (!approverResolver.canUserApprove(currentStepDef, userId, instance.getRequesterOrgId(), instance)) {
+        // N-03（2026-10-30）：审批范围组织统一由 ApproverResolver.resolveStepScopeOrgId 解析，
+        // 这里不再用 instance.getRequesterOrgId() 直接决定「谁能审这一步」
+        // （学院上报链的职能部门席位节点必须按职能部门本级判定，否则必然 403 死锁）。
+        if (!approverResolver.canUserApprove(currentStepDef, userId, instance)) {
             throw new SecurityException("You are not authorized to approve this task");
         }
 
@@ -512,7 +515,8 @@ public class BusinessWorkflowApplicationService {
         WorkflowInstanceDetailResponse detailBeforeRejection =
                 workflowReadModelService.getInstanceDetail(String.valueOf(instance.getId()));
 
-        if (!approverResolver.canUserApprove(currentStepDef, userId, instance.getRequesterOrgId(), instance)) {
+        // N-03（2026-10-30）：与通过同一口径，范围组织由 ApproverResolver 统一解析
+        if (!approverResolver.canUserApprove(currentStepDef, userId, instance)) {
             throw new SecurityException("You are not authorized to reject this task");
         }
 
@@ -771,7 +775,7 @@ public class BusinessWorkflowApplicationService {
 
             approved.resolveCurrentPendingStep().ifPresent(nextStep -> {
                 AuditStepDef nextStepDef = resolveStepDefinition(approved, nextStep);
-                approverResolver.resolveCandidates(nextStepDef, approved.getRequesterOrgId())
+                approverResolver.resolveCandidates(nextStepDef, approved.getRequesterOrgId(), approved)
                         .forEach(candidate -> notificationProvider.createFlowAdvancedNotification(
                                 candidate.getUserId(),
                                 approverUserId,
@@ -876,7 +880,7 @@ public class BusinessWorkflowApplicationService {
     ) {
         try {
             AuditStepDef stepDef = resolveStepDefinition(instance, stepInstance);
-            approverResolver.resolveCandidates(stepDef, instance.getRequesterOrgId())
+            approverResolver.resolveCandidates(stepDef, instance.getRequesterOrgId(), instance)
                     .forEach(candidate -> pushDingTalkTodoToUser(
                             instance, stepInstance, detailSnapshot, candidate.getUserId()));
         } catch (Exception ex) {
