@@ -1,5 +1,7 @@
 # Maven
 target/
+# 离线发布包与镜像产物（本地构建产物，体积巨大，不入库）
+dist/
 pom.xml.tag
 pom.xml.releaseBackup
 pom.xml.versionsBackup
