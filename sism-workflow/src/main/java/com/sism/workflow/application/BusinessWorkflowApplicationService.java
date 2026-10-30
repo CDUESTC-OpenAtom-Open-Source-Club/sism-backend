@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.Comparator;
 
@@ -34,6 +35,17 @@ import java.util.Comparator;
 @Service
 @RequiredArgsConstructor
 public class BusinessWorkflowApplicationService {
+    /**
+     * 2026-10-29 定案修正（与 execution 侧 IndicatorAppraisalApplicationService
+     * 的 APPRAISAL_ALLOWED_STEP_ORDERS 保持同步）：鉴定等级可评定的节点序号——
+     * 职能部门链=步骤 4；学院链=步骤 3、5。其余节点只审核不评级，
+     * 鉴定完整性校验仅在可评级节点通过前执行，避免「不能通过、也不能评级」的死锁。
+     */
+    private static final Map<String, Set<Integer>> APPRAISAL_REQUIRED_STEP_ORDERS = Map.of(
+            "PLAN_APPROVAL_FUNCDEPT", Set.of(4),
+            "PLAN_APPROVAL_COLLEGE", Set.of(3, 5)
+    );
+
     private static final String SUBMIT_COMMENT_VARIABLE = "submitComment";
 
     private static final String PLAN_ENTITY_TYPE = "PLAN";
@@ -372,16 +384,29 @@ public class BusinessWorkflowApplicationService {
         // 2026-10-28 用户定案：上报链（PLAN_APPROVAL_*）每个节点通过前都校验——
         // 本报告实例下全部指标必须有鉴定进度等级；上一节点已评定的沿用，本级改动覆盖。
         // @Transactional 保证校验失败整单回滚。
+        // 2026-10-29 定案修正（异动专项链路实测发现的死锁）：鉴定等级的评定权分布为
+        // 「上级部门接手后的第一个节点 + 末节点」（FUNCDEPT=步骤4；COLLEGE=步骤3、5），
+        // 其余节点（如学院链步骤 2 学院审核人）只审核、无评级权——若这些节点也要求
+        // 「全部已评定」，审核人既不能通过、也无权评级，链路死锁。故校验收窄到
+        // 「可评级的节点」通过前执行；末节点（最后一个可评级节点）通过前仍保证
+        // 出系统时全部已评定。
         boolean reportApprovalChain =
                 detailBeforeApproval != null
                 && detailBeforeApproval.getFlowCode() != null
                 && detailBeforeApproval.getFlowCode().toUpperCase().startsWith("PLAN_APPROVAL");
         if (reportApprovalChain) {
-            java.util.Map<Long, String> effectiveLevels = new java.util.LinkedHashMap<>();
-            workflowBusinessContextPorts.forEach(port ->
-                    effectiveLevels.putAll(port.findIndicatorAppraisalLevels(instance.getEntityId())));
-            effectiveLevels.putAll(normalizedLevels);
-            assertAllIndicatorsAppraised(instance, effectiveLevels);
+            boolean currentStepCanAppraise = currentStepDef != null
+                    && currentStepDef.getStepOrder() != null
+                    && APPRAISAL_REQUIRED_STEP_ORDERS
+                            .getOrDefault(detailBeforeApproval.getFlowCode().toUpperCase(), Set.of())
+                            .contains(currentStepDef.getStepOrder());
+            if (currentStepCanAppraise) {
+                java.util.Map<Long, String> effectiveLevels = new java.util.LinkedHashMap<>();
+                workflowBusinessContextPorts.forEach(port ->
+                        effectiveLevels.putAll(port.findIndicatorAppraisalLevels(instance.getEntityId())));
+                effectiveLevels.putAll(normalizedLevels);
+                assertAllIndicatorsAppraised(instance, effectiveLevels);
+            }
         }
 
         // 2026-10-28：逐指标等级在**每个节点**都投影——上级改了的覆盖下级，
