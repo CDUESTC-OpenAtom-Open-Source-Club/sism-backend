@@ -36,11 +36,8 @@ public class IndicatorMutationService {
     private static final String TASK_ENTITY_TYPE = "TASK";
     private static final long STRATEGY_ORG_ID = 35L;
 
-    /** A3 锁死主动通知：标题/文案为会议定案口径。 */
-    private static final String MUTATION_LOCK_NOTICE_TITLE = "指标异动审批中";
-    private static final String MUTATION_LOCK_NOTICE_CONTENT =
-            "上级正在对该部门的指标进行异动审批，期间暂不能填报或提交，请稍后再试";
-    private static final String MUTATION_LOCK_NOTICE_TYPE = "INDICATOR_MUTATION";
+    // 2026-10-30：随单条异动入口 initiate 一并移除 A3 锁死主动通知的文案常量
+    // （notifyLockedOrgUsers 本就无调用点，锁死提示改由审批中心整体流程承载）。
 
     private final JdbcTemplate jdbcTemplate;
     /** 2026-10-20：异动同样必须满足基础性权重合计=100 的闭合校验 */
@@ -637,10 +634,6 @@ public class IndicatorMutationService {
     }
 
     /** 启动单条实体的异动审批链（PLAN_MUTATION_STRATEGY，填报人修改 → 战略部负责人 → 分管校领导终审）。 */
-    private String startMutationWorkflow(Long entityId, Long operatorUserId, String mutationType) {
-        return startMutationWorkflow(INDICATOR_ENTITY_TYPE, entityId, operatorUserId, mutationType, null);
-    }
-
     /**
      * 2026-10-21：任务改名异动与指标异动共用同一条流程定义，
      * 仅 businessEntityType 不同（INDICATOR / TASK），审批节点完全一致。
@@ -773,168 +766,13 @@ public class IndicatorMutationService {
         return overrides;
     }
 
-    /** 发起异动：写快照 + 打异动标记 + 启动异动审批链。返回工作流实例 ID。 */
-    @Transactional
-    public String initiate(Long indicatorId,
-                           Map<String, Object> changes,
-                           Long operatorUserId) {
-        if (indicatorId == null || indicatorId <= 0) {
-            throw new IllegalArgumentException("指标 ID 不能为空");
-        }
-        if (!canInitiate(operatorUserId)) {
-            throw new SecurityException("仅战略发展部填报人可发起异动");
-        }
-
-        Map<String, Object> current = jdbcTemplate.queryForMap(
-                """
-                SELECT i.id, i.indicator_desc, i.weight_percent, i.remark, i.status,
-                       i.mutation_status, p.status AS plan_status, p.id AS plan_id
-                FROM public.indicator i
-                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
-                LEFT JOIN public.plan p ON p.id = t.plan_id
-                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
-                FOR UPDATE OF i
-                """,
-                indicatorId);
-        assertPlanDistributedForIndicator(current, null);
-        if (current.get("mutation_status") != null) {
-            throw new IllegalStateException("该指标已有异动在审批中");
-        }
-        assertReportApprovalNotInFlightForIndicator(indicatorId);
-        assertDispatchApprovalNotInFlightForIndicator(indicatorId);
-        assertNoActiveMutationFlow(INDICATOR_ENTITY_TYPE, indicatorId, "指标");
-
-        // 快照：before = 当前值，after = 应用变更后的值，changed_fields = 变更字段名
-        Map<String, Object> before = new LinkedHashMap<>();
-        before.put("indicator_desc", current.get("indicator_desc"));
-        before.put("weight_percent", current.get("weight_percent"));
-        before.put("remark", current.get("remark"));
-
-        Map<String, Object> after = new LinkedHashMap<>(before);
-        Map<String, Object> changedFields = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : changes.entrySet()) {
-            String field = entry.getKey();
-            Object value = entry.getValue();
-            if ("indicator_desc".equals(field)
-                    || "weight_percent".equals(field)
-                    || "remark".equals(field)) {
-                after.put(field, value);
-                // 2026-10-20 修复 NPE：Map.of 不接受 null 值，而指标原备注/原内容可能为空
-                //（错误日志定位：IndicatorMutationService:123 NullPointerException）。
-                // 改用 HashMap 允许 null，保证"首次填写备注"这类异动可正常发起。
-                Map<String, Object> diff = new LinkedHashMap<>();
-                diff.put("before", before.get(field));
-                diff.put("after", value);
-                changedFields.put(field, diff);
-            }
-        }
-        if (changedFields.isEmpty()) {
-            throw new IllegalArgumentException("异动内容为空：至少提供一个有效变更字段（indicator_desc/weight_percent/remark）");
-        }
-
-        insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, null);
-
-        // 2026-10-23 用户定案：发起只打标记，变更值审批通过后按快照落库（与上报口径一致）
-        jdbcTemplate.update(
-                """
-                UPDATE public.indicator
-                SET mutation_status = ?,
-                    mutation_started_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                MUTATION_STATUS_IN_MUTATION,
-                indicatorId
-        );
-
-        // 2026-10-20 用户定案：异动与下发共用同一闭合口径——
-        // 基础性指标权重合计必须为 100；校验按「本批变更生效后的快照」计算，
-        // 修改条目的拟变更权重以 override 形式参与合计（发起不再原地落库）。
-        assertPlanBasicWeightStillClosed(List.of(indicatorId), Set.of(), collectProposedWeights(indicatorId, changes));
-
-        // 启动异动审批链（填报人修改 → 战略部负责人 → 分管校领导终审）
-        StartWorkflowRequest request = new StartWorkflowRequest();
-        request.setWorkflowCode("PLAN_MUTATION_STRATEGY");
-        request.setBusinessEntityId(indicatorId);
-        request.setBusinessEntityType(INDICATOR_ENTITY_TYPE);
-        Map<String, Object> variables = new LinkedHashMap<>();
-        variables.put("indicatorId", indicatorId);
-        variables.put("initiatedBy", operatorUserId);
-        request.setVariables(variables);
-        var response = businessWorkflowApplicationService.startWorkflow(
-                request, operatorUserId, strategyOrgProperties.getStrategyOrgId());
-        log.info("[IndicatorMutation] 异动已发起: indicatorId={}, instanceId={}",
-                indicatorId, response.getInstanceId());
-
-        // A3 锁死主动通知：异动发起成功后，给被锁组织用户写一条站内消息
-        // 2026-10-18 用户定案：异动发起不再向被锁组织发站内通知——
-        // 通知只随审批中心整体流程发送；锁死本身照常生效（见 assertIndicatorOrgNotLockedByMutation）。
-        log.info("[IndicatorMutation] 异动发起，锁死生效（不另发通知）: indicatorId={}", indicatorId);
-        return response.getInstanceId();
-    }
-
-    /**
-     * A3 锁死主动通知：异动发起成功后，给被锁组织（指标的 target_org_id）的全部在岗用户
-     * 写一条站内消息（直接落 sys_user_notification，与 iam UserNotificationService 同表同结构）。
-     * 尽力而为：查询/写入失败只记日志，不影响异动发起主流程。
-     */
-    private void notifyLockedOrgUsers(Long indicatorId, Long operatorUserId) {
-        try {
-            List<Long> targetOrgIds = jdbcTemplate.queryForList(
-                    "SELECT target_org_id FROM public.indicator WHERE id = ?",
-                    Long.class, indicatorId);
-            Long targetOrgId = targetOrgIds == null || targetOrgIds.isEmpty() ? null : targetOrgIds.get(0);
-            if (targetOrgId == null) {
-                log.info("[IndicatorMutation] 指标无 target_org_id，跳过锁死通知: indicatorId={}", indicatorId);
-                return;
-            }
-
-            List<Long> recipientIds = jdbcTemplate.query(
-                    """
-                    SELECT u.id
-                    FROM public.sys_user u
-                    WHERE u.org_id = ?
-                      AND COALESCE(u.is_active, false) = true
-                    ORDER BY u.id ASC
-                    """,
-                    (rs, rowNum) -> rs.getLong(1),
-                    targetOrgId);
-            if (recipientIds.isEmpty()) {
-                log.info("[IndicatorMutation] 被锁组织无在岗用户，跳过锁死通知: indicatorId={}, orgId={}",
-                        indicatorId, targetOrgId);
-                return;
-            }
-
-            String batchKey = java.util.UUID.randomUUID().toString();
-            // T1: 前端无 /indicators/{id} 路由，跳转指标详情会 404；改跳进度页（路由已存在）
-            String actionUrl = "/indicators/" + indicatorId + "/progress";
-            for (Long recipientId : recipientIds) {
-                jdbcTemplate.update(
-                        """
-                        INSERT INTO public.sys_user_notification (
-                            recipient_user_id, sender_user_id, sender_org_id,
-                            notification_type, title, content, status,
-                            action_url, related_entity_type, related_entity_id, batch_key
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'UNREAD', ?, 'INDICATOR', ?, ?)
-                        """,
-                        recipientId,
-                        operatorUserId,
-                        strategyOrgProperties.getStrategyOrgId(),
-                        MUTATION_LOCK_NOTICE_TYPE,
-                        MUTATION_LOCK_NOTICE_TITLE,
-                        MUTATION_LOCK_NOTICE_CONTENT,
-                        actionUrl,
-                        indicatorId,
-                        batchKey
-                );
-            }
-            log.info("[IndicatorMutation] 锁死通知已写入: indicatorId={}, orgId={}, recipients={}",
-                    indicatorId, targetOrgId, recipientIds.size());
-        } catch (Exception ex) {
-            log.warn("[IndicatorMutation] 锁死通知写入失败（不影响异动发起）: indicatorId={}, error={}",
-                    indicatorId, ex.getMessage());
-        }
-    }
+    // 2026-10-30：删除单条异动入口 initiate(indicatorId, changes, operatorUserId)。
+    // 原实现写 audit_log 时 batch_id 传 null，而审批通过后的快照落库靠
+    // `audit_log.batch_id = audit_instance.batch_id` 定位快照，JOIN 不上 →
+    // 变更值永远不落库且审批链显示 APPROVED（静默丢数据）。
+    // 业务上异动按「整个计划统一攒改 → 顶部「发起异动」批量提交」走
+    // （initiateBatch：audit_log 与 audit_instance 共用同一 batchId，落库正常）。
+    // 前端亦从未暴露单条入口（openMutationDialogForField 无调用点）。
 
     /** 异动历史（快照列表，前端「已更改 N 次」悬浮展示）。 */
     public List<Map<String, Object>> history(Long indicatorId) {

@@ -991,19 +991,15 @@ public class IndicatorController {
 
     // ==================== P5 指标异动 ====================
 
-    @org.springframework.transaction.annotation.Transactional
-    @org.springframework.web.bind.annotation.PostMapping("/{id}/mutation")
-    @Operation(summary = "发起指标异动", description = "仅战略发展部；原地修改+写快照+启动异动审批链并锁死该组织填报")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<ApiResponse<String>> initiateMutation(
-            @PathVariable Long id,
-            @org.springframework.web.bind.annotation.RequestBody java.util.Map<String, Object> changes,
-            @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
-        Long operator = currentUser == null ? null : currentUser.getId();
-        String instanceId = indicatorMutationService.initiate(id, changes, operator);
-        // 显式两参重载：单参 success(String) 会命中 message 重载，把 instanceId 写进 message 而 data 为 null
-        return ResponseEntity.ok(ApiResponse.success("Success", instanceId));
-    }
+    // 2026-10-30：删除单条异动端点 POST /{id}/mutation。
+    // 原因：该端点写 audit_log 时 batch_id 传 null，而审批通过后的快照落库
+    // （StrategyWorkflowBusinessStatusAdapter.applyApprovedMutationValues）靠
+    // `audit_log.batch_id = audit_instance.batch_id` 定位快照，JOIN 不上 →
+    // 变更值永远不落库，且审批链仍显示 APPROVED，属静默丢数据。
+    // 业务上异动本就按「整个计划统一攒改 → 顶部「发起异动」批量提交」走
+    // （POST /indicators/mutations/batch，两侧 batch_id 对齐，落库正常），
+    // 前端也从未暴露单条入口（openMutationDialogForField 无任何调用点）。
+    // 保留并行端点只会让两条路径再次出现同类不一致，故整条移除。
 
     /**
      * 2026-10-20 用户定案：已下发计划新增指标后，立即为新建指标发起异动审批。

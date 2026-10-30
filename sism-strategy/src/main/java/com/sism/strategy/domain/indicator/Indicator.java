@@ -344,22 +344,25 @@ public class Indicator extends AggregateRoot<Long> {
             return IndicatorLevel.FIRST; // 默认一级指标
         }
 
-        // 获取组织类型
-        var ownerOrgType = this.ownerOrg.getOrgType();
-        var targetOrgType = this.targetOrg.getOrgType();
+        // 2026-10-30 修复（层级恒为 FIRST）：原实现拿 org_type 与字符串字面量
+        // "STRATEGY_DEPT" / "FUNCTIONAL_DEPT" / "FUNCTION_DEPT" 比较，
+        // 而 sys_org.type 的真实枚举值是小写 admin / functional / academic
+        // （见 com.sism.organization.domain.OrgType，枚举名必须与 PG 枚举一致），
+        // 三条比较永不命中 → 全部兜底返回 FIRST。
+        // 后果：职能部门→学院的子指标被判成一级指标，
+        // JpaIndicatorRepository.findSecondLevelIndicators() 永远返回空。
+        // 现改为直接比较枚举常量，杜绝大小写/命名再次漂移。
+        var ownerOrgType = this.ownerOrg.getType();
+        var targetOrgType = this.targetOrg.getType();
 
-        // 判断：如果owner是战略部，目标是非学院类型 = 一级指标
-        // 如果owner是职能类型，目标 = 二级指标
-        if (ownerOrgType != null) {
-            String ownerTypeName = ownerOrgType;
-            // 战略发展部 -> 职能处室 = 一级指标
-            if ("STRATEGY_DEPT".equals(ownerTypeName)) {
-                return IndicatorLevel.FIRST;
-            }
-            // 职能处室 -> 学院 = 二级指标
-            if ("FUNCTIONAL_DEPT".equals(ownerTypeName) || "FUNCTION_DEPT".equals(ownerTypeName)) {
+        if (ownerOrgType != null && targetOrgType != null) {
+            // 职能部门 → 二级学院 = 二级指标
+            if (ownerOrgType == com.sism.organization.domain.OrgType.functional
+                    && targetOrgType == com.sism.organization.domain.OrgType.academic) {
                 return IndicatorLevel.SECOND;
             }
+            // 其余（战略发展部 → 职能部门等）= 一级指标
+            return IndicatorLevel.FIRST;
         }
 
         // 兜底：一级指标
