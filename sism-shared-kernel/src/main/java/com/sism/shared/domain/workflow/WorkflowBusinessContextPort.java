@@ -77,4 +77,21 @@ public interface WorkflowBusinessContextPort {
     default java.util.Map<Long, String> findIndicatorAppraisalLevels(Long entityId) {
         return java.util.Map.of();
     }
+
+    /**
+     * 2026-10-30 用户定案：审批拦截文案要报指标名称、不报指标 ID（老板看不懂数字行列）——
+     * 返回该业务实体（entityId=报告ID）下 指标ID→指标名称（indicator_desc）映射。
+     * 默认空映射；仅报告类实体（PLAN_REPORT）的上下文适配器覆写。
+     */
+    default java.util.Map<Long, String> findIndicatorNamesByReport(Long entityId) {
+        return java.util.Map.of();
+    }
+
+    /**
+     * 2026-10-30 用户定案：审批拦截文案要讲清楚去哪里操作——
+     * 返回该报告的填报组织名称（如「XX学院」）。默认空；仅报告类实体的上下文适配器覆写。
+     */
+    default java.util.Optional<String> findReportOrgName(Long entityId) {
+        return java.util.Optional.empty();
+    }
 }
