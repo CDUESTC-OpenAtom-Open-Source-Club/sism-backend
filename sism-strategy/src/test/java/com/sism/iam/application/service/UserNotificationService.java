@@ -43,4 +43,34 @@ public class UserNotificationService {
     public Map<Long, ReminderStatus> getReminderStatuses(Collection<Long> indicatorIds, Long currentUserId) {
         throw new UnsupportedOperationException("Test shim only");
     }
+
+    /**
+     * 2026-10-31 缺陷修复（原样重发后审批人无待办通知）：shim 补齐与真实
+     * sism-iam 服务同签名的「待审批」通知方法——重发续链后下一环节候选审批人
+     * 的通知走该方法（与首发起 PlanWorkflowEventListener 同一通知口径），
+     * 测试里由 Mockito mock 承接。真实类签名见
+     * sism-iam UserNotificationService#createSubmissionNotification。
+     */
+    public record SubmissionNotificationResult(
+            Long notificationId,
+            Long recipientUserId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            LocalDateTime createdAt
+    ) {}
+
+    public SubmissionNotificationResult createSubmissionNotification(
+            Long recipientUserId,
+            Long senderUserId,
+            Long senderOrgId,
+            Long approvalInstanceId,
+            String entityType,
+            Long entityId,
+            String businessName,
+            String stepName,
+            String submitterName
+    ) {
+        throw new UnsupportedOperationException("Test shim only");
+    }
 }

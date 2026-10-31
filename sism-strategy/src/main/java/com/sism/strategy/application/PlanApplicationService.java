@@ -502,6 +502,13 @@ public class PlanApplicationService {
      * 为什么用 audit_instance 而不是 mutation_status：mutation_status 只是指标上的汇总状态，
      * 无法区分「战略部对职能部门发起的异动」与「职能部门向学院发起的异动」，也无法按年度
      * 隔离；审批实例表才是异动流程是否仍在审批中的唯一事实来源。
+     *
+     * 2026-10-31 缺陷修复（学院级联全锁，2026-10-11 定案口径补齐）：线上实测
+     * 教务处→计算机学院的子计划异动在审时，向商学院（另一个学院）下发后端照常受理。
+     * 原因：原查询只匹配「异动指标 target_org_id = 下发方职能部门自身」——学院子计划
+     * 异动的 target_org_id 是学院，永远不命中该条件。按定案补齐级联分支：同一考核周期
+     * 内存在任意「目标组织为学院」的异动审批在审时，任何以学院（sys_org.type='academic'）
+     * 为目标的下发一律拒绝（学院级联全锁，不限下发方）。
      */
     private void assertFunctionalDeptMutationNotInFlight(Plan plan, String workflowCode) {
         if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
@@ -511,12 +518,38 @@ public class PlanApplicationService {
                 && !"PLAN_DISPATCH_FUNCDEPT".equals(workflowCode.trim().toUpperCase(Locale.ROOT))) {
             return;
         }
-        Long functionalDeptOrgId = plan.getCreatedByOrgId();
-        if (functionalDeptOrgId == null) {
+        if (plan.getCycleId() == null) {
             return;
         }
 
-        Integer count = jdbcTemplate.queryForObject(
+        Long functionalDeptOrgId = plan.getCreatedByOrgId();
+        if (functionalDeptOrgId != null) {
+            Integer count = jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM public.audit_instance ai
+                    JOIN public.audit_flow_def f ON f.id = ai.flow_def_id AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                    JOIN public.indicator i ON ai.entity_type = 'INDICATOR' AND i.id = ai.entity_id
+                    JOIN public.sys_task t ON t.task_id = i.task_id
+                    JOIN public.plan p ON p.id = t.plan_id
+                    WHERE ai.status = 'IN_REVIEW'
+                      AND i.target_org_id = ?
+                      AND p.cycle_id = ?
+                      AND COALESCE(i.is_deleted, false) = false
+                    """,
+                    Integer.class,
+                    functionalDeptOrgId,
+                    plan.getCycleId()
+            );
+            if (count != null && count > 0) {
+                throw new IllegalStateException("该职能部门的指标正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
+            }
+        }
+
+        // 学院级联全锁（2026-10-31 补齐）：下发目标 org 是学院时，同周期内任意
+        // 「目标为学院」的异动在审即拒——异动审批改的是学院子计划的口径快照，
+        // 期间向任何学院下发都会与在审口径冲突。
+        Integer collegeCascadeCount = jdbcTemplate.queryForObject(
                 """
                 SELECT COUNT(*)
                 FROM public.audit_instance ai
@@ -524,17 +557,17 @@ public class PlanApplicationService {
                 JOIN public.indicator i ON ai.entity_type = 'INDICATOR' AND i.id = ai.entity_id
                 JOIN public.sys_task t ON t.task_id = i.task_id
                 JOIN public.plan p ON p.id = t.plan_id
+                JOIN public.sys_org o ON o.id = i.target_org_id AND o.type = 'academic'
                 WHERE ai.status = 'IN_REVIEW'
-                  AND i.target_org_id = ?
                   AND p.cycle_id = ?
                   AND COALESCE(i.is_deleted, false) = false
                 """,
                 Integer.class,
-                functionalDeptOrgId,
                 plan.getCycleId()
         );
-        if (count != null && count > 0) {
-            throw new IllegalStateException("该职能部门的指标正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
+        if (collegeCascadeCount != null && collegeCascadeCount > 0) {
+            throw new IllegalStateException(
+                    "学院子计划的异动正在审批中，暂不能向学院下发；请等异动审批结束或撤回后再操作");
         }
     }
 

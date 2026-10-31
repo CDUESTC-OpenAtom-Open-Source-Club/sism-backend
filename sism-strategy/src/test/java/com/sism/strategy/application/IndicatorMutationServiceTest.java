@@ -73,6 +73,19 @@ class IndicatorMutationServiceTest {
     @Mock
     private com.sism.workflow.application.support.WorkflowEventDispatcher workflowEventDispatcher;
 
+    /** 2026-10-31 缺陷修复（重发后审批人无待办通知）：与首发起同口径的通知链路。 */
+    @Mock
+    private com.sism.iam.application.service.UserNotificationService userNotificationService;
+
+    @Mock
+    private com.sism.workflow.application.support.ApproverResolver approverResolver;
+
+    @Mock
+    private com.sism.workflow.application.definition.WorkflowDefinitionQueryService workflowDefinitionQueryService;
+
+    @Mock
+    private com.sism.workflow.application.query.WorkflowReadModelService workflowReadModelService;
+
     private IndicatorMutationService service;
 
     @BeforeEach
@@ -89,7 +102,12 @@ class IndicatorMutationServiceTest {
                 // 2026-10-31：重发原地续链（save → sync → publish）
                 auditInstanceRepository,
                 workflowBusinessStatusSyncService,
-                workflowEventDispatcher
+                workflowEventDispatcher,
+                // 2026-10-31 缺陷修复：重发后续链通知下一环节候选审批人
+                userNotificationService,
+                approverResolver,
+                workflowDefinitionQueryService,
+                workflowReadModelService
         );
     }
 
@@ -732,6 +750,9 @@ class IndicatorMutationServiceTest {
         instance.setEntityType("INDICATOR");
         instance.setEntityId(INDICATOR_ID);
         instance.setRequesterId(OPERATOR_ID);
+        instance.setRequesterOrgId(STRATEGY_ORG_ID);
+        // 2026-10-31（重发后续链通知）：审批步带 stepDefId，供通知链路解析节点定义
+        instance.setFlowDefId(60L);
         instance.setBatchId(RESUBMIT_BATCH_ID);
         instance.setStatus("WITHDRAWN");
         instance.setCompletedAt(null);
@@ -742,6 +763,8 @@ class IndicatorMutationServiceTest {
         instance.addStepInstance(submitStep);
         var approvalStep = new com.sism.workflow.domain.runtime.AuditStepInstance();
         approvalStep.setStepNo(2);
+        // 2026-10-31（重发后续链通知）：审批步带 stepDefId，供通知链路解析节点定义
+        approvalStep.setStepDefId(501L);
         approvalStep.setStepName("战略部负责人审批");
         approvalStep.setStatus("WITHDRAWN");
         instance.addStepInstance(approvalStep);
@@ -839,6 +862,85 @@ class IndicatorMutationServiceTest {
         verify(workflowEventDispatcher).publish(any());
         // 内容未变：权重闭合校验不必重跑
         verifyNoInteractions(basicTaskWeightValidationService);
+    }
+
+    /**
+     * 2026-10-31 缺陷修复（原样重发后审批人无待办通知，线上实证 02 号日志异常3）：
+     * 重发续链成功后，下一环节候选审批人收到与首发起同口径的「待审批」站内信
+     * （createSubmissionNotification，与上报链首发起 PlanWorkflowEventListener 同一
+     * 通知方法）；批次只发 1 条（首个复活实例代表整批）。
+     */
+    @Test
+    @DisplayName("重发后通知下一环节候选审批人：与首发起同口径的待审批站内信（批次只发 1 条）")
+    void resubmitBatch_shouldNotifyNextStepCandidatesLikeFirstSubmission() {
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null));
+        stubResubmitBatchRows(List.of(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null)));
+        stubResubmitAuditLog("INDICATOR", INDICATOR_ID, batchAuditLogRow());
+        var instance = stubReturnedInstanceLoaded();
+
+        // 当前审批节点定义（复活后的战略部负责人审批节点，stepDefId=501）
+        var flowDef = new com.sism.workflow.domain.definition.AuditFlowDef();
+        var approvalDef = new com.sism.workflow.domain.definition.AuditStepDef();
+        approvalDef.setId(501L);
+        approvalDef.setStepName("战略部负责人审批");
+        flowDef.setSteps(List.of(approvalDef));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(60L)).thenReturn(flowDef);
+        when(userProvider.getUserOrgId(OPERATOR_ID)).thenReturn(Optional.of(STRATEGY_ORG_ID));
+        when(approverResolver.resolveApproverName(OPERATOR_ID)).thenReturn("战略部填报人");
+        var candidate = com.sism.workflow.interfaces.dto.ApproverCandidateResponse.builder()
+                .userId(21L).username("zlb_final1").realName("战略部负责人1").orgId(STRATEGY_ORG_ID).build();
+        when(approverResolver.resolveCandidates(eq(approvalDef), eq(STRATEGY_ORG_ID), any()))
+                .thenReturn(List.of(candidate));
+        var detail = new com.sism.workflow.interfaces.dto.WorkflowInstanceDetailResponse();
+        detail.setPlanName("计算机学院年度竞赛专项");
+        when(workflowReadModelService.getInstanceDetail(String.valueOf(RESUBMIT_INSTANCE_ID)))
+                .thenReturn(detail);
+
+        var result = service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID, null);
+
+        assertEquals(List.of(String.valueOf(RESUBMIT_INSTANCE_ID)), result.instanceIds());
+        // 与首发起同口径：type=APPROVAL_SUBMITTED 由 createSubmissionNotification 承载，
+        // 收件人=候选审批人，正文带提交人与当前待处理环节
+        verify(userNotificationService).createSubmissionNotification(
+                eq(Long.valueOf(21L)), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID), eq(RESUBMIT_INSTANCE_ID),
+                eq("INDICATOR"), eq(INDICATOR_ID), eq("计算机学院年度竞赛专项"),
+                eq("战略部负责人审批"), eq("战略部填报人"));
+        // 重发主流程不变：原地续链 + 业务锁重建
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+        verify(workflowEventDispatcher).publish(any());
+    }
+
+    @Test
+    @DisplayName("重发后通知失败不影响重发主流程（fail-safe，与既有通知策略同口径）")
+    void resubmitBatch_shouldNotFailWhenNotificationFails() {
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null));
+        stubResubmitBatchRows(List.of(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null)));
+        stubResubmitAuditLog("INDICATOR", INDICATOR_ID, batchAuditLogRow());
+        stubReturnedInstanceLoaded();
+
+        var flowDef = new com.sism.workflow.domain.definition.AuditFlowDef();
+        var approvalDef = new com.sism.workflow.domain.definition.AuditStepDef();
+        approvalDef.setId(501L);
+        approvalDef.setStepName("战略部负责人审批");
+        flowDef.setSteps(List.of(approvalDef));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(60L)).thenReturn(flowDef);
+        when(workflowReadModelService.getInstanceDetail(any()))
+                .thenThrow(new RuntimeException("read model down"));
+
+        var result = service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID, null);
+
+        // 重发照常完成（原地续链），仅通知被跳过
+        assertEquals(List.of(String.valueOf(RESUBMIT_INSTANCE_ID)), result.instanceIds());
+        assertEquals("异动已重新发起", result.message());
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+        verify(auditInstanceRepository).save(any());
+        verifyNoInteractions(userNotificationService);
     }
 
     @Test

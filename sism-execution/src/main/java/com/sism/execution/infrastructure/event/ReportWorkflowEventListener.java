@@ -7,6 +7,7 @@ import com.sism.execution.domain.report.event.PlanReportApprovedEvent;
 import com.sism.execution.domain.report.event.PlanReportRejectedEvent;
 import com.sism.execution.domain.report.event.PlanReportSubmittedEvent;
 import com.sism.iam.application.service.UserNotificationService;
+import com.sism.organization.domain.OrganizationRepository;
 import com.sism.shared.domain.integration.DingTalkTodoProvider;
 import com.sism.workflow.application.BusinessWorkflowApplicationService;
 import com.sism.workflow.application.WorkflowApplicationService;
@@ -52,6 +53,7 @@ public class ReportWorkflowEventListener {
     private final ApproverResolver approverResolver;
     private final UserNotificationService userNotificationService;
     private final DingTalkTodoProvider dingTalkTodoProvider;
+    private final OrganizationRepository organizationRepository;
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -258,6 +260,14 @@ public class ReportWorkflowEventListener {
 
             String submitterName = approverResolver.resolveApproverName(event.getSubmitterId());
             String businessName = resolveReportBusinessName(report, event);
+            // 2026-10-30 修复：上报链钉钉推送的 departmentName 应为填报组织（reportOrgId），
+            // 原先传 detail.getSourceOrgName() 是下发方向（plan.createdByOrgId），方向颠倒。
+            String resolvedDepartmentName = resolveOrgName(event.getReportOrgId());
+            if (resolvedDepartmentName == null) {
+                // 取不到填报组织名时保持原值（下发方向组织名），避免推送空部门。
+                resolvedDepartmentName = detail == null ? null : detail.getSourceOrgName();
+            }
+            final String departmentName = resolvedDepartmentName;
 
             Long stepInstanceId = parseStepInstanceId(detail == null ? null : detail.getCurrentTaskId());
             // N-03（2026-10-30）：候选人与派单/鉴权共用同一范围组织解析入口
@@ -285,7 +295,7 @@ public class ReportWorkflowEventListener {
                         businessName,
                         nextApprovalStep.getStepName(),
                         submitterName,
-                        detail == null ? null : detail.getSourceOrgName()
+                        departmentName
                 ));
             });
         } catch (Exception ex) {
@@ -303,6 +313,18 @@ public class ReportWorkflowEventListener {
         } catch (NumberFormatException ex) {
             return null;
         }
+    }
+
+    /**
+     * 解析组织名称；组织不存在或名称为空时返回 null（由调用方决定回退值）。
+     */
+    private String resolveOrgName(Long orgId) {
+        if (orgId == null) {
+            return null;
+        }
+        return organizationRepository.findById(orgId)
+                .map(org -> org.getName() != null && !org.getName().isBlank() ? org.getName() : null)
+                .orElse(null);
     }
 
     private String resolveReportBusinessName(PlanReport report, PlanReportSubmittedEvent event) {

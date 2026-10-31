@@ -974,7 +974,10 @@ public class MessageCenterApplicationService {
             case "INDICATOR_DISTRIBUTION" -> "下发审批 · " + flowLabel;
             default -> "审批事项 · " + flowLabel;
         };
-        String applicant = firstNonBlank(task.getSourceOrgName(), task.getTargetOrgName(), task.getAssigneeName(), "相关部门");
+        // 2026-10-30 修复：上报链（PLAN_REPORT）的 sourceOrgName 是下发方向
+        // （plan.createdByOrgId），不是提交方——「战略发展部：战略发展部提交了…」方向颠倒。
+        // 提交人优先取 requesterOrgName（上报链=填报组织；下发/异动链 requester=原 source，行为不变）。
+        String applicant = firstNonBlank(task.getRequesterOrgName(), task.getSourceOrgName(), task.getTargetOrgName(), task.getAssigneeName(), "相关部门");
         String stepName = firstNonBlank(task.getCurrentStepName(), task.getTaskName(), "当前审批环节");
         String businessName = firstNonBlank(task.getPlanName(), entityId == null ? null : "业务对象#" + entityId);
         if (businessName == null || businessName.matches("Plan\\s+\\d+") || businessName.matches("业务对象#\\d+")) {

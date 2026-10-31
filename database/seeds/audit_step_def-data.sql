@@ -9,7 +9,10 @@
 -- - Seat names are resolved from workflow step + organization scope.
 -- - For example:
 --   - "战略发展部负责人审批" => role 3 + org 35
---   - "分管校领导审批" => role 4 + org 35
+--   - "分管校领导审批" => role 4 + 本部门席位（2026-10-26 定案：各部门领导兼任本部门
+--     分管校领导席位，按 workflow-approver.properties 的
+--     workflow.approver.functional-vice-president-scope-by-org 一部门一映射解析；
+--     例：教务处链该席位=教务处领导，不再固定 org 35）
 --   - "学院院长审批人审批" => role 4 + current college org
 --   - "战略发展部审核人审批" => role 3 + org 35（职能部门链 flow 3 末环与学院链 flow 4 末环同名）
 --   - "职能部门审批人审批" => role 2 + current functional org

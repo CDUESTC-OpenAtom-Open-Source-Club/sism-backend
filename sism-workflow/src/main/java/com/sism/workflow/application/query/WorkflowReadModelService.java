@@ -357,6 +357,10 @@ public class WorkflowReadModelService {
         response.setSourceOrgName(context.sourceOrgName());
         response.setTargetOrgId(context.targetOrgId());
         response.setTargetOrgName(context.targetOrgName());
+        // 2026-10-30 修复：上报链（PLAN_REPORT）的 sourceOrgName 是下发方向
+        // （plan.createdByOrgId），不代表提交方；requesterOrgId 才是真实提交组织
+        // （上报链=填报组织，下发/异动链=原下发方，两种链行为不变）。
+        response.setRequesterOrgName(resolveOrgName(instance.getRequesterOrgId(), orgNameCache));
         response.setCurrentStepName(step.getStepName());
         response.setAssigneeName(resolveUserName(step.getApproverId(), userNameCache));
         response.setApproverOrgName(resolveOrgName(step.getApproverOrgId(), orgNameCache));

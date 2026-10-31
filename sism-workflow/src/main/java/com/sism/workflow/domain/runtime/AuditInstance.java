@@ -487,7 +487,15 @@ public class AuditInstance extends AggregateRoot<Long> {
         replayStep.setStepNo(nextStepInstanceNo());
         replayStep.setStepDefId(latestRejectedStep.getStepDefId());
         replayStep.setStepName(latestRejectedStep.getStepName());
-        replayStep.setApproverId(null);
+        // 2026-10-31 缺陷修复（原样重发后审批人无待办通知，线上实证）：重放步沿用
+        // 被驳回步骤的被指派审批人——与 approverOrgId 的沿用对称，且与首发起
+        // StepInstanceFactory「每个节点指派一名审批人」的口径一致。此前置 null 导致
+        // 消息中心待办派生查询（audit_step_instance.approver_id = 当前用户）永远匹配
+        // 不上，重发后审批人「待处理 0」，只能靠角色鉴权在「处理审批」入口碰见重报卡。
+        // 被驳回步骤的审批人即该节点在岗被指派人，沿用不改变审批资格口径
+        // （canUserApprove 仍按角色/范围判定）；历史数据 approverId 为空时保持 null
+        // （assertCurrentApprover 视为未指派，行为与改前一致）。
+        replayStep.setApproverId(latestRejectedStep.getApproverId());
         replayStep.setApproverOrgId(latestRejectedStep.getApproverOrgId());
         replayStep.setStatus(STEP_STATUS_PENDING);
         replayStep.setComment(null);
