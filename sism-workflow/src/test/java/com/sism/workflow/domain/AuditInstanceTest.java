@@ -705,6 +705,10 @@ class AuditInstanceTest {
         rejectedApproval.setStepDefId(12L);
         rejectedApproval.setStepName("职能部门审批人审批");
         rejectedApproval.setStatus(AuditInstance.STEP_STATUS_REJECTED);
+        // 2026-10-31 缺陷修复：驳回步带有被指派审批人（线上即审批人本人），
+        // 重放步必须沿用——否则消息中心待办派生查询（approver_id=当前用户）
+        // 匹配不上，重发后审批人「待处理 0」。
+        rejectedApproval.setApproverId(77L);
         rejectedApproval.setApproverOrgId(88L);
 
         AuditStepInstance returnedSubmit = new AuditStepInstance();
@@ -731,7 +735,9 @@ class AuditInstanceTest {
         assertEquals(12L, replayStep.getStepDefId());
         assertEquals("职能部门审批人审批", replayStep.getStepName());
         assertEquals(88L, replayStep.getApproverOrgId());
-        assertNull(replayStep.getApproverId());
+        // 2026-10-31 缺陷修复（原样重发后审批人无待办通知）：重放步沿用被驳回
+        // 步骤的被指派审批人（与 approverOrgId 沿用对称、与首发起单指派口径一致）
+        assertEquals(77L, replayStep.getApproverId());
     }
 
     private AuditFlowDef buildFlowDef() {

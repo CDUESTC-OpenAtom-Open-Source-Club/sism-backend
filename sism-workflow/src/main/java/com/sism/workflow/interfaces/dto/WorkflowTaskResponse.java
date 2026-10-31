@@ -32,6 +32,13 @@ public class WorkflowTaskResponse {
     private String sourceOrgName;
     private Long targetOrgId;
     private String targetOrgName;
+    /**
+     * 提交方（发起人所在）组织名，取 instance.requesterOrgId 对应组织。
+     * 上报链（PLAN_REPORT）= 填报组织；下发/异动链 = 原下发方（与 sourceOrgName 相同）。
+     * 2026-10-30 修复：上报链 sourceOrgName 是下发方向（plan.createdByOrgId），
+     * 消息中心待办卡片的"提交人"应优先取本字段。
+     */
+    private String requesterOrgName;
     private String currentStepName;
     private Long assigneeId;
     private String assigneeName;
