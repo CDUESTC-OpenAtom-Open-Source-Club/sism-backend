@@ -75,7 +75,10 @@ public class ReportWorkflowEventListener {
             Long auditInstanceId = report == null ? null : report.getAuditInstanceId();
             AuditInstance resumableInstance = findResumableReportInstance(event.getReportId(), auditInstanceId);
             if (resumableInstance != null) {
-                AuditInstance resumed = workflowApplicationService.resumeWithdrawnAuditInstance(resumableInstance);
+                // 2026-10-31 修复（重报说明被丢弃，图05）：复活撤回实例时把提交人填写的
+                // 「重报说明」写入提交步备注；说明为空时保留原兜底文案。
+                AuditInstance resumed = workflowApplicationService.resumeWithdrawnAuditInstance(
+                        resumableInstance, event.getSubmitComment());
                 reportApplicationService.attachAuditInstance(event.getReportId(), resumed.getId());
                 log.info("✅ 已恢复既有报告审批实例 - instanceId: {}, reportId: {}", resumed.getId(), event.getReportId());
                 return;
@@ -155,6 +158,11 @@ public class ReportWorkflowEventListener {
         variables.put("reportMonth", event.getReportMonth());
         variables.put("reportOrgId", event.getReportOrgId());
         variables.put("submitterId", event.getSubmitterId());
+        // 2026-10-31 修复（重报说明被丢弃，图05）：首次启动链同样把重报说明带入
+        // 提交步自动完成备注（口径与 PLAN 链 PlanWorkflowEventListener 一致）。
+        if (event.getSubmitComment() != null && !event.getSubmitComment().isBlank()) {
+            variables.put("submitComment", event.getSubmitComment().trim());
+        }
         return variables;
     }
 

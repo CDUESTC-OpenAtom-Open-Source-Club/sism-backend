@@ -142,6 +142,14 @@ public class PlanReport extends AggregateRoot<Long> {
      * 提交报告
      */
     public void submit(Long userId) {
+        submit(userId, null);
+    }
+
+    /**
+     * 提交报告（携带重报说明）。2026-10-31 修复（图05）：驳回后重报时前端收集的
+     * 「重报说明」随事件透传进工作流链路写入提交步备注；说明为空时行为与改前一致。
+     */
+    public void submit(Long userId, String submitComment) {
         if (!isDraft()) {
             throw new IllegalStateException("Cannot submit report: not in DRAFT status");
         }
@@ -152,7 +160,7 @@ public class PlanReport extends AggregateRoot<Long> {
         this.rejectionReason = null;
         this.submittedAt = LocalDateTime.now();
         setUpdatedAt(LocalDateTime.now());
-        addEvent(new PlanReportSubmittedEvent(this.id, this.reportMonth, this.reportOrgId, userId));
+        addEvent(new PlanReportSubmittedEvent(this.id, this.reportMonth, this.reportOrgId, userId, submitComment));
     }
 
     /**

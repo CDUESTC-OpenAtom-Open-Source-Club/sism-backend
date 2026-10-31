@@ -251,6 +251,10 @@ class IndicatorControllerTest {
                             null,
                             null,
                             // 2026-10-21：任务改名异动留痕依赖（本测试不触发异动，传 null）
+                            null,
+                            // 2026-10-31：重发原地续链依赖（本测试不触发重发，传 null）
+                            null,
+                            null,
                             null),
                     // 取消异动依赖（本测试不触发取消，传 null）
                     null,

@@ -37,34 +37,66 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
         // 流转方向 = 发起方（指标归属组织）-> 目标方（指标 target_org），
         // 此前该类型返回 empty，前端卡片只能显示「目标部门」占位词。
         if ("INDICATOR".equalsIgnoreCase(entityType) && entityId != null) {
-            return jdbcTemplate.query(
+            // 2026-10-31 缺陷修复（取消异动软删除新增行后审批历史丢业务标题）：
+            // 先按原口径查活行；查不到（is_deleted=true：取消异动的新增行、终拒/通过删除
+            // 的归档行）再走兜底查询——去掉 is_deleted 过滤，标题优先取 audit_log 最新
+            // 快照的 after 值（软删除只翻标记不改业务值，快照与行值一致，双重保险），
+            // 保证审批中心「审批历史」的「已取消」卡仍能展示当时新增的内容。
+            // 调用方波及面已核实：ApproverResolver 的摘要解析仅限 PLAN/PLAN_REPORT，
+            // 不会走到 INDICATOR 分支；两个读模型消费方（审批中心卡片）正是要这个兜底。
+            Optional<BusinessSummary> live = jdbcTemplate.query(
                     "SELECT owner_org_id, target_org_id, indicator_desc FROM public.indicator WHERE id = ? AND COALESCE(is_deleted, false) = false",
-                    rs -> {
-                        if (!rs.next()) {
-                            return Optional.<BusinessSummary>empty();
-                        }
-                        long ownerOrgId = rs.getLong("owner_org_id");
-                        long targetOrgId = rs.getLong("target_org_id");
-                        String desc = rs.getString("indicator_desc");
-                        String displayName = desc != null && desc.length() > 40 ? desc.substring(0, 40) : desc;
-                        Long sourceId = ownerOrgId > 0 ? ownerOrgId : null;
-                        Long targetId = targetOrgId > 0 ? targetOrgId : null;
-                        return Optional.of(new BusinessSummary(
-                                null,
-                                displayName,
-                                sourceId,
-                                resolveOrgName(sourceId),
-                                targetId,
-                                resolveOrgName(targetId),
-                                displayName
-                        ));
-                    },
+                    indicatorSummaryExtractor(),
+                    entityId);
+            if (live.isPresent()) {
+                return live;
+            }
+            return jdbcTemplate.query(
+                    """
+                    SELECT i.owner_org_id,
+                           i.target_org_id,
+                           COALESCE(NULLIF(snapshot.after_desc, ''), i.indicator_desc) AS indicator_desc
+                    FROM public.indicator i
+                    LEFT JOIN LATERAL (
+                        SELECT al.after_json ->> 'indicator_desc' AS after_desc
+                        FROM public.audit_log al
+                        WHERE al.entity_type = 'INDICATOR' AND al.entity_id = i.id
+                        ORDER BY al.created_at DESC, al.log_id DESC
+                        LIMIT 1
+                    ) snapshot ON true
+                    WHERE i.id = ?
+                    """,
+                    indicatorSummaryExtractor(),
                     entityId);
         }
         if (!PLAN_ENTITY_TYPE.equalsIgnoreCase(entityType) || entityId == null) {
             return Optional.empty();
         }
         return planRepository.findById(entityId).map(this::toSummary);
+    }
+
+    /** 指标行 → 业务摘要（活行查询与 audit_log 快照兜底查询共用同一映射）。 */
+    private org.springframework.jdbc.core.ResultSetExtractor<Optional<BusinessSummary>> indicatorSummaryExtractor() {
+        return rs -> {
+            if (!rs.next()) {
+                return Optional.<BusinessSummary>empty();
+            }
+            long ownerOrgId = rs.getLong("owner_org_id");
+            long targetOrgId = rs.getLong("target_org_id");
+            String desc = rs.getString("indicator_desc");
+            String displayName = desc != null && desc.length() > 40 ? desc.substring(0, 40) : desc;
+            Long sourceId = ownerOrgId > 0 ? ownerOrgId : null;
+            Long targetId = targetOrgId > 0 ? targetOrgId : null;
+            return Optional.of(new BusinessSummary(
+                    null,
+                    displayName,
+                    sourceId,
+                    resolveOrgName(sourceId),
+                    targetId,
+                    resolveOrgName(targetId),
+                    displayName
+            ));
+        };
     }
 
     /**

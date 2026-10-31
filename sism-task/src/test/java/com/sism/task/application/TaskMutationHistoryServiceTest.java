@@ -15,7 +15,9 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -106,6 +108,27 @@ class TaskMutationHistoryServiceTest {
         assertNull(rows.get(0).get("before_json"));
         assertNull(rows.get(0).get("after_json"));
         assertNull(rows.get(0).get("changed_fields"));
+    }
+
+    /**
+     * 2026-10-31 用户定案（任务F）：被「取消异动」终结的批次没有真正改变数据，
+     * 不得计入小圆片「已更改 N 次」——history 查询必须带 NOT EXISTS 排除
+     * 所在批次存在 CANCELLED 实例的 log 行；WITHDRAWN 退回待重报批次不得被扩大排除。
+     */
+    @Test
+    void historyShouldExcludeCancelledBatches() {
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), eq(7L))).thenReturn(List.of());
+
+        service.history(7L);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).query(sqlCaptor.capture(), any(RowMapper.class), eq(7L));
+        String sql = sqlCaptor.getValue();
+        assertTrue(sql.contains("NOT EXISTS"), "已取消批次必须被排除: " + sql);
+        assertTrue(sql.contains("ai.status = 'CANCELLED'"), "排除谓词必须命中 CANCELLED: " + sql);
+        assertTrue(sql.contains("PLAN_MUTATION_STRATEGY"), "只排异动链的取消批次: " + sql);
+        // 边界口径：只排除 CANCELLED，不得扩大到 WITHDRAWN（退回待重报批次照常计入）
+        assertFalse(sql.contains("'WITHDRAWN'"), "不得扩大排除口径到 WITHDRAWN: " + sql);
     }
 
     @SuppressWarnings("unchecked")

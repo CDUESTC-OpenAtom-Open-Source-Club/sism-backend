@@ -18,7 +18,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -28,6 +27,8 @@ import static org.mockito.Mockito.when;
 /**
  * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：
  * 「取消异动」终态动作——退回待重报的整批异动实例一次终结为 CANCELLED。
+ * 2026-10-30 二次定案（异动撤回零新增行）：撤回不再追加「退回提交步骤」行，
+ * 提交步由领域层原地翻转 WITHDRAWN，链位回到填报人。
  */
 @ExtendWith(MockitoExtension.class)
 class CancelWorkflowUseCaseTest {
@@ -40,9 +41,6 @@ class CancelWorkflowUseCaseTest {
 
     @Mock
     private WorkflowBusinessStatusSyncService workflowBusinessStatusSyncService;
-
-    @Mock
-    private com.sism.workflow.application.definition.WorkflowDefinitionQueryService workflowDefinitionQueryService;
 
     @Mock
     private ApplicationEventPublisher eventPublisher;
@@ -124,13 +122,29 @@ class CancelWorkflowUseCaseTest {
         verify(eventPublisher, never()).publishEvent(any());
     }
 
+    @Test
+    void cancelReturnedBatch_shouldTerminateNewFormWithdrawnChainToo() {
+        // 2026-10-30 二次定案：新形态撤回链（提交步原地 WITHDRAWN，无追加行）同样可整批取消
+        AuditInstance instance = inReviewMutationInstance(1L, "batch-88", 2001L);
+        instance.withdrawToRequester();
+        assertEquals(AuditInstance.STATUS_WITHDRAWN, instance.getStatus());
+        assertEquals(2, instance.getStepInstances().size());
+        when(auditInstanceRepository.save(any(AuditInstance.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<AuditInstance> cancelled = cancelWorkflowUseCase.cancelReturnedBatch(List.of(instance));
+
+        assertEquals(1, cancelled.size());
+        assertEquals(AuditInstance.STATUS_CANCELLED, cancelled.get(0).getStatus());
+        assertNotNull(cancelled.get(0).getCompletedAt());
+    }
+
     // ==================== 2026-10-30 异动撤回（退回填报人活链） ====================
 
     /** 构造一条审批中的异动实例（提交步骤 APPROVED + 负责人审批 PENDING）。 */
     private AuditInstance inReviewMutationInstance(Long id, String batchId, Long entityId) {
         AuditInstance instance = new AuditInstance();
         instance.setId(id);
-        instance.setFlowDefId(8L);
         instance.setEntityType("INDICATOR");
         instance.setEntityId(entityId);
         instance.setBatchId(batchId);
@@ -157,35 +171,10 @@ class CancelWorkflowUseCaseTest {
         return instance;
     }
 
-    /** PLAN_MUTATION_STRATEGY 流程定义（提交步骤 + 审批步骤）。 */
-    private com.sism.workflow.domain.definition.AuditFlowDef mutationFlowDef() {
-        var flowDef = new com.sism.workflow.domain.definition.AuditFlowDef();
-        flowDef.setId(8L);
-        flowDef.setFlowCode("PLAN_MUTATION_STRATEGY");
-        flowDef.setEntityType("INDICATOR");
-
-        var submitStepDef = new com.sism.workflow.domain.definition.AuditStepDef();
-        submitStepDef.setId(11L);
-        submitStepDef.setStepOrder(1);
-        submitStepDef.setStepName("填报人提交");
-        submitStepDef.setStepType(com.sism.workflow.domain.definition.AuditStepDef.STEP_TYPE_SUBMIT);
-
-        var approvalStepDef = new com.sism.workflow.domain.definition.AuditStepDef();
-        approvalStepDef.setId(12L);
-        approvalStepDef.setStepOrder(2);
-        approvalStepDef.setStepName("战略发展部负责人审批");
-        approvalStepDef.setStepType(com.sism.workflow.domain.definition.AuditStepDef.STEP_TYPE_APPROVAL);
-
-        flowDef.addStep(submitStepDef);
-        flowDef.addStep(approvalStepDef);
-        return flowDef;
-    }
-
     @Test
     void withdrawToRequesterBatch_shouldReturnWholeBatchToSubmitterWithAliveChain() {
         AuditInstance first = inReviewMutationInstance(1L, "batch-99", 2001L);
         AuditInstance second = inReviewMutationInstance(2L, "batch-99", 2002L);
-        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef());
         when(auditInstanceRepository.save(any(AuditInstance.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -197,18 +186,19 @@ class CancelWorkflowUseCaseTest {
             // 链保持存活：WITHDRAWN 且未完结（不进审批历史）
             assertEquals(AuditInstance.STATUS_WITHDRAWN, instance.getStatus());
             assertNull(instance.getCompletedAt());
-            // 当前在审步骤被撤回留痕
-            assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN,
-                    instance.resolveLatestStepInstance().orElseThrow().getStatus());
-            // 追加的退回提交步骤：WITHDRAWN、审批人=发起人、备注「提交人撤回」
-            AuditStepInstance returnedStep = instance.getStepInstances().get(2);
-            assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, returnedStep.getStatus());
-            assertEquals(100L, returnedStep.getApproverId());
-            assertEquals(35L, returnedStep.getApproverOrgId());
-            assertEquals(11L, returnedStep.getStepDefId());
-            assertEquals("填报人提交", returnedStep.getStepName());
-            assertEquals("提交人撤回", returnedStep.getComment());
-            assertNull(returnedStep.getApprovedAt());
+            // 2026-10-30 二次定案（撤回零新增行）：不再追加退回提交行，行数恒等于初始 2
+            assertEquals(2, instance.getStepInstances().size());
+            // 在审审批步原地翻转 WITHDRAWN「提交人撤回」
+            AuditStepInstance currentApproval = instance.getStepInstances().get(1);
+            assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, currentApproval.getStatus());
+            assertEquals("提交人撤回", currentApproval.getComment());
+            assertNotNull(currentApproval.getApprovedAt());
+            // 提交类步骤原地翻转 WITHDRAWN「提交人撤回」——链位回到填报人
+            AuditStepInstance submitStep = instance.getStepInstances().get(0);
+            assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, submitStep.getStatus());
+            assertEquals("提交人撤回", submitStep.getComment());
+            assertNotNull(submitStep.getApprovedAt());
+            assertEquals(11L, submitStep.getStepDefId());
         }
         // 整批逐实例落库、同步业务解锁（mutation_status 清理）并广播事件
         verify(auditInstanceRepository, times(2)).save(any(AuditInstance.class));
@@ -233,24 +223,8 @@ class CancelWorkflowUseCaseTest {
     }
 
     @Test
-    void withdrawToRequesterBatch_shouldFallbackStepNameWhenFlowDefMissing() {
-        AuditInstance instance = inReviewMutationInstance(1L, "batch-99", 2001L);
-        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(null);
-        when(auditInstanceRepository.save(any(AuditInstance.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-
-        cancelWorkflowUseCase.withdrawToRequesterBatch(List.of(instance));
-
-        // 流程定义缺失兜底：退回提交步骤名含「提交」，退回链查询仍可按名识别
-        AuditStepInstance returnedStep = instance.getStepInstances().get(2);
-        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, returnedStep.getStatus());
-        assertTrue(returnedStep.getStepName().contains("提交"));
-    }
-
-    @Test
     void withdrawToRequesterBatch_shouldNotPublishWithdrawnChainNotification() {
         AuditInstance instance = inReviewMutationInstance(1L, "batch-99", 2001L);
-        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef());
         when(auditInstanceRepository.save(any(AuditInstance.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -258,5 +232,30 @@ class CancelWorkflowUseCaseTest {
 
         // 退回填报人态没有待审批人，不发「审批链已撤回」实时通知（与 cancelReturnedBatch 同口径）
         verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    void withdrawToRequesterBatch_shouldKeepStepCountConstantAcrossWithdrawResubmitWithdraw() {
+        // 验收基准：提交→撤回→重报→撤回 两轮后总行数恒等于初始（不再出现第三、四行）
+        AuditInstance instance = inReviewMutationInstance(1L, "batch-99", 2001L);
+        when(auditInstanceRepository.save(any(AuditInstance.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        cancelWorkflowUseCase.withdrawToRequesterBatch(List.of(instance));
+        assertEquals(2, instance.getStepInstances().size());
+
+        // 填报人重新发起（resume 复用同链，零新增行）
+        instance.reactivateWithdrawnStep();
+        assertEquals(AuditInstance.STATUS_PENDING, instance.getStatus());
+        assertEquals(2, instance.getStepInstances().size());
+        assertEquals(AuditInstance.STEP_STATUS_PENDING, instance.getStepInstances().get(1).getStatus());
+
+        // 第二轮撤回：行数仍恒等于初始
+        cancelWorkflowUseCase.withdrawToRequesterBatch(List.of(instance));
+        assertEquals(AuditInstance.STATUS_WITHDRAWN, instance.getStatus());
+        assertNull(instance.getCompletedAt());
+        assertEquals(2, instance.getStepInstances().size());
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, instance.getStepInstances().get(0).getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, instance.getStepInstances().get(1).getStatus());
     }
 }

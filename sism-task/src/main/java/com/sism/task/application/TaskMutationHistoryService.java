@@ -77,14 +77,31 @@ public class TaskMutationHistoryService {
         );
     }
 
-    /** 任务变更历史（「已更改 N 次」数据源）。 */
+    /**
+     * 任务变更历史（「已更改 N 次」数据源）。
+     *
+     * 2026-10-31 用户定案（任务F）：被「取消异动」终结的批次没有真正改变数据，
+     * 不得计入小圆片「已更改 N 次」——用 NOT EXISTS 排除所在批次存在 CANCELLED
+     * 实例的 log 行（不用 JOIN：一个 batch 可含多实体多实例，JOIN 会把 log 行翻倍）。
+     * 边界口径：batch_id 为 NULL 照常计入（NOT EXISTS 天然放行）；WITHDRAWN 退回
+     * 待重报批次照常计入（只排除 CANCELLED，不扩大）；重报后 batch 被覆盖的孤儿
+     * log 行照常计入。审批中心「审批历史」tab 的「已取消」卡片是流转记录，不受影响。
+     */
     public List<Map<String, Object>> history(Long taskId) {
         return jdbcTemplate.query(
                 """
                 SELECT log_id, action, before_json::text AS before_json, after_json::text AS after_json,
                        changed_fields::text AS changed_fields, actor_user_id, created_at
-                FROM public.audit_log
-                WHERE entity_type = 'TASK' AND entity_id = ?
+                FROM public.audit_log al
+                WHERE al.entity_type = 'TASK' AND al.entity_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM public.audit_instance ai
+                      JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                          AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                      WHERE ai.batch_id = al.batch_id
+                        AND ai.status = 'CANCELLED'
+                  )
                 ORDER BY created_at DESC
                 """,
                 (rs, rowNum) -> {

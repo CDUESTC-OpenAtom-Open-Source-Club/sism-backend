@@ -20,6 +20,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,13 +28,18 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * 指标鉴定进度（2026-10-28 用户定案）。
+ * 指标鉴定进度（2026-10-28 用户定案；2026-10-31 评定门禁定稿）。
  *
  * 业务口径：
  * ① 审核进度以当前上报轮次的 {@code plan_report_indicator.appraisal_level} 为准；
  * ② 只有「当前审批节点的负责人」可以调整，是审批手段，不是普通编辑；
  * ③ 上级覆盖下级：每个节点都可以改，改了就覆盖，不改则沿用上一节点；
  * ④ 看板/列表仍读 Alert 手动等级，所以每次调整同步写 Alert（尽力而为）。
+ *
+ * <p>2026-10-31 定稿：可评定 = 上报审批期间 + 具备任一审批席角色 +
+ * 是当前活动节点的候选审批人（{@link ApproverResolver#canUserApprove}，N-03 统一范围组织口径）。
+ * 原「步骤白名单」（仅固定 step_order 可评）已删除——同一链上每个在途节点的候选人都能评。
+ * 不满足时 lockHint 三分：①非上报期间（保留细分提示）②无席位角色 ③非当前环节评定人（含节点名）。
  */
 @Service
 @RequiredArgsConstructor
@@ -52,15 +58,20 @@ public class IndicatorAppraisalApplicationService {
     private static final Set<String> ALLOWED_LEVELS = Set.of("AHEAD", "NORMAL", "DELAYED");
 
     /**
-     * 2026-10-28 用户定案：只有「上级部门接手后的第一个审批节点」可以评级；
-     * 同一部门内部的后续节点（含分管校领导）只审核，不能改等级。
+     * 2026-10-31 用户定案：审核进度评定门禁三分口径——
+     * 「上报审批期间 + 有评定权限的角色 + 是当前审批节点的评定人」三者全满足才可评定。
      *
-     * 职能部门链：填报人 → 职能部门审批人 → 分管校领导 → 战略发展部（仅第 4 步可评级）
-     * 学院链：填报人 → 学院审核人 → 分管职能部门负责人（可评级）→ 分管职能部门校领导 → 战略发展部（可评级）
+     * <p>本集合是「评定权限的角色」判定来源：无任一席位角色 → 原因②；
+     * 有席位角色但不是当前节点候选审批人（{@link ApproverResolver#canUserApprove}）→ 原因③。
+     * 与 ReportController 的 isAdmin/isSystemAdmin 同源（Spring Security authorities），
+     * 由 Controller 层透传，应用服务不再自行反查角色表。
      */
-    private static final Map<String, Set<Integer>> APPRAISAL_ALLOWED_STEP_ORDERS = Map.of(
-            "PLAN_APPROVAL_FUNCDEPT", Set.of(4),
-            "PLAN_APPROVAL_COLLEGE", Set.of(3, 5)
+    private static final Set<String> APPRAISAL_SEAT_ROLES = Set.of(
+            "ROLE_APPROVER",
+            "ROLE_STRATEGY_DEPT_HEAD",
+            "ROLE_VICE_PRESIDENT",
+            "ROLE_SYSTEM_ADMIN",
+            "ROLE_ADMIN"
     );
 
     private final JdbcTemplate jdbcTemplate;
@@ -72,6 +83,14 @@ public class IndicatorAppraisalApplicationService {
 
     /** 批量查询鉴定上下文（列表页/填报页回显 + 是否可编辑） */
     public List<IndicatorAppraisalContextResponse> getContexts(List<Long> indicatorIds, Long userId) {
+        return getContexts(indicatorIds, userId, List.of());
+    }
+
+    /**
+     * 批量查询鉴定上下文（2026-10-31 定稿：附带当前用户角色码，用于「席位角色」判定）。
+     */
+    public List<IndicatorAppraisalContextResponse> getContexts(
+            List<Long> indicatorIds, Long userId, Collection<String> roleCodes) {
         List<Long> ids = normalizeIds(indicatorIds);
         if (ids.isEmpty()) {
             return List.of();
@@ -81,7 +100,7 @@ public class IndicatorAppraisalApplicationService {
         for (Long indicatorId : ids) {
             ReportRow row = rows.get(indicatorId);
             if (row != null) {
-                result.add(toContext(row, userId));
+                result.add(toContext(row, userId, roleCodes));
             }
         }
         return result;
@@ -89,6 +108,15 @@ public class IndicatorAppraisalApplicationService {
 
     /** 行内调整审核进度：仅当前审批节点负责人可改 */
     public IndicatorAppraisalContextResponse setLevel(Long indicatorId, String level, Long userId) {
+        return setLevel(indicatorId, level, userId, List.of());
+    }
+
+    /**
+     * 行内调整审核进度（2026-10-31 定稿）：与 canAppraise 同源校验——
+     * 上报在途 + 具备审批席角色 + 当前节点候选审批人，任一不满足按对应原因拒绝。
+     */
+    public IndicatorAppraisalContextResponse setLevel(
+            Long indicatorId, String level, Long userId, Collection<String> roleCodes) {
         if (indicatorId == null || indicatorId <= 0) {
             throw new IllegalArgumentException("指标 ID 无效");
         }
@@ -104,9 +132,13 @@ public class IndicatorAppraisalApplicationService {
             throw new ConflictException("当前指标没有处于审批中的上报，无法调整审核进度");
         }
 
-        AppraisalPermission permission = resolvePermission(row, userId);
+        AppraisalPermission permission = resolvePermission(row, userId, roleCodes);
         if (!permission.canAppraise()) {
-            throw new AccessDeniedException("只有当前审批节点的负责人才能调整审核进度");
+            // 与 context 端点的 lockHint 同源：前端点击门禁拦住的，这里给同一个原因
+            throw new AccessDeniedException(
+                    permission.lockHint() != null
+                            ? permission.lockHint()
+                            : "只有当前审批节点的负责人才能调整审核进度");
         }
 
         planReportIndicatorRepository.updateAppraisalLevel(row.reportId(), indicatorId, normalizedLevel);
@@ -122,11 +154,12 @@ public class IndicatorAppraisalApplicationService {
         });
 
         ReportRow updated = loadLatestReportRows(List.of(indicatorId)).get(indicatorId);
-        return toContext(updated == null ? row : updated, userId);
+        return toContext(updated == null ? row : updated, userId, roleCodes);
     }
 
-    private IndicatorAppraisalContextResponse toContext(ReportRow row, Long userId) {
-        AppraisalPermission permission = resolvePermission(row, userId);
+    private IndicatorAppraisalContextResponse toContext(
+            ReportRow row, Long userId, Collection<String> roleCodes) {
+        AppraisalPermission permission = resolvePermission(row, userId, roleCodes);
         return IndicatorAppraisalContextResponse.builder()
                 .indicatorId(row.indicatorId())
                 .reportId(row.reportId())
@@ -254,13 +287,19 @@ public class IndicatorAppraisalApplicationService {
     }
 
     /**
-     * 2026-10-30 修复：把「在途 / 无实例 / 非本节点」三种情况分开给出可读的 lockHint，
-     * 不要一律返回同一句——否则用户看不懂到底卡在哪。
+     * 2026-10-31 定稿：可评定三条件按 ①②③ 顺序判定，lockHint 三分——
+     * <ol>
+     *   <li>① 非上报期间：保留既有细分提示（未启动 / 实例不存在 / 已结束 / 已重置）；</li>
+     *   <li>② 具备任一审批席角色（{@link #APPRAISAL_SEAT_ROLES}）才继续，否则
+     *       「当前角色无评定权限，无法评定审核进度」；</li>
+     *   <li>③ 当前节点候选审批人判定（{@link ApproverResolver#canUserApprove}，
+     *       N-03 统一范围组织口径）不通过时带节点名拒绝。</li>
+     * </ol>
      *
-     * <p>权威判据是审批实例状态（{@link AuditInstance#STATUS_PENDING} = IN_REVIEW）；
-     * 上报侧状态用 {@link PlanReportStatus} 归一化（SUBMITTED，含 legacy IN_REVIEW）。
+     * <p>原「步骤白名单」（仅固定 step_order 可评）已删除：同一链上每个在途节点的候选人都可评。
      */
-    private AppraisalPermission resolvePermission(ReportRow row, Long userId) {
+    private AppraisalPermission resolvePermission(
+            ReportRow row, Long userId, Collection<String> roleCodes) {
         if (row == null) {
             return new AppraisalPermission(false, null, "未找到该指标的上报记录");
         }
@@ -283,6 +322,11 @@ public class IndicatorAppraisalApplicationService {
             return new AppraisalPermission(false, null, "上报尚未提交或已重置，暂不能调整审核进度");
         }
 
+        // 原因②：无任一审批席角色——在任何节点级判定之前先拦
+        if (!hasAnyAppraisalSeatRole(roleCodes)) {
+            return new AppraisalPermission(false, null, "当前角色无评定权限，无法评定审核进度");
+        }
+
         AuditStepInstance pendingStep = instance.resolveCurrentPendingStep().orElse(null);
         if (pendingStep == null) {
             return new AppraisalPermission(false, null, "审批在途但没有待审节点，暂不能调整审核进度");
@@ -299,26 +343,26 @@ public class IndicatorAppraisalApplicationService {
             return new AppraisalPermission(false, null, "审批节点不存在");
         }
 
-        // 2026-10-28：只有上级部门接手后的第一个节点可评级；同部门后续节点只审核
-        String flowCode = flowDef.getFlowCode() == null
-                ? ""
-                : flowDef.getFlowCode().trim().toUpperCase();
-        Set<Integer> allowedStepOrders = APPRAISAL_ALLOWED_STEP_ORDERS.getOrDefault(flowCode, Set.of());
-        if (stepDef.getStepOrder() == null || !allowedStepOrders.contains(stepDef.getStepOrder())) {
-            return new AppraisalPermission(
-                    false,
-                    stepDef.getStepName(),
-                    "当前节点只审核，不能修改审核进度"
-            );
-        }
-
-        // N-03（2026-10-30）：范围组织由 ApproverResolver 统一解析，不再由调用方传 requesterOrgId
+        // 原因③：N-03（2026-10-30）——范围组织由 ApproverResolver 统一解析；
+        // 2026-10-31 定稿：当前活动节点的候选审批人即可评（白名单已删）
         boolean canApprove = approverResolver.canUserApprove(stepDef, userId, instance);
         return new AppraisalPermission(
                 canApprove,
                 stepDef.getStepName(),
-                canApprove ? null : "当前审批节点不是你，暂不能调整审核进度"
+                canApprove
+                        ? null
+                        : "您不是当前审批环节（" + stepDef.getStepName() + "）的评定人，无法评定"
         );
+    }
+
+    private boolean hasAnyAppraisalSeatRole(Collection<String> roleCodes) {
+        if (roleCodes == null || roleCodes.isEmpty()) {
+            return false;
+        }
+        return roleCodes.stream()
+                .filter(Objects::nonNull)
+                .map(code -> code.trim().toUpperCase())
+                .anyMatch(APPRAISAL_SEAT_ROLES::contains);
     }
 
     private List<Long> normalizeIds(List<Long> indicatorIds) {

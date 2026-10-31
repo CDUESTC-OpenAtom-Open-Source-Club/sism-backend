@@ -1116,6 +1116,44 @@ public class IndicatorController {
         return ResponseEntity.ok(ApiResponse.success(indicatorMutationService.history(id)));
     }
 
+    /**
+     * 2026-10-31 用户定案（重发 = 原地续链）：「发起异动」无本地草稿时按「上次提交的
+     * 内容」原样重新发起该批异动审批；2026-10-31 二次定案（零新增行）：重发不再重建
+     * 实例/快照——服务端原地续链（锁重建 + 退回步骤原地复活 + 本批快照行原地改写），
+     * 数据库零新增行、batch_id 不变。
+     * 请求体可选：{"items": [...]}（结构同 POST /mutations/batch 条目）传了即「改后
+     * 重发」——本批既有 audit_log 行原地 UPDATE（before 保留首轮原值）并重跑权重闭合
+     * 校验；缺省（或 items 为空）即「原样重发」，日志行一个字段都不动。
+     */
+    @org.springframework.web.bind.annotation.PostMapping("/mutations/{instanceId}/resubmit")
+    @Operation(summary = "重新发起异动（原地续链，零新增行）",
+            description = "仅异动发起人；缺省原样重发（退回步骤原地复活，不改任何日志行），"
+                    + "可选携带 items 改后重发（本批快照行原地 UPDATE + 权重闭合校验）")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<String>>> resubmitMutation(
+            @org.springframework.web.bind.annotation.PathVariable String instanceId,
+            @org.springframework.web.bind.annotation.RequestBody(required = false)
+            java.util.Map<String, Object> body,
+            @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
+        Long operator = currentUser == null ? null : currentUser.getId();
+        Long parsedInstanceId;
+        try {
+            parsedInstanceId = Long.valueOf(String.valueOf(instanceId).trim());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("异动实例 ID 必须为数字: " + instanceId);
+        }
+        // 可选 items：{"items": [...]}；缺省/为空 = 原样重发
+        java.util.List<java.util.Map<String, Object>> items = null;
+        if (body != null && body.get("items") instanceof java.util.List<?> rawItems) {
+            items = rawItems.stream()
+                    .filter(java.util.Map.class::isInstance)
+                    .map(item -> (java.util.Map<String, Object>) item)
+                    .toList();
+        }
+        var result = indicatorMutationService.resubmitBatch(parsedInstanceId, operator, items);
+        return ResponseEntity.ok(ApiResponse.success(result.message(), result.instanceIds()));
+    }
+
     @org.springframework.web.bind.annotation.GetMapping("/mutations/in-progress")
     @Operation(summary = "异动中指标清单", description = "看板异动汇总数据源")
     @PreAuthorize("isAuthenticated()")

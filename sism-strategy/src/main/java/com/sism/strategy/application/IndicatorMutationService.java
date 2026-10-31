@@ -1,6 +1,10 @@
 package com.sism.strategy.application;
 
 import com.sism.workflow.application.BusinessWorkflowApplicationService;
+import com.sism.workflow.application.WorkflowBusinessStatusSyncService;
+import com.sism.workflow.application.support.WorkflowEventDispatcher;
+import com.sism.workflow.domain.runtime.AuditInstance;
+import com.sism.workflow.domain.runtime.AuditInstanceRepository;
 import com.sism.workflow.interfaces.dto.StartWorkflowRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +51,15 @@ public class IndicatorMutationService {
     private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
     /** 2026-10-21：任务改名异动复用任务变更留痕（audit_log entity_type=TASK）。 */
     private final com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
+    /**
+     * 2026-10-31（重发原地续链）：退回异动链的原地复活走既有 resume 域逻辑
+     * （AuditInstance.reactivateWithdrawnStep，与 withdrawToRequester 撤回新形态
+     * 匹配、零新增行），落库/业务同步/事件广播与 RejectWorkflowUseCase 同序：
+     * save → syncAfterWorkflowChanged → workflowEventDispatcher.publish。
+     */
+    private final AuditInstanceRepository auditInstanceRepository;
+    private final WorkflowBusinessStatusSyncService workflowBusinessStatusSyncService;
+    private final WorkflowEventDispatcher workflowEventDispatcher;
 
     /**
      * 异动发起权只属于填报人（2026-10-21 用户定案）。
@@ -137,13 +150,7 @@ public class IndicatorMutationService {
 
         insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, null);
 
-        jdbcTemplate.update(
-                """
-                UPDATE public.indicator
-                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                MUTATION_STATUS_IN_MUTATION, indicatorId);
+        markIndicatorInMutation(indicatorId);
 
         // 新增场景同样要求权重闭合（新增后合计必须仍为 100）
         assertPlanBasicWeightStillClosed(List.of(indicatorId), Set.of());
@@ -467,6 +474,20 @@ public class IndicatorMutationService {
 
         taskMutationHistoryService.recordRename(taskId, previousName, trimmed, operatorUserId, batchId);
 
+        markTaskInMutation(taskId);
+    }
+
+    /**
+     * 异动标记层（无日志）：仅写异动锁列，不写 audit_log。
+     *
+     * 列写入口径（与各发起方法原内联 UPDATE 一致，2026-10-31 从四处复制粘贴收拢）：
+     * INDICATOR → public.indicator.mutation_status / mutation_started_at / updated_at；
+     * TASK → public.sys_task.mutation_status / mutation_started_at / updated_at。
+     * 业务列一律不动——修改值落库、新增转正、删除归档（is_deleted）均由审批
+     * 通过时的 StrategyWorkflowBusinessStatusAdapter 按快照执行。
+     * 2026-10-31（重发原地续链）：重发场景复用本层重建业务锁（重发不写 audit_log）。
+     */
+    private void markTaskInMutation(Long taskId) {
         jdbcTemplate.update(
                 """
                 UPDATE public.sys_task
@@ -475,6 +496,17 @@ public class IndicatorMutationService {
                 WHERE task_id = ?
                 """,
                 MUTATION_STATUS_IN_MUTATION, taskId);
+    }
+
+    private void markIndicatorInMutation(Long indicatorId) {
+        jdbcTemplate.update(
+                """
+                UPDATE public.indicator
+                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                MUTATION_STATUS_IN_MUTATION, indicatorId);
     }
 
     /** 新增指标进入异动：写「(新增)」快照 + 打异动标记（不含权重校验与审批启动）。 */
@@ -519,13 +551,7 @@ public class IndicatorMutationService {
 
         insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, batchId);
 
-        jdbcTemplate.update(
-                """
-                UPDATE public.indicator
-                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                MUTATION_STATUS_IN_MUTATION, indicatorId);
+        markIndicatorInMutation(indicatorId);
     }
 
     /**
@@ -570,13 +596,7 @@ public class IndicatorMutationService {
 
         insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, batchId);
 
-        jdbcTemplate.update(
-                """
-                UPDATE public.indicator
-                SET mutation_status = ?, mutation_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                MUTATION_STATUS_IN_MUTATION, indicatorId);
+        markIndicatorInMutation(indicatorId);
     }
 
     /** 修改指标进入异动：写 before/after 快照 + 打异动标记（不含权重校验与审批启动）。
@@ -636,17 +656,7 @@ public class IndicatorMutationService {
 
         // 2026-10-23 用户定案：只打异动标记，不落业务值——审批通过时由
         // StrategyWorkflowBusinessStatusAdapter 按快照 after 值落库。
-        jdbcTemplate.update(
-                """
-                UPDATE public.indicator
-                SET mutation_status = ?,
-                    mutation_started_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                MUTATION_STATUS_IN_MUTATION,
-                indicatorId
-        );
+        markIndicatorInMutation(indicatorId);
     }
 
     /** 启动单条实体的异动审批链（PLAN_MUTATION_STRATEGY，填报人修改 → 战略部负责人 → 分管校领导终审）。 */
@@ -790,14 +800,33 @@ public class IndicatorMutationService {
     // （initiateBatch：audit_log 与 audit_instance 共用同一 batchId，落库正常）。
     // 前端亦从未暴露单条入口（openMutationDialogForField 无调用点）。
 
-    /** 异动历史（快照列表，前端「已更改 N 次」悬浮展示）。 */
+    /**
+     * 异动历史（快照列表，前端「已更改 N 次」悬浮展示）。
+     *
+     * 2026-10-31 用户定案（任务F）：被「取消异动」终结的批次没有真正改变数据，
+     * 不得计入小圆片「已更改 N 次」——用 NOT EXISTS 排除所在批次存在 CANCELLED
+     * 实例的 log 行（不用 JOIN：一个 batch 可含多实体多实例，JOIN 会把 log 行翻倍）。
+     * 边界口径：batch_id 为 NULL 的历史行照常计入（NOT EXISTS 天然放行）；
+     * WITHDRAWN 退回待重报批次照常计入（只排除 CANCELLED，不扩大）；
+     * 重报后 batch 被覆盖的孤儿 log 行照常计入；同指标先取消后重新发起的新批次
+     * （新 batch 不命中 CANCELLED）照常计入。审批中心「审批历史」tab 的
+     * 「已取消」卡片是流转记录，不受本查询影响。
+     */
     public List<Map<String, Object>> history(Long indicatorId) {
         return jdbcTemplate.query(
                 """
                 SELECT log_id, action, before_json::text AS before_json, after_json::text AS after_json,
                        changed_fields::text AS changed_fields, actor_user_id, created_at
-                FROM public.audit_log
-                WHERE entity_type = 'INDICATOR' AND entity_id = ?
+                FROM public.audit_log al
+                WHERE al.entity_type = 'INDICATOR' AND al.entity_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM public.audit_instance ai
+                      JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                          AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                      WHERE ai.batch_id = al.batch_id
+                        AND ai.status = 'CANCELLED'
+                  )
                 ORDER BY created_at DESC
                 """,
                 (rs, rowNum) -> {
@@ -945,13 +974,19 @@ public class IndicatorMutationService {
      * 判定口径：PLAN_MUTATION_STRATEGY 异动实例 status=WITHDRAWN 且 completed_at
      * IS NULL（驳回退回填报人后 RejectWorkflowUseCase 置的活链状态）。2026-10-30
      * 定案修订（异动撤回=退回填报人活链）：发起人在审批中的「撤回」改走
-     * withdrawToRequester 转移，同样落 WITHDRAWN + completed_at NULL + 退回提交
-     * 步骤（CancelWorkflowUseCase.withdrawToRequesterBatch），撤回后的链由本查询
-     * 自然认领（红色横幅/取消异动入口随之可用）；旧 cancel() 终结链
-     * （completed_at 非空）仍被天然排除。退回提交步骤识别（WITHDRAWN 步骤的
-     * 审批人为发起人或步骤名含「提交」）与
-     * WorkflowBusinessStatusSyncService.hasReturnedSubmitStep 同口径。
+     * withdrawToRequester 转移，同样落 WITHDRAWN + completed_at NULL，撤回后的链
+     * 由本查询自然认领（红色横幅/取消异动入口随之可用）；旧 cancel() 终结链
+     * （completed_at 非空）仍被天然排除。2026-10-30 二次定案（撤回零新增行）：
+     * 退回提交步骤识别改双形态——新形态为发起人撤回把提交类步骤原地置 WITHDRAWN
+     * （step_no=1 或审批人=发起人或步骤名含「提交」，与
+     * AuditInstance.isRequesterSubmitStep /
+     * WorkflowBusinessStatusSyncService.hasReturnedSubmitStep 同口径）；
+     * 旧形态为存量数据里追加的退回提交行（同样命中该三口径），只兼容不迁移。
      * 审批中心「异动卡」的 IN_REVIEW 过滤不受本查询影响。
+     * 2026-10-30 二次（审批中心退回卡）：补 source_org_name/target_org_name，
+     * 连接口径与 {@link #listMutationApprovals} 一致（起=COALESCE(指标责任组织,
+     * 任务创建方组织)，止=COALESCE(指标接收组织, 任务所属组织)），审批中心
+     * 「退回待重报」状态卡的方向标题据此渲染。
      */
     public java.util.List<java.util.Map<String, Object>> listReturnedMutationChains(Long orgId) {
         if (orgId == null) {
@@ -968,6 +1003,8 @@ public class IndicatorMutationService {
                        ai.status,
                        ai.created_at,
                        rej.reject_comment AS reject_comment,
+                       so1.name AS source_org_name,
+                       so2.name AS target_org_name,
                        ru.real_name AS submitter_name
                 FROM public.audit_instance ai
                 JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
@@ -976,6 +1013,8 @@ public class IndicatorMutationService {
                     AND i.id = ai.entity_id AND COALESCE(i.is_deleted, false) = false
                 LEFT JOIN public.sys_task t ON ai.entity_type = 'TASK'
                     AND t.task_id = ai.entity_id AND COALESCE(t.is_deleted, false) = false
+                LEFT JOIN public.sys_org so1 ON so1.id = COALESCE(i.owner_org_id, t.created_by_org_id)
+                LEFT JOIN public.sys_org so2 ON so2.id = COALESCE(i.target_org_id, t.org_id)
                 LEFT JOIN public.sys_user ru ON ru.id = ai.requester_id
                 LEFT JOIN LATERAL (
                     SELECT si.comment AS reject_comment
@@ -990,11 +1029,17 @@ public class IndicatorMutationService {
                   AND ai.status = 'WITHDRAWN'
                   AND ai.completed_at IS NULL
                   AND EXISTS (
+                      -- 退回提交步骤双形态（2026-10-30 二次定案，撤回零新增行）：
+                      -- 新形态：提交类步骤被发起人撤回原地置 WITHDRAWN（step_no=1/
+                      --   审批人=发起人/步骤名含「提交」三口径识别）；
+                      -- 旧形态：存量数据里追加的退回提交行（同样命中三口径）。
                       SELECT 1
                       FROM public.audit_step_instance rsi
                       WHERE rsi.instance_id = ai.id
                         AND rsi.status = 'WITHDRAWN'
-                        AND (rsi.approver_id = ai.requester_id OR rsi.step_name LIKE '%提交%')
+                        AND (rsi.step_no = 1
+                             OR rsi.approver_id = ai.requester_id
+                             OR rsi.step_name LIKE '%提交%')
                   )
                 ORDER BY ai.created_at DESC
                 LIMIT 50
@@ -1010,10 +1055,419 @@ public class IndicatorMutationService {
                     row.put("status", rs.getString("status"));
                     row.put("created_at", rs.getTimestamp("created_at"));
                     row.put("reject_comment", rs.getString("reject_comment"));
+                    row.put("source_org_name", rs.getString("source_org_name"));
+                    row.put("target_org_name", rs.getString("target_org_name"));
                     row.put("submitter_name", rs.getString("submitter_name"));
                     return row;
                 },
                 orgId, orgId, orgId, orgId);
+    }
+
+    /**
+     * 2026-10-31 用户定案（重定义「重发 = 原地续链」）：一次异动的结束 = 取消异动或
+     * 到达最终节点通过；期间重新发起（含原样重发与改后重发）不会生成另一个实例、
+     * 不会生成另一个 report、数据库不新增任何数据量——只是把审批节点的状态改回来，
+     * 其他数据一概不动。
+     *
+     * 与旧实现的差异：不再委托 {@link #initiateBatch}（旧路径每次重发都生成新
+     * batchId、新增 audit_log 快照行并改写 audit_instance.batch_id，实测同一条
+     * CREATE 异动原样重发两次后异动历史冒出 3 条一模一样的记录）。新实现原地续链：
+     *
+     * ① 校验保留：实例存在、PLAN_MUTATION_STRATEGY 异动链（INDICATOR/TASK）、
+     *    requester-only（仅异动发起人，SecurityException）、status=WITHDRAWN 且
+     *    completed_at 为空；同批装载口径不变（batch_id 装全部、孤例取自身）。
+     * ② 业务锁重建（不写日志）：链离开 IN_REVIEW 时同步器已把 mutation_status 清空
+     *    （StrategyWorkflowBusinessStatusAdapter），重发按发起时的列写入口径
+     *    （mutation_status / mutation_started_at / updated_at，不含业务列）原地
+     *    重新上锁，绝不写 audit_log。
+     * ③ 快照不重建：首轮 audit_log 行即权威快照；每个实体必须已有本批快照行
+     *    （发起时必写，理论不可能缺失），缺失视为数据异常直接报错，不再静默跳过。
+     * ④ 改后重发（items 非空）：按 entity_type+entity_id 匹配批内既有对象后，原地
+     *    UPDATE 本批 audit_log 行的 changed_fields / after_json（before_json 保留
+     *    首轮原值、action 与 batch_id 均不动，绝不 INSERT 新行，CREATE 行的 before
+     *    维持「(新增)」），并用合并后的 after 权重重跑闭合校验（口径与 initiateBatch
+     *    一致）；原样重发（items 为空）日志行一个字段都不动，内容未变不必重跑权重校验。
+     * ⑤ 逐实例 resume：{@link AuditInstance#reactivateWithdrawnStep()} 原地复活退回
+     *    的提交步（与 withdrawToRequester 撤回新形态匹配的既有续链路径，零新增行），
+     *    实例回 IN_REVIEW、completedAt 保持 NULL、batch_id 不改写；逐实例
+     *    save → syncAfterWorkflowChanged → workflowEventDispatcher.publish（保持
+     *    现有通知行为）。
+     *
+     * @param items 可选的改后条目（结构同 {@link #initiateBatch}）；null/空 = 原样重发
+     */
+    public record ResubmitResult(List<String> instanceIds, String message) {
+    }
+
+    /** 原地续链的单行上下文：实例 ID、实体、本批快照行（含 log_id）与可选改后条目。 */
+    private record RoundRow(Long instanceId, String entityType, Long entityId,
+                            Map<String, Object> log, Map<String, Object> item) {
+    }
+
+    /** 改后重发的合并结果：行类型 + 合并后的 changed_fields/after_json（before 不动）。 */
+    private record MergedLog(String rowType, Map<String, Object> changedFields,
+                             Map<String, Object> afterJson, boolean dirty) {
+    }
+
+    @Transactional
+    public ResubmitResult resubmitBatch(Long instanceId, Long operatorUserId,
+                                        List<Map<String, Object>> items) {
+        if (instanceId == null || instanceId <= 0) {
+            throw new IllegalArgumentException("异动实例 ID 不能为空");
+        }
+        boolean withDraft = items != null && !items.isEmpty();
+        Map<String, Object> instance = jdbcTemplate.query(
+                """
+                SELECT ai.id, ai.entity_id, ai.entity_type, ai.batch_id, ai.requester_id,
+                       ai.status, ai.completed_at, ai.created_at, f.flow_code
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                WHERE ai.id = ?
+                """,
+                rs -> rs.next() ? mutationInstanceRow(rs) : null,
+                instanceId);
+        if (instance == null) {
+            throw new IllegalArgumentException("异动实例不存在: " + instanceId);
+        }
+        // 流程范围等价校验（对应 BusinessWorkflowApplicationService.assertMutationChainInstance）
+        String flowCode = String.valueOf(instance.get("flow_code"));
+        String entityType = String.valueOf(instance.get("entity_type"));
+        if (!"PLAN_MUTATION_STRATEGY".equalsIgnoreCase(flowCode)
+                || (!"INDICATOR".equalsIgnoreCase(entityType) && !"TASK".equalsIgnoreCase(entityType))) {
+            throw new IllegalArgumentException("仅异动审批链支持重新发起操作");
+        }
+        // requester-only：仅异动发起人可重新发起
+        if (!java.util.Objects.equals(toLongId(instance.get("requester_id")), operatorUserId)) {
+            throw new SecurityException("仅异动发起人可重新发起");
+        }
+        // 仅「退回待重报」活链可重发（驳回/撤回退回后的 WITHDRAWN 未完结状态）
+        if (!"WITHDRAWN".equalsIgnoreCase(String.valueOf(instance.get("status")))
+                || instance.get("completed_at") != null) {
+            throw new IllegalStateException("该异动链不在「退回待重报」状态，无法重新发起");
+        }
+
+        String batchId = instance.get("batch_id") == null
+                ? null
+                : String.valueOf(instance.get("batch_id"));
+        // 同批全部实例一次续链（与 cancelReturnedMutationBatch 的 findByBatchId 同口径；
+        // 无批次号的孤例只续自身）
+        List<Map<String, Object>> batchInstances =
+                batchId == null || batchId.isBlank()
+                        ? List.of(instance)
+                        : jdbcTemplate.queryForList(
+                                """
+                                SELECT ai.id, ai.entity_id, ai.entity_type, ai.batch_id, ai.requester_id,
+                                       ai.status, ai.completed_at, ai.created_at, f.flow_code
+                                FROM public.audit_instance ai
+                                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                                WHERE ai.batch_id = ?
+                                """,
+                                batchId);
+
+        // ① 逐实例装载本批快照行：新模型下发起时必写快照，缺失即数据异常（报错，不跳过）
+        List<RoundRow> rows = new ArrayList<>();
+        for (Map<String, Object> row : batchInstances) {
+            Long rowInstanceId = toLongId(row.get("id"));
+            Long rowEntityId = toLongId(row.get("entity_id"));
+            if (rowInstanceId == null || rowInstanceId <= 0
+                    || rowEntityId == null || rowEntityId <= 0) {
+                throw new IllegalStateException("异动批次存在缺少实体 ID 的实例，无法重新发起");
+            }
+            String rowEntityType = String.valueOf(row.get("entity_type"));
+            Map<String, Object> log = latestRoundAuditLog(rowEntityType, rowEntityId, batchId,
+                    (java.sql.Timestamp) row.get("created_at"));
+            if (log == null) {
+                throw new IllegalStateException(
+                        ("TASK".equalsIgnoreCase(rowEntityType) ? "任务#" : "指标#") + rowEntityId
+                                + " 缺少本批异动快照，无法重新发起；请「取消异动」后按新内容重新发起");
+            }
+            rows.add(new RoundRow(rowInstanceId, rowEntityType, rowEntityId, log, null));
+        }
+
+        // ② 改后重发：items 只允许指向批内既有对象（按 entity_type+entity_id 匹配，
+        //    不新增异动对象——重发绝不产生新实例/新快照行）
+        Map<String, Map<String, Object>> unmatchedItems = new LinkedHashMap<>();
+        if (withDraft) {
+            for (Map<String, Object> item : items) {
+                Long itemEntityId = toLongId(item.get("id"));
+                if (itemEntityId == null || itemEntityId <= 0) {
+                    throw new IllegalArgumentException("重发条目缺少有效实体 ID");
+                }
+                String itemEntityType = isTaskItem(item) ? TASK_ENTITY_TYPE : INDICATOR_ENTITY_TYPE;
+                unmatchedItems.put(itemEntityType + ":" + itemEntityId, item);
+            }
+            for (int i = 0; i < rows.size(); i++) {
+                RoundRow row = rows.get(i);
+                Map<String, Object> matched =
+                        unmatchedItems.remove(row.entityType() + ":" + row.entityId());
+                if (matched != null) {
+                    rows.set(i, new RoundRow(row.instanceId(), row.entityType(),
+                            row.entityId(), row.log(), matched));
+                }
+            }
+            if (!unmatchedItems.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "重发条目与原批次不匹配（重发不能新增异动对象）："
+                                + String.join("、", unmatchedItems.keySet()));
+            }
+        }
+
+        // ③ 改后重发的快照合并（内存先行）：before 保留首轮原值，只更新 after 部分
+        Map<String, MergedLog> mergedLogs = new LinkedHashMap<>();
+        for (RoundRow row : rows) {
+            mergedLogs.put(row.entityType() + ":" + row.entityId(),
+                    mergeLogForResubmit(row.entityType(), row.log(), row.item()));
+        }
+
+        // ④ 权重闭合校验（仅改后重发，内容未变不必重跑；口径与 initiateBatch 一致）：
+        //    合并后的 after 权重以 override 参与校验（校验口径 = 本批生效后的快照）；
+        //    待删除行同样从合计中剔除
+        if (withDraft) {
+            Set<Long> pendingDeleteIds = rows.stream()
+                    .filter(row -> INDICATOR_ENTITY_TYPE.equalsIgnoreCase(row.entityType()))
+                    .filter(row -> "DELETE".equals(
+                            mergedLogs.get(row.entityType() + ":" + row.entityId()).rowType()))
+                    .map(RoundRow::entityId)
+                    .collect(java.util.stream.Collectors.toSet());
+            List<Long> weightAnchorIds = rows.stream()
+                    .filter(row -> INDICATOR_ENTITY_TYPE.equalsIgnoreCase(row.entityType()))
+                    .map(RoundRow::entityId)
+                    .filter(id -> !pendingDeleteIds.contains(id))
+                    .toList();
+            Map<Long, java.math.BigDecimal> proposedWeights = new LinkedHashMap<>();
+            for (RoundRow row : rows) {
+                if (!INDICATOR_ENTITY_TYPE.equalsIgnoreCase(row.entityType())) {
+                    continue;
+                }
+                Object weightAfter = mergedLogs
+                        .get(row.entityType() + ":" + row.entityId())
+                        .afterJson().get("weight_percent");
+                java.math.BigDecimal proposed =
+                        weightAfter == null ? null : toBigDecimalOrNull(weightAfter);
+                if (proposed != null) {
+                    proposedWeights.put(row.entityId(), proposed);
+                }
+            }
+            assertPlanBasicWeightStillClosed(weightAnchorIds, pendingDeleteIds, proposedWeights);
+        }
+
+        // ⑤ 原地改写本批既有日志行（绝不 INSERT；action/before_json/batch_id 均不动）
+        if (withDraft) {
+            for (RoundRow row : rows) {
+                MergedLog merged = mergedLogs.get(row.entityType() + ":" + row.entityId());
+                if (!merged.dirty()) {
+                    continue;
+                }
+                Long logId = toLongId(row.log().get("log_id"));
+                if (logId == null || logId <= 0) {
+                    throw new IllegalStateException(
+                            ("TASK".equalsIgnoreCase(row.entityType()) ? "任务#" : "指标#")
+                                    + row.entityId() + " 的本批异动快照缺少 log_id，无法原地改写");
+                }
+                jdbcTemplate.update(
+                        """
+                        UPDATE public.audit_log
+                        SET changed_fields = ?::jsonb, after_json = ?::jsonb
+                        WHERE log_id = ?
+                        """,
+                        toJson(merged.changedFields()), toJson(merged.afterJson()), logId);
+            }
+        }
+
+        // ⑥ 业务锁重建（不写日志）：链离开 IN_REVIEW 时同步器已清锁，
+        //    按发起时的列写入口径原地重新上锁
+        for (RoundRow row : rows) {
+            if (TASK_ENTITY_TYPE.equalsIgnoreCase(row.entityType())) {
+                markTaskInMutation(row.entityId());
+            } else {
+                markIndicatorInMutation(row.entityId());
+            }
+        }
+
+        // ⑦ 逐实例原地续链：WITHDRAWN 活链 resume（零新增行、batch_id 不改写），
+        //    同批已在审的兄弟实例保持活动；终态实例说明批次状态不一致，整批拒绝
+        List<String> instanceIds = new ArrayList<>();
+        for (RoundRow row : rows) {
+            AuditInstance domain = auditInstanceRepository.findById(row.instanceId())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "异动实例不存在: " + row.instanceId()));
+            String status = String.valueOf(domain.getStatus());
+            if (AuditInstance.STATUS_WITHDRAWN.equalsIgnoreCase(status)
+                    && domain.getCompletedAt() == null) {
+                domain.reactivateWithdrawnStep();
+                AuditInstance saved = auditInstanceRepository.save(domain);
+                workflowBusinessStatusSyncService.syncAfterWorkflowChanged(saved);
+                workflowEventDispatcher.publish(saved);
+                instanceIds.add(String.valueOf(saved.getId()));
+            } else if (AuditInstance.STATUS_PENDING.equalsIgnoreCase(status)) {
+                instanceIds.add(String.valueOf(domain.getId()));
+            } else {
+                throw new IllegalStateException("该异动链不在「退回待重报」状态，无法重新发起");
+            }
+        }
+
+        String message = withDraft ? "异动已按修改内容重新发起" : "异动已重新发起";
+        log.info("[IndicatorMutation] 退回异动已原地续链重发: instanceId={}, batchId={}, 实例数={}, 改后重发={}",
+                instanceId, batchId, instanceIds.size(), withDraft);
+        return new ResubmitResult(instanceIds, message);
+    }
+
+    /** audit_instance 行（带 flow_code）转 Map，供原样重发校验与批次装载使用。 */
+    private Map<String, Object> mutationInstanceRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", rs.getLong("id"));
+        row.put("entity_id", rs.getLong("entity_id"));
+        row.put("entity_type", rs.getString("entity_type"));
+        row.put("batch_id", rs.getString("batch_id"));
+        row.put("requester_id", rs.getObject("requester_id"));
+        row.put("status", rs.getString("status"));
+        row.put("completed_at", rs.getTimestamp("completed_at"));
+        row.put("created_at", rs.getTimestamp("created_at"));
+        row.put("flow_code", rs.getString("flow_code"));
+        return row;
+    }
+
+    /**
+     * 取该实体在本轮次（批次）的最近一条异动快照行，含 log_id 供改后重发原地 UPDATE。
+     * 行类型无需在此判型——由 {@link #mergeLogForResubmit} 按快照判型（与审批卡详情、
+     * StrategyWorkflowBusinessStatusAdapter.resolveLatestMutationType 同源）。无批次号
+     * 的孤例（历史数据）回退「不晚于实例发起时间」的最近一条。两条 SQL 均为字面量，
+     * 参数全部绑定。
+     */
+    private Map<String, Object> latestRoundAuditLog(String entityType, Long entityId,
+                                                    String batchId, java.sql.Timestamp createdBefore) {
+        boolean byBatch = batchId != null && !batchId.isBlank();
+        if (byBatch) {
+            return jdbcTemplate.query(
+                    """
+                    SELECT log_id, changed_fields::text AS changed_fields,
+                           after_json::text AS after_json, before_json::text AS before_json
+                    FROM public.audit_log
+                    WHERE entity_type = ? AND entity_id = ? AND batch_id = ?
+                    ORDER BY created_at DESC, log_id DESC
+                    LIMIT 1
+                    """,
+                    rs -> {
+                        if (!rs.next()) {
+                            return null;
+                        }
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("log_id", rs.getLong("log_id"));
+                        row.put("changed_fields", parseJson(rs.getString("changed_fields")));
+                        row.put("after_json", parseJson(rs.getString("after_json")));
+                        row.put("before_json", parseJson(rs.getString("before_json")));
+                        return row;
+                    },
+                    entityType, entityId, batchId);
+        }
+        return jdbcTemplate.query(
+                """
+                SELECT log_id, changed_fields::text AS changed_fields,
+                       after_json::text AS after_json, before_json::text AS before_json
+                FROM public.audit_log
+                WHERE entity_type = ? AND entity_id = ? AND created_at <= ?
+                ORDER BY created_at DESC, log_id DESC
+                LIMIT 1
+                """,
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("log_id", rs.getLong("log_id"));
+                    row.put("changed_fields", parseJson(rs.getString("changed_fields")));
+                    row.put("after_json", parseJson(rs.getString("after_json")));
+                    row.put("before_json", parseJson(rs.getString("before_json")));
+                    return row;
+                },
+                entityType, entityId, createdBefore);
+    }
+
+    /**
+     * 改后重发的快照合并：以首轮 audit_log 行为底，把条目提供的字段值写进
+     * changed_fields / after_json 的 after 部分；before_json 保留首轮原值不动
+     * （CREATE 行的 before 维持「(新增)」），action / batch_id 均不动。条目未涉及的
+     * 既有变更字段原样保留（重发是「同一异动的微调」，不静默丢弃已提交变更）。
+     * 行类型按快照判型（与 StrategyWorkflowBusinessStatusAdapter
+     * .resolveLatestMutationType 同口径）：changed_fields 含 __delete__ → DELETE；
+     * before 含「(新增)」→ CREATE；其余 MODIFY。dirty=条目实际贡献了字段值
+     * （才需要原地 UPDATE）。
+     */
+    @SuppressWarnings("unchecked")
+    private MergedLog mergeLogForResubmit(String entityType, Map<String, Object> log,
+                                          Map<String, Object> item) {
+        Map<String, Object> before = asMap(log.get("before_json"));
+        Map<String, Object> after = new LinkedHashMap<>(before);
+        Map<String, Object> changed = new LinkedHashMap<>();
+        boolean isCreate = false;
+        if (log.get("changed_fields") instanceof Map<?, ?> rawChanged) {
+            for (Map.Entry<?, ?> entry : rawChanged.entrySet()) {
+                String field = String.valueOf(entry.getKey());
+                if (entry.getValue() instanceof Map<?, ?> rawDelta) {
+                    Map<String, Object> delta = new LinkedHashMap<>((Map<String, Object>) rawDelta);
+                    changed.put(field, delta);
+                    if (delta.get("after") != null) {
+                        after.put(field, delta.get("after"));
+                    }
+                    if ("(新增)".equals(String.valueOf(delta.get("before")))) {
+                        isCreate = true;
+                    }
+                }
+            }
+        }
+        String rowType = changed.containsKey("__delete__")
+                ? "DELETE"
+                : (isCreate ? "CREATE" : "MODIFY");
+        boolean dirty = false;
+        if (item != null) {
+            if (TASK_ENTITY_TYPE.equalsIgnoreCase(entityType)) {
+                String newName = item.get("name") == null ? null : String.valueOf(item.get("name"));
+                if (newName != null && !newName.isBlank()) {
+                    changed.put("name", fieldDelta(before, "name", newName));
+                    after.put("name", newName);
+                    dirty = true;
+                }
+            } else {
+                for (String field : new String[] {"indicator_desc", "weight_percent", "remark"}) {
+                    if (item.get(field) == null) {
+                        continue;
+                    }
+                    Object value = item.get(field);
+                    changed.put(field, fieldDelta(before, field, value));
+                    after.put(field, value);
+                    dirty = true;
+                }
+            }
+        }
+        return new MergedLog(rowType, changed, after, dirty);
+    }
+
+    /** 字段级 before→after 差量；before 取首轮 before_json 原值（保留不动）。 */
+    private Map<String, Object> fieldDelta(Map<String, Object> before, String field,
+                                           Object afterValue) {
+        Map<String, Object> delta = new LinkedHashMap<>();
+        delta.put("before", before.get(field));
+        delta.put("after", afterValue);
+        return delta;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> asMap(Object raw) {
+        if (raw instanceof Map<?, ?> map) {
+            return new LinkedHashMap<>((Map<String, Object>) map);
+        }
+        return new LinkedHashMap<>();
+    }
+
+    /** 宽松数值解析（快照 after 值已在一轮发起时校验过），解析失败返回 null 不抛错。 */
+    private java.math.BigDecimal toBigDecimalOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return new java.math.BigDecimal(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private void insertAuditLog(Long indicatorId,

@@ -906,6 +906,98 @@ class ReportApplicationServiceTest {
         verify(planReportRepository, never()).save(any(PlanReport.class));
     }
 
+    // ==================== 2026-10-30 用户定案（门禁前移到提交时，自评口径） ====================
+
+    @Test
+    void submitReport_shouldBlockUnfilledSelfRatingWithIndicatorNames() {
+        // 门禁前移：填报人提交上报前必须完成全部指标的自评进度评定；未填的按指标名点名拦截
+        // （BusinessConflictException 原文透传——不含指标 ID、不出现「资源冲突」前缀）。
+        PlanReport report = PlanReport.createDraft("202610", 44L, ReportOrgType.FUNC_DEPT, 111L);
+        report.setId(64L);
+        when(planReportRepository.findById(64L)).thenReturn(Optional.of(report));
+        when(planReportIndicatorRepository.findByReportId(64L)).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(2001L, 50, "内容", "NORMAL", "说明", null, List.of()),
+                new PlanReportIndicatorSnapshot(2002L, 30, "内容", null, "说明", null, List.of())
+        ));
+        when(planReportIndicatorRepository.findIndicatorNamesByReport(64L))
+                .thenReturn(Map.of(2001L, "教学运行质量", 2002L, "科研产出增长率"));
+
+        assertThatThrownBy(() -> reportApplicationService.submitReport(64L, 8001L))
+                .isInstanceOf(com.sism.exception.BusinessConflictException.class)
+                .hasMessage("自评未完成：还有 1 项指标的自评进度未填写（『科研产出增长率』）。"
+                        + "请先完成全部指标的自评进度评定，再提交上报。");
+
+        // 门禁在启动审批链之前拦下，报告状态与落库都不动
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_DRAFT);
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    @Test
+    void submitReport_shouldSummarizeManyUnfilledSelfRatingsWithTruncatedNames() {
+        // 超 3 项：列前 3 个 + 「等 N 项」；名称超 20 字截断补省略号；名称缺失兜底「未知指标」；
+        // 文案只报指标名，不报指标 ID、不出现「资源冲突」字样。
+        PlanReport report = PlanReport.createDraft("202610", 44L, ReportOrgType.FUNC_DEPT, 111L);
+        report.setId(65L);
+        when(planReportRepository.findById(65L)).thenReturn(Optional.of(report));
+        when(planReportIndicatorRepository.findByReportId(65L)).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(7001L, 10, null, null, null, null, List.of()),
+                new PlanReportIndicatorSnapshot(7002L, 20, null, "  ", null, null, List.of()),
+                new PlanReportIndicatorSnapshot(7003L, 30, null, null, null, null, List.of()),
+                new PlanReportIndicatorSnapshot(7004L, 40, null, null, null, null, List.of())
+        ));
+        when(planReportIndicatorRepository.findIndicatorNamesByReport(65L)).thenReturn(Map.of(
+                7001L, "指导思想贯彻情况落实与督查考核评价机制建设",
+                7002L, "教学质量",
+                7004L, "科研产出"));
+
+        String message = org.assertj.core.api.Assertions.catchThrowableOfType(
+                        () -> reportApplicationService.submitReport(65L, 8001L),
+                        com.sism.exception.BusinessConflictException.class)
+                .getMessage();
+
+        assertThat(message)
+                .contains("自评未完成：还有 4 项指标的自评进度未填写")
+                .contains("『教学质量』")
+                .contains(" 等 4 项")
+                .contains("…") // 超长指标名已截断
+                .contains("未知指标") // 第 3 项名称缺失的兜底（在点名范围内才会出现在文案）
+                .doesNotContain("督查考核评价机制建设」") // 完整长名不出现在文案
+                .doesNotContain("7001")
+                .doesNotContain("7002")
+                .doesNotContain("7003")
+                .doesNotContain("7004")
+                .doesNotContain("资源冲突");
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    @Test
+    void submitReport_shouldLetFullySelfRatedReportThroughGate() {
+        // 全部指标自评已填 → 提交门禁放行，走原有提交链路（异动互斥 → SUBMITTED → 提交事件）。
+        PlanReport report = resubmittableDraft();
+        stubSuccessfulSubmit(report);
+        ReportApplicationService service = submitServiceWithUnlockOrg();
+
+        assertThatCode(() -> service.submitReport(63L, 8001L)).doesNotThrowAnyException();
+
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_SUBMITTED);
+        verify(planReportRepository).save(report);
+    }
+
+    @Test
+    void submitReport_shouldStillRequireProgressDescriptionWhenSelfRatingFilled() {
+        // 自评门禁放行后，进度说明缺口沿用 2026-10-24 的兜底校验（IllegalStateException）。
+        PlanReport report = resubmittableDraft();
+        when(planReportRepository.findById(63L)).thenReturn(Optional.of(report));
+        when(planReportIndicatorRepository.findByReportId(63L)).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(2001L, 50, null, "NORMAL", null, null, List.of())
+        ));
+
+        assertThatThrownBy(() -> reportApplicationService.submitReport(63L, 8001L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("1 条指标未填写进度说明");
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
     @Test
     void updateReportBatch_shouldNotBeBlockedByOrgMutationLock() {
         // 2026-10-20 定案：异动期间不再锁死批量修改
@@ -926,5 +1018,86 @@ class ReportApplicationServiceTest {
         assertThatCode(() -> service.updateReportBatch(
                 61L, "标题", "内容", "摘要", 45, "问题", "计划", 8002L, List.of(detail)))
                 .doesNotThrowAnyException();
+    }
+
+    // ==================== 2026-10-31 修复（图05）：重报说明透传 ====================
+
+    private ReportApplicationService submitServiceWithUnlockOrg() {
+        // 互斥校验放行（无在审异动），明细完整即可提交
+        org.springframework.jdbc.core.JdbcTemplate jdbcTemplate =
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        when(jdbcTemplate.queryForObject(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(Integer.class),
+                org.mockito.ArgumentMatchers.eq(44L),
+                org.mockito.ArgumentMatchers.eq(44L),
+                org.mockito.ArgumentMatchers.eq(44L)))
+                .thenReturn(0);
+        return new ReportApplicationService(
+                planReportRepository,
+                planReportIndicatorRepository,
+                indicatorRepository,
+                eventPublisher,
+                workflowApprovalMetadataQuery,
+                workflowAuditSyncGateway,
+                jdbcTemplate,
+                java.util.List.of());
+    }
+
+    private PlanReport resubmittableDraft() {
+        PlanReport report = PlanReport.createDraft("202610", 44L, ReportOrgType.FUNC_DEPT, 111L);
+        report.setId(63L);
+        return report;
+    }
+
+    private void stubSuccessfulSubmit(PlanReport report) {
+        when(planReportRepository.findById(63L)).thenReturn(Optional.of(report));
+        when(planReportIndicatorRepository.findByReportId(63L)).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(2001L, 50, "内容", "NORMAL", "说明", null, List.of())
+        ));
+        when(planReportIndicatorRepository.findByReportIds(any())).thenReturn(Map.of());
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    private com.sism.execution.domain.report.event.PlanReportSubmittedEvent captureSubmittedEvent() {
+        org.mockito.ArgumentCaptor<List<com.sism.shared.domain.model.base.DomainEvent>> captor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(eventPublisher).publishAll(captor.capture());
+        return captor.getValue().stream()
+                .filter(com.sism.execution.domain.report.event.PlanReportSubmittedEvent.class::isInstance)
+                .map(com.sism.execution.domain.report.event.PlanReportSubmittedEvent.class::cast)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @Test
+    void submitReport_shouldCarryResubmitCommentIntoSubmittedEvent() {
+        // 2026-10-31 修复（图05）：前端强制收集的「重报说明」必须随提交事件
+        // 透传进工作流链路（监听器写入提交步备注），不得再被丢弃。
+        PlanReport report = resubmittableDraft();
+        stubSuccessfulSubmit(report);
+        ReportApplicationService service = submitServiceWithUnlockOrg();
+
+        service.submitReport(63L, 8001L, "已按驳回意见修正科研经费数据");
+
+        var event = captureSubmittedEvent();
+        assertThat(event.getSubmitComment()).isEqualTo("已按驳回意见修正科研经费数据");
+        assertThat(event.getReportId()).isEqualTo(63L);
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_SUBMITTED);
+    }
+
+    @Test
+    void submitReport_shouldKeepLegacyBehaviourWhenCommentAbsent() {
+        // 缺省（不传 comment）行为与改前完全一致：事件 submitComment 为空，
+        // 工作流侧保留「提交人重新提交（未填写说明）」兜底文案。
+        PlanReport report = resubmittableDraft();
+        stubSuccessfulSubmit(report);
+        ReportApplicationService service = submitServiceWithUnlockOrg();
+
+        service.submitReport(63L, 8001L);
+
+        var event = captureSubmittedEvent();
+        assertThat(event.getSubmitComment()).isNull();
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_SUBMITTED);
     }
 }

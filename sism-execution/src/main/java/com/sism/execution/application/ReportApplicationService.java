@@ -1,5 +1,6 @@
 package com.sism.execution.application;
 
+import com.sism.exception.BusinessConflictException;
 import com.sism.exception.ConflictException;
 import com.sism.exception.ResourceNotFoundException;
 import com.sism.execution.domain.report.PlanReport;
@@ -276,18 +277,30 @@ public class ReportApplicationService {
      */
     @Transactional
     public PlanReport submitReport(Long reportId, Long userId) {
+        return submitReport(reportId, userId, (String) null);
+    }
+
+    /**
+     * 提交报告（携带重报说明）。
+     * 2026-10-31 修复（重报说明被丢弃，图05）：驳回后重报时前端强制收集的
+     * 「重报说明」经 submit 端点透传进 {@link PlanReportSubmittedEvent}，
+     * 由工作流监听器写入提交步备注；comment 为空时行为与改前完全一致。
+     */
+    @Transactional
+    public PlanReport submitReport(Long reportId, Long userId, String submitComment) {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report not found with id: " + reportId));
 
-        // 2026-10-24 用户定案：上报时每条指标的「自评进度」与「进度说明」都必须有值，
-        // 不能空报——前端一键提交已有同口径闸门，此处兜底拦住绕过前端的提交。
+        // 2026-10-30 用户定案（门禁前移到提交时 + 口径修正）：审核进度（评定等级）归审批人，
+        // 填报人提交前必须完成的是全部指标的「自评进度」；未填自评的按指标名点名拦截
+        // （BusinessConflictException 原文透传），进度说明缺口沿用原有兜底校验。
         assertIndicatorDetailsCompleteForSubmit(reportId);
 
         // 2026-10-24 用户定案（上报/异动互斥）：异动审批在途时锁定上报提交——
         // 异动改动的内容正在被审批固化，两者对同一部门二选一。
         assertMutationApprovalNotInFlight(report.getReportOrgId());
 
-        report.submit(userId);
+        report.submit(userId, submitComment);
         report = planReportRepository.save(report);
         publishAndSaveEvents(report);
         return enrichReportMetadata(report);
@@ -296,8 +309,64 @@ public class ReportApplicationService {
     /**
      * 2026-10-24 用户定案：提交上报前校验全部指标明细完整——
      * 每条明细的 selfRating（自评进度）与 description/comment（进度说明）不得为空。
-     * 报错带上具体缺口（缺等级 N 条 / 缺说明 M 条），填报人可对照补齐。
+     * <p>
+     * 2026-10-30 用户定案（门禁前移到提交时 + 口径修正）：审核进度（评定等级）是
+     * 上报审批期间由审批人评定的，与填报人无关；提交门禁只校验「自评进度」——
+     * 未填自评的按指标名点名拦截（{@link BusinessConflictException}，全局处理器
+     * 原文透传、不套「资源冲突」前缀），拼装口径与审批侧兜底门共用
+     * {@link com.sism.shared.domain.indicator.IndicatorGateMessages}
+     * （报名不报 ID、20 字截断、超 3 项列前 3 个 +「等 N 项」）。
+     * 进度说明缺口的校验保持原样（IllegalStateException 兜底）。
      */
+    private void assertIndicatorDetailsCompleteForSubmit(Long reportId) {
+        List<PlanReportIndicatorSnapshot> details = planReportIndicatorRepository.findByReportId(reportId);
+        if (details.isEmpty()) {
+            throw new IllegalStateException("本期还没有任何指标填报内容，请先逐条完成填报后再提交");
+        }
+        assertSelfRatingCompleteForSubmit(reportId, details);
+
+        long missingDescription = details.stream()
+                .filter(detail -> {
+                    String description = detail.description() == null ? "" : detail.description().trim();
+                    String comment = detail.comment() == null ? "" : detail.comment().trim();
+                    return description.isEmpty() && comment.isEmpty();
+                })
+                .count();
+        if (missingDescription > 0) {
+            throw new IllegalStateException(
+                    "上报被拦下：" + missingDescription + " 条指标未填写进度说明"
+                            + "。请在指标填报页逐条补齐进度说明后再提交");
+        }
+    }
+
+    /**
+     * 2026-10-30 用户定案（门禁前移到提交时）：填报人提交上报前必须完成全部指标的
+     * 自评进度评定，未填的在启动/推进审批链之前拦下（此前只拦审批通过侧，填报人可带
+     * 缺口提交 → 审批人在途时填报页全锁、谁都补不了，负责人只能驳回，死循环）。
+     * 文案为自评语境，与审批侧兜底门同构：
+     * 「自评未完成：还有 N 项指标的自评进度未填写（『指标名A』『指标名B』…）。
+     *   请先完成全部指标的自评进度评定，再提交上报。」
+     */
+    private void assertSelfRatingCompleteForSubmit(Long reportId,
+                                                   List<PlanReportIndicatorSnapshot> details) {
+        List<Long> missingSelfRating = details.stream()
+                .filter(detail -> detail.selfRating() == null || detail.selfRating().isBlank())
+                .map(PlanReportIndicatorSnapshot::indicatorId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (missingSelfRating.isEmpty()) {
+            return;
+        }
+        throw new BusinessConflictException(
+                com.sism.shared.domain.indicator.IndicatorGateMessages.buildNamedGateMessage(
+                        "自评未完成",
+                        "自评进度未填写",
+                        missingSelfRating,
+                        planReportIndicatorRepository.findIndicatorNamesByReport(reportId),
+                        "请先完成全部指标的自评进度评定，再提交上报。"));
+    }
+
     /**
      * 2026-10-24 用户定案（上报/异动互斥）：该报告部门存在进行中的异动审批（INDICATOR/TASK，
      * PLAN_MUTATION_STRATEGY 链）时拒绝提交上报。异动锁在该部门的指标上，按部门维度判定：
@@ -333,40 +402,20 @@ public class ReportApplicationService {
         }
     }
 
-    private void assertIndicatorDetailsCompleteForSubmit(Long reportId) {
-        List<PlanReportIndicatorSnapshot> details = planReportIndicatorRepository.findByReportId(reportId);
-        if (details.isEmpty()) {
-            throw new IllegalStateException("本期还没有任何指标填报内容，请先逐条完成填报后再提交");
-        }
-        long missingRating = details.stream()
-                .filter(detail -> detail.selfRating() == null || detail.selfRating().isBlank())
-                .count();
-        long missingDescription = details.stream()
-                .filter(detail -> {
-                    String description = detail.description() == null ? "" : detail.description().trim();
-                    String comment = detail.comment() == null ? "" : detail.comment().trim();
-                    return description.isEmpty() && comment.isEmpty();
-                })
-                .count();
-        if (missingRating > 0 || missingDescription > 0) {
-            java.util.List<String> gaps = new java.util.ArrayList<>();
-            if (missingRating > 0) {
-                gaps.add(missingRating + " 条指标未选择自评进度");
-            }
-            if (missingDescription > 0) {
-                gaps.add(missingDescription + " 条指标未填写进度说明");
-            }
-            throw new IllegalStateException(
-                    "上报被拦下：" + String.join("、", gaps)
-                            + "。请在指标填报页逐条补齐自评进度与进度说明后再提交");
-        }
-    }
-
     @Transactional
     public PlanReport submitReport(Long reportId, Long userId, CurrentUser currentUser) {
+        return submitReport(reportId, userId, null, currentUser);
+    }
+
+    /**
+     * 2026-10-31 修复（重报说明被丢弃，图05）：submit 端点把可选「重报说明」
+     * 透传进提交链路；comment 为空时与旧签名行为完全一致。
+     */
+    @Transactional
+    public PlanReport submitReport(Long reportId, Long userId, String submitComment, CurrentUser currentUser) {
         requireAnyRole(currentUser, "ROLE_VICE_PRESIDENT", "ROLE_STRATEGY_DEPT_HEAD", "ROLE_REPORTER", "ROLE_APPROVER");
         Long actorId = resolveUserId(userId, currentUser);
-        return submitReport(reportId, actorId);
+        return submitReport(reportId, actorId, submitComment);
     }
 
     @Transactional

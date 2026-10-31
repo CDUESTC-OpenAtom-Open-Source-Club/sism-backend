@@ -126,6 +126,33 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
     }
 
     @Override
+    public Map<Long, String> findIndicatorNamesByReport(Long reportId) {
+        if (reportId == null || reportId <= 0) {
+            return Map.of();
+        }
+        // 2026-10-30 用户定案：审批拦截文案需要指标名称（indicator_desc），指标行不含名称，
+        // 关联 indicator 表取数；名称意外缺失时兜底「未知指标」，绝不在文案里回退报 ID。
+        return jdbcTemplate.query(
+                """
+                SELECT pri.indicator_id,
+                       COALESCE(NULLIF(i.indicator_desc, ''), '未知指标') AS indicator_name
+                FROM public.plan_report_indicator pri
+                LEFT JOIN public.indicator i ON i.id = pri.indicator_id
+                WHERE pri.report_id = ?
+                ORDER BY pri.id ASC
+                """,
+                rs -> {
+                    Map<Long, String> result = new LinkedHashMap<>();
+                    while (rs.next()) {
+                        result.put(rs.getLong("indicator_id"), rs.getString("indicator_name"));
+                    }
+                    return result;
+                },
+                reportId
+        );
+    }
+
+    @Override
     public void updateAppraisalLevel(Long reportId, Long indicatorId, String appraisalLevel) {
         if (reportId == null || reportId <= 0 || indicatorId == null || indicatorId <= 0) {
             return;

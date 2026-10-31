@@ -60,6 +60,20 @@ public class StrategyWorkflowBusinessStatusAdapter implements WorkflowBusinessSt
                     // 审批通过此刻才把快照 after 值写入业务表；新增条目 after 与表值一致为幂等。
                     applyApprovedMutationValues("INDICATOR", entityId);
                     releaseMutationAndSyncPlanStatus(entityId);
+                } else if ("CANCELLED".equalsIgnoreCase(status) && "CREATE".equals(mutationType)) {
+                    // 2026-10-31 用户定案（取消异动软删除新增行）：含新增行的批次被「取消异动」
+                    // 终结后，新增行已失效、不应继续留在表格里；但审批历史要能展示当时新增的
+                    // 内容——数据走软删除（与审批拒绝归档同一列同一口径），界面看不到、
+                    // audit_log 快照不删故审批历史看得到。CANCELLED+MODIFY / CANCELLED+DELETE
+                    // 不动（维持现状，走下方解锁分支）。
+                    jdbcTemplate.update(
+                            """
+                            UPDATE public.indicator
+                            SET is_deleted = true, mutation_status = NULL, mutation_started_at = NULL,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            entityId);
                 } else if (!returnedToSubmitter && "CREATE".equals(mutationType)) {
                     jdbcTemplate.update(
                             """

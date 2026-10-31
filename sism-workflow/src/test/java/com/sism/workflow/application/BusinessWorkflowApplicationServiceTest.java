@@ -27,9 +27,11 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -364,6 +366,10 @@ class BusinessWorkflowApplicationServiceTest {
             // 链保持存活：WITHDRAWN 且 completedAt 为空（不进审批历史）
             assertEquals(AuditInstance.STATUS_WITHDRAWN, item.getStatus());
             assertNull(item.getCompletedAt());
+            // 2026-10-30 二次定案（撤回零新增行）：提交步原地翻转 WITHDRAWN、行数恒等于初始 2
+            assertEquals(2, item.getStepInstances().size());
+            assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, item.getStepInstances().get(0).getStatus());
+            assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, item.getStepInstances().get(1).getStatus());
         }
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<AuditInstance>> batchCaptor = ArgumentCaptor.forClass(List.class);
@@ -425,7 +431,7 @@ class BusinessWorkflowApplicationServiceTest {
 
         when(workflowDefinitionQueryService.getAuditFlowDefByCode("PLAN_APPROVAL_FUNCDEPT")).thenReturn(flowDef);
         when(auditInstanceRepository.findByBusinessTypeAndBusinessId("PLAN", 9001L)).thenReturn(List.of(resumable));
-        when(workflowApplicationService.resumeWithdrawnAuditInstance(resumable)).thenReturn(resumable);
+        when(workflowApplicationService.resumeWithdrawnAuditInstance(resumable, null)).thenReturn(resumable);
         when(workflowReadModelMapper.toInstanceResponse(resumable)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("501").status("IN_REVIEW").build()
         );
@@ -433,7 +439,7 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceResponse response = businessWorkflowApplicationService.startWorkflow(request, 188L, 35L);
 
         assertEquals("501", response.getInstanceId());
-        verify(workflowApplicationService).resumeWithdrawnAuditInstance(resumable);
+        verify(workflowApplicationService).resumeWithdrawnAuditInstance(resumable, null);
     }
 
     @Test
@@ -466,7 +472,7 @@ class BusinessWorkflowApplicationServiceTest {
         when(workflowDefinitionQueryService.getAuditFlowDefByCode("PLAN_APPROVAL_COLLEGE")).thenReturn(flowDef);
         when(auditInstanceRepository.findByBusinessTypeAndBusinessId("PLAN_REPORT", 77L)).thenReturn(List.of(resumable));
         when(auditInstanceRepository.findByBusinessTypeAndBusinessId("PlanReport", 77L)).thenReturn(List.of());
-        when(workflowApplicationService.resumeWithdrawnAuditInstance(resumable)).thenReturn(resumable);
+        when(workflowApplicationService.resumeWithdrawnAuditInstance(resumable, null)).thenReturn(resumable);
         when(workflowReadModelMapper.toInstanceResponse(resumable)).thenReturn(
                 WorkflowInstanceResponse.builder().instanceId("601").status("IN_REVIEW").build()
         );
@@ -474,7 +480,7 @@ class BusinessWorkflowApplicationServiceTest {
         WorkflowInstanceResponse response = businessWorkflowApplicationService.startWorkflow(request, 301L, 37L);
 
         assertEquals("601", response.getInstanceId());
-        verify(workflowApplicationService).resumeWithdrawnAuditInstance(resumable);
+        verify(workflowApplicationService).resumeWithdrawnAuditInstance(resumable, null);
     }
 
     @Test
@@ -1005,6 +1011,102 @@ class BusinessWorkflowApplicationServiceTest {
         service.approveTask("821", request, 52L, "AHEAD");
 
         verify(port, never()).applyAppraisalLevel(any(), any(), any());
+    }
+
+    @Test
+    void approveTask_shouldBlockWithIndicatorNamesAndGuidanceWhenAppraisalMissing() {
+        // 2026-10-30 用户定案：审批拦截文案要报指标名称（不报 ID）、不讲「资源冲突」、
+        // 讲清楚去哪里做什么（到填报部门的指标填报页完成鉴定）。
+        AuditInstance instance = approvableInstance(8300L, 831L, AuditInstance.STATUS_PENDING);
+        AuditFlowDef flowDef = stepDefOf(instance);
+        flowDef.getSteps().get(0).setStepOrder(4); // FUNCDEPT 链的可评级节点
+
+        WorkflowInstanceDetailResponse detail = new WorkflowInstanceDetailResponse();
+        detail.setInstanceId("8300");
+        detail.setFlowCode("PLAN_APPROVAL_FUNCDEPT");
+        detail.setTargetOrgName("计算机学院");
+
+        ApprovalRequest request = new ApprovalRequest();
+        request.setComment("同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(831L)).thenReturn(Optional.of(instance));
+        when(workflowReadModelService.getInstanceDetail("8300")).thenReturn(detail);
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(51L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.approveAuditInstance(instance, 51L, "同意", "NORMAL")).thenReturn(instance);
+
+        com.sism.shared.domain.workflow.WorkflowBusinessContextPort port =
+                org.mockito.Mockito.mock(com.sism.shared.domain.workflow.WorkflowBusinessContextPort.class);
+        when(port.findIndicatorAppraisalLevels(8300L)).thenReturn(java.util.Map.of(2007L, "NORMAL"));
+        when(port.findIndicatorIdsByReport(8300L)).thenReturn(java.util.List.of(2007L, 2008L));
+        when(port.findIndicatorNamesByReport(8300L)).thenReturn(java.util.Map.of(
+                2007L, "教学运行质量", 2008L, "科研产出增长率"));
+        when(port.findReportOrgName(8300L)).thenReturn(Optional.of("计算机学院"));
+
+        BusinessWorkflowApplicationService service = serviceWithPorts(List.of(port));
+
+        com.sism.exception.BusinessConflictException exception = assertThrows(
+                com.sism.exception.BusinessConflictException.class,
+                () -> service.approveTask("831", request, 51L, "NORMAL"));
+
+        String message = exception.getMessage();
+        assertTrue(message.contains("未完成审核：还有 1 项指标的审核进度未鉴定（『科研产出增长率』）"));
+        assertTrue(message.contains("请到 计算机学院 的指标填报页完成全部指标的审核进度鉴定，再回到审批中心通过"));
+        // 不报指标 ID（老板看不懂数字行列，界面不显示 ID）
+        assertFalse(message.contains("2007"));
+        assertFalse(message.contains("2008"));
+        // 不出现「资源冲突」字样，也不再保留旧文案口径
+        assertFalse(message.contains("资源冲突"));
+        assertFalse(message.contains("存在未评定的审核进度"));
+    }
+
+    @Test
+    void approveTask_shouldSummarizeManyUnappraisedIndicatorsWithTruncatedNames() {
+        // 超过 3 项：列前 3 个 + 「等 N 项」；名称超 20 字截断补省略号；
+        // 填报组织名取不到时兜底用审批卡目标部门名。
+        AuditInstance instance = approvableInstance(8400L, 841L, AuditInstance.STATUS_PENDING);
+        AuditFlowDef flowDef = stepDefOf(instance);
+        flowDef.getSteps().get(0).setStepOrder(4);
+
+        WorkflowInstanceDetailResponse detail = new WorkflowInstanceDetailResponse();
+        detail.setInstanceId("8400");
+        detail.setFlowCode("PLAN_APPROVAL_FUNCDEPT");
+        detail.setTargetOrgName("计算机学院");
+
+        ApprovalRequest request = new ApprovalRequest();
+        request.setComment("同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(841L)).thenReturn(Optional.of(instance));
+        when(workflowReadModelService.getInstanceDetail("8400")).thenReturn(detail);
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(52L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.approveAuditInstance(instance, 52L, "同意", null)).thenReturn(instance);
+
+        com.sism.shared.domain.workflow.WorkflowBusinessContextPort port =
+                org.mockito.Mockito.mock(com.sism.shared.domain.workflow.WorkflowBusinessContextPort.class);
+        when(port.findIndicatorAppraisalLevels(8400L)).thenReturn(java.util.Map.of());
+        when(port.findIndicatorIdsByReport(8400L)).thenReturn(java.util.List.of(1L, 2L, 3L, 4L));
+        when(port.findIndicatorNamesByReport(8400L)).thenReturn(java.util.Map.of(
+                1L, "指导思想贯彻情况落实与督查考核评价机制建设",
+                2L, "教学质量",
+                3L, "科研产出",
+                4L, "社会服务"));
+        when(port.findReportOrgName(8400L)).thenReturn(Optional.empty());
+
+        BusinessWorkflowApplicationService service = serviceWithPorts(List.of(port));
+
+        com.sism.exception.BusinessConflictException exception = assertThrows(
+                com.sism.exception.BusinessConflictException.class,
+                () -> service.approveTask("841", request, 52L, null));
+
+        String message = exception.getMessage();
+        assertTrue(message.contains("还有 4 项指标的审核进度未鉴定"));
+        assertTrue(message.contains("『教学质量』"));
+        assertTrue(message.contains(" 等 4 项"));
+        assertTrue(message.contains("…")); // 超长指标名已截断
+        assertFalse(message.contains("督查考核评价机制建设」")); // 完整长名不出现在文案
+        assertFalse(message.contains("资源冲突"));
+        assertTrue(message.contains("请到 计算机学院 的指标填报页完成全部指标的审核进度鉴定"));
     }
 
     /**

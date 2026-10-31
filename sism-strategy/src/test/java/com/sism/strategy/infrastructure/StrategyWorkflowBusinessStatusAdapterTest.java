@@ -183,6 +183,35 @@ class StrategyWorkflowBusinessStatusAdapterTest {
                 contains("UPDATE public.sys_task SET mutation_status = NULL"), eq(3100L));
     }
 
+    @Test
+    @DisplayName("2026-10-31 用户定案（任务E）：取消异动终结含新增行的批次 → 指标软删除（界面不可见、审批历史可查快照）")
+    void cancelledCreate_shouldSoftDeleteIndicator() {
+        stubMutationType("CREATE");
+        // 取消异动（cancelReturned）后实例 CANCELLED、退回提交步骤留痕 → 同步方传实例 ID
+        adapter.syncBusinessStatus("INDICATOR", INDICATOR_ID, "CANCELLED", 188L, null, 9001L);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).update(sqlCaptor.capture(), eq(INDICATOR_ID));
+        String sql = sqlCaptor.getValue();
+        assertTrue(sql.contains("is_deleted = true"), "取消异动的新增指标必须软删除: " + sql);
+        assertTrue(sql.contains("mutation_status = NULL"), "软删除必须同时解除异动锁: " + sql);
+        assertFalse(sql.contains("SET status = 'DISTRIBUTED'"), "取消不能转正: " + sql);
+    }
+
+    @Test
+    @DisplayName("取消异动 + 修改型条目：维持现状只解锁，不软删除（2026-10-31 定案只动 CREATE）")
+    void cancelledModify_shouldOnlyUnlock() {
+        stubMutationType("MODIFY");
+
+        adapter.syncBusinessStatus("INDICATOR", INDICATOR_ID, "CANCELLED", 188L, null, 9001L);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).update(sqlCaptor.capture(), eq(INDICATOR_ID));
+        String sql = sqlCaptor.getValue();
+        assertFalse(sql.contains("is_deleted = true"), "取消的修改异动不能归档: " + sql);
+        assertTrue(sql.contains("mutation_status = NULL"), "取消后只解除异动锁: " + sql);
+    }
+
     @SuppressWarnings("unchecked")
     private void stubBatchSnapshot(String entityType, String changedFieldsJson) {
         when(jdbcTemplate.query(

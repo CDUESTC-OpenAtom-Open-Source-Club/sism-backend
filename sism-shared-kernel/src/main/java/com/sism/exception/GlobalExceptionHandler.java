@@ -79,6 +79,31 @@ public class GlobalExceptionHandler {
     }
     
     /**
+     * Handle business-rule conflicts whose message is already complete user-facing guidance.
+     *
+     * 2026-10-30 用户定案：这类消息（如审批拦截的「未完成审核：…请到 XX 的指标填报页完成…」）
+     * 原样透传，不再叠加「资源冲突」前缀；HTTP 状态与错误码同 ConflictException（409/1002）。
+     * 仅豁免本类型，其余 ConflictException 仍走统一映射（见下方 handleConflictException）。
+     */
+    @ExceptionHandler(BusinessConflictException.class)
+    public ResponseEntity<ApiResponse<Void>> handleBusinessConflictException(BusinessConflictException e) {
+        String requestId = getOrGenerateRequestId();
+        String requestContext = getRequestContext();
+
+        log.warn("Business conflict: message={}, requestId={}, context=[{}]",
+                e.getMessage(), requestId, requestContext);
+
+        String message = e.getMessage() == null || e.getMessage().isBlank()
+                ? MESSAGE_CONFLICT
+                : e.getMessage();
+        ApiResponse<Void> response = ApiResponse.error(ErrorCodes.DATA_ALREADY_EXISTS, message);
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
+    /**
      * Handle conflict exceptions.
      */
     @ExceptionHandler(ConflictException.class)
@@ -89,8 +114,10 @@ public class GlobalExceptionHandler {
         log.warn("Conflict: message={}, requestId={}, context=[{}]", 
                 e.getMessage(), requestId, requestContext);
         
-        // 2026-10-27：业务冲突的具体原因透传给前端（如「存在未评定的审核进度…」），
+        // 2026-10-27：业务冲突的具体原因透传给前端（如「当前月份已有报告正在审批中…」），
         // 此前固定返回笼统的「资源冲突」，用户无法知道要做什么。
+        // 2026-10-30：自带完整指引的审批拦截文案改走 BusinessConflictException（原样透传，
+        // 不叠加「资源冲突」前缀），其余 ConflictException 保持本统一映射不变。
         String message = e.getMessage() == null || e.getMessage().isBlank()
                 ? MESSAGE_CONFLICT
                 : MESSAGE_CONFLICT + "：" + e.getMessage();

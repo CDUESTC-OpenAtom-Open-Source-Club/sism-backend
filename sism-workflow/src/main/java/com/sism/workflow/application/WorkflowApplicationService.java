@@ -124,7 +124,8 @@ public class WorkflowApplicationService {
     /**
      * 2026-10-30 用户定案（异动撤回=退回填报人活链）：异动发起人在审批中的「撤回」
      * 把整批异动实例退回填报人节点、链保持存活（WITHDRAWN、completedAt 为空、
-     * 含退回提交步骤，形态与驳回退回同构）。状态校验在领域内
+     * 在审审批步与最新提交类步原地置 WITHDRAWN「提交人撤回」——2026-10-30
+     * 二次定案：与上报撤回 cancel 同构的原地翻转、零新增行）。状态校验在领域内
      * （AuditInstance.withdrawToRequester），调用方须先做发起人权限校验。
      */
     public List<AuditInstance> withdrawMutationBatchToRequester(List<AuditInstance> instances) {
@@ -132,7 +133,16 @@ public class WorkflowApplicationService {
     }
 
     public AuditInstance resumeWithdrawnAuditInstance(AuditInstance instance) {
-        instance.reactivateWithdrawnStep();
+        return resumeWithdrawnAuditInstance(instance, null);
+    }
+
+    /**
+     * 2026-10-31 修复（重报说明被丢弃，图05）：重报链路把提交人填写的「重报说明」
+     * 透传给被复活的提交步；comment 缺省时 {@link AuditInstance#reactivateWithdrawnStep()}
+     * 保留原兜底文案，行为与改前一致。
+     */
+    public AuditInstance resumeWithdrawnAuditInstance(AuditInstance instance, String submitComment) {
+        instance.reactivateWithdrawnStep(submitComment);
         return approveOrSavePassthrough(instance);
     }
 

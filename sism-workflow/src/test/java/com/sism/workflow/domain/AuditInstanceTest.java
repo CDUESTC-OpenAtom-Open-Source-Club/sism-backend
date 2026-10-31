@@ -309,8 +309,12 @@ class AuditInstanceTest {
         assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, currentApproval.getStatus());
         assertEquals("提交人撤回", currentApproval.getComment());
         assertNotNull(currentApproval.getApprovedAt());
-        // 已走完的提交步骤保持原样
-        assertEquals(AuditInstance.STEP_STATUS_APPROVED, submitStep.getStatus());
+        // 2026-10-30 二次定案（撤回零新增行）：提交类步骤原地翻转 WITHDRAWN——链位回到填报人
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, submitStep.getStatus());
+        assertEquals("提交人撤回", submitStep.getComment());
+        assertNotNull(submitStep.getApprovedAt());
+        // 零新增行：撤回前后行数恒等
+        assertEquals(2, instance.getStepInstances().size());
     }
 
     @Test
@@ -344,7 +348,7 @@ class AuditInstanceTest {
     }
 
     @Test
-    @DisplayName("发起人撤回的链形（在审步骤 WITHDRAWN+退回提交步骤）重新提交后审批环节复活为 PENDING")
+    @DisplayName("新形态撤回链（提交步原地 WITHDRAWN）重新提交后提交步翻回 APPROVED、审批环节原地复活，零新增行")
     void shouldReviveWithdrawnApprovalStepOnResubmitAfterRequesterWithdraw() {
         AuditInstance instance = new AuditInstance();
         instance.setStatus(AuditInstance.STATUS_PENDING);
@@ -369,32 +373,247 @@ class AuditInstanceTest {
         instance.addStepInstance(submitStep);
         instance.addStepInstance(currentApproval);
 
-        // 发起人撤回（AuditInstance.withdrawToRequester）+ 用例层追加退回提交步骤
+        // 发起人撤回：提交步与在审审批步原地翻转 WITHDRAWN（不再追加任何行）
         instance.withdrawToRequester();
-        AuditStepInstance returnedSubmit = new AuditStepInstance();
-        returnedSubmit.setStepNo(instance.nextStepInstanceNo());
-        returnedSubmit.setStepDefId(11L);
-        returnedSubmit.setStepName("填报人提交");
-        returnedSubmit.setApproverId(100L);
-        returnedSubmit.setApproverOrgId(57L);
-        returnedSubmit.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
-        returnedSubmit.setComment("提交人撤回");
-        instance.addStepInstance(returnedSubmit);
         assertEquals(AuditInstance.STATUS_WITHDRAWN, instance.getStatus());
         assertNull(instance.getCompletedAt());
+        assertEquals(2, instance.getStepInstances().size());
 
-        // 填报人重新发起：既有 resume 机制复用同链
+        // 填报人重新发起：既有 resume 机制复用同链（零新增行）
         instance.reactivateWithdrawnStep();
 
         assertEquals(AuditInstance.STATUS_PENDING, instance.getStatus());
         assertNull(instance.getCompletedAt());
-        // 退回提交步骤转为 APPROVED（提交留痕）
-        assertEquals(AuditInstance.STEP_STATUS_APPROVED, returnedSubmit.getStatus());
-        // 被撤回的审批环节复活为 PENDING，审批人继续审（无 WAITING/REJECTED 可复用的链形专用品）
+        // 被翻转的提交步原地翻回 APPROVED（提交留痕）
+        assertEquals(AuditInstance.STEP_STATUS_APPROVED, submitStep.getStatus());
+        assertEquals("提交人重新提交（未填写说明）", submitStep.getComment());
+        assertNotNull(submitStep.getApprovedAt());
+        // 被撤回的审批环节原地复活为 PENDING，审批人继续审
         assertEquals(AuditInstance.STEP_STATUS_PENDING, currentApproval.getStatus());
         assertNull(currentApproval.getComment());
         assertNull(currentApproval.getApprovedAt());
         assertEquals(2, instance.resolveCurrentPendingStep().orElseThrow().getStepNo());
+        // 零新增行：重报前后行数恒等于初始
+        assertEquals(2, instance.getStepInstances().size());
+    }
+
+    @Test
+    @DisplayName("reactivateWithdrawnStep(comment)：重报说明写入提交步备注，空白时保留兜底文案（2026-10-31 图05 修复）")
+    void shouldWriteProvidedSubmitCommentIntoSubmitStepOnReactivate() {
+        AuditInstance instance = new AuditInstance();
+        instance.setStatus(AuditInstance.STATUS_PENDING);
+        instance.setRequesterId(100L);
+        instance.setRequesterOrgId(57L);
+
+        AuditStepInstance submitStep = new AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStepDefId(11L);
+        submitStep.setStepName("填报人提交");
+        submitStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitStep.setApproverId(100L);
+
+        AuditStepInstance approval = new AuditStepInstance();
+        approval.setStepNo(2);
+        approval.setStepDefId(12L);
+        approval.setStepName("战略发展部负责人审批");
+        approval.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        approval.setApproverId(300L);
+        approval.setApproverOrgId(35L);
+
+        instance.addStepInstance(submitStep);
+        instance.addStepInstance(approval);
+        instance.withdrawToRequester();
+
+        // ① 提交人填写了「重报说明」→ 原样写入提交步备注
+        instance.reactivateWithdrawnStep("  本月科研经费已按驳回意见调整  ");
+        assertEquals(AuditInstance.STEP_STATUS_APPROVED, submitStep.getStatus());
+        assertEquals("本月科研经费已按驳回意见调整", submitStep.getComment());
+        assertEquals(AuditInstance.STEP_STATUS_PENDING, approval.getStatus());
+
+        // ② 再退回后空白说明 → 兜底文案保留（缺省行为与改前一致）
+        instance.withdrawToRequester();
+        instance.reactivateWithdrawnStep("   ");
+        assertEquals("提交人重新提交（未填写说明）", submitStep.getComment());
+    }
+
+    @Test
+    @DisplayName("两轮「提交→撤回→重报→撤回」后行数恒等于初始（原地翻转，不再出现第三、四行）")
+    void shouldKeepStepCountConstantAcrossTwoWithdrawResubmitRounds() {
+        AuditInstance instance = new AuditInstance();
+        instance.setStatus(AuditInstance.STATUS_PENDING);
+        instance.setRequesterId(100L);
+
+        AuditStepInstance submitStep = new AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStepName("填报人提交");
+        submitStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitStep.setApproverId(100L);
+
+        AuditStepInstance approval = new AuditStepInstance();
+        approval.setStepNo(2);
+        approval.setStepName("战略发展部负责人审批");
+        approval.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        approval.setApproverId(300L);
+
+        instance.addStepInstance(submitStep);
+        instance.addStepInstance(approval);
+
+        // 第一轮：提交→撤回→重报
+        instance.withdrawToRequester();
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, submitStep.getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, approval.getStatus());
+        assertEquals(2, instance.getStepInstances().size());
+
+        instance.reactivateWithdrawnStep();
+        assertEquals(AuditInstance.STEP_STATUS_APPROVED, submitStep.getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_PENDING, approval.getStatus());
+        assertEquals(2, instance.getStepInstances().size());
+
+        // 第二轮：撤回（在审步为同一审批环节，翻转后状态不变）
+        instance.withdrawToRequester();
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, submitStep.getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, approval.getStatus());
+        assertEquals(AuditInstance.STATUS_WITHDRAWN, instance.getStatus());
+        assertNull(instance.getCompletedAt());
+        // 零新增行：两轮后行数仍恒等于初始 2
+        assertEquals(2, instance.getStepInstances().size());
+
+        // 重报后照常回到审批中
+        instance.reactivateWithdrawnStep();
+        assertEquals(AuditInstance.STATUS_PENDING, instance.getStatus());
+        assertEquals(2, instance.getStepInstances().size());
+    }
+
+    @Test
+    @DisplayName("新形态撤回链可被「取消异动」终结为 CANCELLED（提交步原地 WITHDRAWN 即视为退回提交步骤）")
+    void shouldCancelNewFormWithdrawnChainIntoCancelled() {
+        AuditInstance instance = new AuditInstance();
+        instance.setStatus(AuditInstance.STATUS_PENDING);
+        instance.setRequesterId(100L);
+
+        AuditStepInstance submitStep = new AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStepName("填报人提交");
+        submitStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitStep.setApproverId(100L);
+
+        AuditStepInstance currentApproval = new AuditStepInstance();
+        currentApproval.setStepNo(2);
+        currentApproval.setStepName("战略发展部负责人审批");
+        currentApproval.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        currentApproval.setApproverId(300L);
+
+        instance.addStepInstance(submitStep);
+        instance.addStepInstance(currentApproval);
+
+        instance.withdrawToRequester();
+        instance.cancelReturned();
+
+        assertEquals(AuditInstance.STATUS_CANCELLED, instance.getStatus());
+        assertNotNull(instance.getCompletedAt());
+        assertEquals(2, instance.getStepInstances().size());
+    }
+
+    @Test
+    @DisplayName("存量旧形态链（追加的退回提交行）重新提交照常工作：提交行翻 APPROVED、审批环节原地复活")
+    void shouldReviveLegacyAppendedReturnedSubmitChainOnResubmit() {
+        AuditInstance instance = new AuditInstance();
+        instance.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        instance.setRequesterId(100L);
+        instance.setRequesterOrgId(57L);
+
+        // 存量旧形态现场（旧版 withdrawToRequester + appendReturnedSubmitStep 产物）：
+        // 原提交步保持 APPROVED、被撤回审批环节 WITHDRAWN、追加的退回提交行 WITHDRAWN
+        AuditStepInstance submitStep = new AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStepDefId(11L);
+        submitStep.setStepName("填报人提交");
+        submitStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitStep.setApproverId(100L);
+
+        AuditStepInstance withdrawnApproval = new AuditStepInstance();
+        withdrawnApproval.setStepNo(2);
+        withdrawnApproval.setStepDefId(12L);
+        withdrawnApproval.setStepName("战略发展部负责人审批");
+        withdrawnApproval.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
+        withdrawnApproval.setComment("提交人撤回");
+        withdrawnApproval.setApproverId(300L);
+        withdrawnApproval.setApproverOrgId(35L);
+
+        AuditStepInstance appendedReturnedSubmit = new AuditStepInstance();
+        appendedReturnedSubmit.setStepNo(3);
+        appendedReturnedSubmit.setStepDefId(11L);
+        appendedReturnedSubmit.setStepName("填报人提交");
+        appendedReturnedSubmit.setApproverId(100L);
+        appendedReturnedSubmit.setApproverOrgId(57L);
+        appendedReturnedSubmit.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
+        appendedReturnedSubmit.setComment("提交人撤回");
+        instance.addStepInstance(submitStep);
+        instance.addStepInstance(withdrawnApproval);
+        instance.addStepInstance(appendedReturnedSubmit);
+        instance.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        instance.setCompletedAt(null);
+
+        // 存量链重报照常工作：追加行翻 APPROVED，被撤回审批环节原地复活，不再新增行
+        instance.reactivateWithdrawnStep();
+
+        assertEquals(AuditInstance.STATUS_PENDING, instance.getStatus());
+        assertNull(instance.getCompletedAt());
+        assertEquals(AuditInstance.STEP_STATUS_APPROVED, appendedReturnedSubmit.getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_PENDING, withdrawnApproval.getStatus());
+        assertNull(withdrawnApproval.getComment());
+        assertNull(withdrawnApproval.getApprovedAt());
+        assertEquals(2, instance.resolveCurrentPendingStep().orElseThrow().getStepNo());
+        assertEquals(3, instance.getStepInstances().size());
+
+        // 存量链之后再撤回（新逻辑：在审步 + 最新提交类步原地翻转）→ 行数仍恒为 3
+        instance.withdrawToRequester();
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, withdrawnApproval.getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, appendedReturnedSubmit.getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_APPROVED, submitStep.getStatus());
+        assertEquals(3, instance.getStepInstances().size());
+
+        // 再重报：仍零新增行
+        instance.reactivateWithdrawnStep();
+        assertEquals(AuditInstance.STEP_STATUS_APPROVED, appendedReturnedSubmit.getStatus());
+        assertEquals(AuditInstance.STEP_STATUS_PENDING, withdrawnApproval.getStatus());
+        assertEquals(3, instance.getStepInstances().size());
+    }
+
+    @Test
+    @DisplayName("存量旧形态撤回链可被「取消异动」终结（追加的退回提交行识别兼容）")
+    void shouldCancelLegacyAppendedReturnedSubmitChainIntoCancelled() {
+        AuditInstance instance = new AuditInstance();
+        instance.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        instance.setRequesterId(100L);
+
+        AuditStepInstance submitStep = new AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitStep.setApproverId(100L);
+
+        AuditStepInstance withdrawnApproval = new AuditStepInstance();
+        withdrawnApproval.setStepNo(2);
+        withdrawnApproval.setStepName("战略发展部负责人审批");
+        withdrawnApproval.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
+        withdrawnApproval.setComment("提交人撤回");
+        withdrawnApproval.setApproverId(300L);
+
+        AuditStepInstance appendedReturnedSubmit = new AuditStepInstance();
+        appendedReturnedSubmit.setStepNo(3);
+        appendedReturnedSubmit.setStepName("填报人提交");
+        appendedReturnedSubmit.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
+        appendedReturnedSubmit.setComment("提交人撤回");
+        appendedReturnedSubmit.setApproverId(100L);
+
+        instance.addStepInstance(submitStep);
+        instance.addStepInstance(withdrawnApproval);
+        instance.addStepInstance(appendedReturnedSubmit);
+
+        instance.cancelReturned();
+
+        assertEquals(AuditInstance.STATUS_CANCELLED, instance.getStatus());
+        assertNotNull(instance.getCompletedAt());
     }
 
     @Test

@@ -256,11 +256,14 @@ public class AuditInstance extends AggregateRoot<Long> {
     /**
      * 2026-10-30 用户定案（异动撤回=退回填报人活链）：异动发起人在审批中的「撤回」。
      * 与 {@link #cancel()}（撤回即终结，completedAt=now 归历史）不同：把链退回
-     * 填报人节点、链保持存活——当前在审步骤置 WITHDRAWN（备注「提交人撤回」）、
-     * 实例转 WITHDRAWN 且 completedAt 保持 NULL，形态与「驳回退回填报人」
-     * （RejectWorkflowUseCase.createReturnedStep 的 submit 步骤分支）完全同构。
-     * 追加「退回提交步骤」由用例层完成（需流程定义解析提交步骤，与驳回同构）；
-     * 之后填报人可重新发起（resume 复用同链）或「取消异动」终结归历史。
+     * 填报人节点、链保持存活——实例转 WITHDRAWN 且 completedAt 保持 NULL。
+     * 2026-10-30 二次定案（撤回节点生成与 cancel 同构：原地翻转、零新增行）：
+     * ① 当前在审审批步骤原地置 WITHDRAWN（备注「提交人撤回」）；
+     * ② 本实例最新一条提交类步骤（{@link #isRequesterSubmitStep}，即链位所在
+     *    的填报人节点）同样原地置 WITHDRAWN（备注「提交人撤回」），代表链位
+     *    回到填报人——不再由用例层追加「退回提交步骤」行（旧行为会让节点链
+     *    越撤越长）。之后填报人可重新发起（resume 原地复活同链）或「取消异动」
+     *    终结归历史。
      */
     public void withdrawToRequester() {
         if (!STATUS_PENDING.equals(status)) {
@@ -273,8 +276,32 @@ public class AuditInstance extends AggregateRoot<Long> {
         current.setComment("提交人撤回");
         current.setApprovedAt(LocalDateTime.now());
 
+        flipLatestSubmitStepWithdrawnInPlace();
+
         this.status = STATUS_WITHDRAWN;
         this.completedAt = null;
+    }
+
+    /**
+     * 2026-10-30 二次定案（异动撤回零新增行）：把最新一条「已通过」的提交类步骤
+     * 原地翻转为 WITHDRAWN「提交人撤回」（选取口径与 {@link #cancel()} 一致：
+     * stepNo → approvedAt → id 取最大）。撤回前该步骤已 APPROVED 留痕，翻转后
+     * 与「上报撤回链形」同构：链位（最新 WITHDRAWN 提交类步骤）回到填报人。
+     * 找不到提交类步骤（极端历史数据）时保持旧行为——仅翻转在审审批步骤。
+     */
+    private void flipLatestSubmitStepWithdrawnInPlace() {
+        stepInstances.stream()
+                .filter(step -> STEP_STATUS_APPROVED.equals(step.getStatus()))
+                .filter(this::isRequesterSubmitStep)
+                .max(Comparator
+                        .comparing((AuditStepInstance step) -> step.getStepNo() == null ? Integer.MIN_VALUE : step.getStepNo())
+                        .thenComparing(step -> step.getApprovedAt() == null ? LocalDateTime.MIN : step.getApprovedAt())
+                        .thenComparing(step -> step.getId() == null ? Long.MIN_VALUE : step.getId()))
+                .ifPresent(submitStep -> {
+                    submitStep.setStatus(STEP_STATUS_WITHDRAWN);
+                    submitStep.setComment("提交人撤回");
+                    submitStep.setApprovedAt(LocalDateTime.now());
+                });
     }
 
     /**
@@ -295,6 +322,10 @@ public class AuditInstance extends AggregateRoot<Long> {
      * 仅当链条处于驳回退回填报人状态时允许——状态 WITHDRAWN、completedAt 为空
      * （未完结）、且存在退回的提交步骤；取消后整条链进入终态 CANCELLED 并归入
      * 审批历史。退回的提交步骤保持原样留痕，不额外改写步骤状态。
+     * 2026-10-30 二次定案（异动撤回零新增行）：退回提交步骤按
+     * {@link #isRequesterSubmitStep} 双形态识别——新形态（发起人撤回把提交类
+     * 步骤原地置 WITHDRAWN）与旧形态（存量数据里追加的退回提交行）都满足
+     * 「存在 WITHDRAWN 提交类步骤」，取消口径不变。
      */
     public void cancelReturned() {
         if (!STATUS_WITHDRAWN.equals(status) || completedAt != null) {
@@ -311,20 +342,40 @@ public class AuditInstance extends AggregateRoot<Long> {
     }
 
     public void reactivateWithdrawnStep() {
+        reactivateWithdrawnStep(null);
+    }
+
+    /**
+     * 2026-10-31 修复（重报说明被丢弃，图05）：重报提交时前端收集的「重报说明」
+     * 经提交链路透传进来，写入被复活的提交步备注。comment 为空（null/空白）时
+     * 才退回既有兜底文案「提交人重新提交（未填写说明）」，缺省行为与改前一致。
+     */
+    public void reactivateWithdrawnStep(String submitComment) {
         if (!STATUS_PENDING.equals(status) && !STATUS_WITHDRAWN.equals(status) && !STATUS_REJECTED.equals(status)) {
             throw new IllegalStateException("Cannot reactivate: workflow is not in a resumable state");
         }
-        AuditStepInstance withdrawnStep = stepInstances.stream()
-                .filter(step -> STEP_STATUS_WITHDRAWN.equals(step.getStatus()))
-                .max(Comparator
-                        .comparing((AuditStepInstance step) -> step.getStepNo() == null ? Integer.MIN_VALUE : step.getStepNo())
-                        .thenComparing(step -> step.getCreatedAt() == null ? LocalDateTime.MIN : step.getCreatedAt()))
+        // 2026-10-30 二次定案（异动撤回零新增行）：双形态识别「退回提交步骤」——
+        // 新形态：发起人撤回把提交类步骤原地置 WITHDRAWN（审批环节另有一条
+        // WITHDRAWN，stepNo 更大，不能按「最新 WITHDRAWN」选，否则会误走
+        // 审批环节直复活分支、提交步留在 WITHDRAWN 造成链形不一致）；
+        // 旧形态（存量数据）：用例层追加的退回提交行（stepNo 最大、提交类）。
+        // 两种形态都优先取「最新 WITHDRAWN 的提交类步骤」来翻转；都没有时
+        // 回落既有「最新 WITHDRAWN 步骤」口径（cancel/reject 链形不受影响）。
+        AuditStepInstance withdrawnStep = resolveLatestWithdrawnSubmitStep()
+                .or(() -> stepInstances.stream()
+                        .filter(step -> STEP_STATUS_WITHDRAWN.equals(step.getStatus()))
+                        .max(Comparator
+                                .comparing((AuditStepInstance step) -> step.getStepNo() == null ? Integer.MIN_VALUE : step.getStepNo())
+                                .thenComparing(step -> step.getCreatedAt() == null ? LocalDateTime.MIN : step.getCreatedAt())))
                 .orElseThrow(() -> new IllegalStateException("Cannot reactivate: no withdrawn step available"));
 
         if (isRequesterSubmitStep(withdrawnStep)) {
             withdrawnStep.setStatus(STEP_STATUS_APPROVED);
-            // 2026-10-20 修复（复盘图14）：同上，避免"系统自动"误导
-            withdrawnStep.setComment("提交人重新提交（未填写说明）");
+            // 2026-10-20 修复（复盘图14）：同上，避免"系统自动"误导。
+            // 2026-10-31：重报说明非空时用提交人填写的说明，兜底文案仅在缺省时保留。
+            withdrawnStep.setComment(submitComment == null || submitComment.isBlank()
+                    ? "提交人重新提交（未填写说明）"
+                    : submitComment.trim());
             withdrawnStep.setApprovedAt(LocalDateTime.now());
 
             Optional<AuditStepInstance> waitingReplayStep = stepInstances.stream()
@@ -358,6 +409,14 @@ public class AuditInstance extends AggregateRoot<Long> {
         this.completedAt = null;
     }
 
+    /**
+     * 提交类步骤识别（三口径，兼容存量）：stepNo=1（流程定义首步必为提交）、
+     * 审批人=发起人（撤回/重报后链位步的留痕）、步骤名含「提交」（未指派的历史行）。
+     * 2026-10-30 二次定案：异动撤回零新增行后，「退回提交步骤」的新形态（提交步
+     * 原地 WITHDRAWN）与旧形态（追加退回提交行）都由本口径识别，
+     * WorkflowBusinessStatusSyncService 与 listReturnedMutationChains 的 SQL
+     * 识别同口径（step_no=1 OR approver=requester OR step_name LIKE '%提交%'）。
+     */
     private boolean isRequesterSubmitStep(AuditStepInstance step) {
         if (step == null) {
             return false;
@@ -376,9 +435,26 @@ public class AuditInstance extends AggregateRoot<Long> {
     }
 
     /**
+     * 2026-10-30 二次定案（异动撤回零新增行）：最新的「WITHDRAWN 提交类步骤」——
+     * 「退回提交步骤」的双形态识别（与 {@link #isRequesterSubmitStep} 同口径）：
+     * 新形态 = 发起人撤回把提交类步骤原地置 WITHDRAWN；旧形态（存量数据）=
+     * 用例层追加的退回提交行。两条链形的「链位」都由该步骤代表。
+     */
+    private Optional<AuditStepInstance> resolveLatestWithdrawnSubmitStep() {
+        return stepInstances.stream()
+                .filter(step -> STEP_STATUS_WITHDRAWN.equals(step.getStatus()))
+                .filter(this::isRequesterSubmitStep)
+                .max(Comparator
+                        .comparing((AuditStepInstance step) -> step.getStepNo() == null ? Integer.MIN_VALUE : step.getStepNo())
+                        .thenComparing(step -> step.getCreatedAt() == null ? LocalDateTime.MIN : step.getCreatedAt()));
+    }
+
+    /**
      * 2026-10-30（异动撤回=退回填报人活链）：把被撤回的在审审批环节（WITHDRAWN
      * 且非提交步骤）复活为 PENDING。仅在重新提交后既无 WAITING 兄弟、也无
      * REJECTED 可重放时调用（发起人撤回链形专用品），对既有链形零影响。
+     * 2026-10-30 二次定案：新形态（提交步被原地置 WITHDRAWN）与旧形态
+     * （追加的退回提交行）重报都经这里原地复活审批环节，零新增行。
      */
     private void reviveLatestWithdrawnApprovalStep() {
         stepInstances.stream()

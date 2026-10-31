@@ -9,6 +9,7 @@ import com.sism.execution.domain.report.ReportOrgType;
 import com.sism.execution.interfaces.dto.CreatePlanReportRequest;
 import com.sism.execution.interfaces.dto.PlanReportQueryRequest;
 import com.sism.execution.interfaces.dto.RejectPlanReportRequest;
+import com.sism.execution.interfaces.dto.SubmitPlanReportRequest;
 import com.sism.execution.interfaces.dto.UpdatePlanReportRequest;
 import com.sism.shared.application.dto.CurrentUser;
 import org.junit.jupiter.api.DisplayName;
@@ -130,12 +131,56 @@ class ReportControllerTest {
         PlanReport existing = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 202L, 103L);
         existing.setId(3L);
         when(reportApplicationService.findReportById(3L)).thenReturn(Optional.of(existing));
-        when(reportApplicationService.submitReport(3L, 103L, currentUser)).thenReturn(existing);
+        when(reportApplicationService.submitReport(3L, 103L, (String) null, currentUser)).thenReturn(existing);
 
-        var response = controller.submitReport(3L, currentUser);
+        // comment/query/body 均缺省：与新签名兼容（comment=null、body=null）
+        var response = controller.submitReport(3L, null, null, currentUser);
 
         assertEquals(200, response.getStatusCodeValue());
-        verify(reportApplicationService).submitReport(3L, 103L, currentUser);
+        verify(reportApplicationService).submitReport(3L, 103L, (String) null, currentUser);
+    }
+
+    @Test
+    @DisplayName("submitReport should prefer body comment over query comment and pass it through")
+    void submitReportShouldPassCommentThrough() {
+        // 2026-10-31 修复（图05）：重报说明经 query/body 透传进提交链路，body 优先
+        ReportController controller = new ReportController(reportApplicationService, indicatorAppraisalApplicationService,
+                (reportId, orgId) -> false);
+
+        when(currentUser.getId()).thenReturn(103L);
+        when(currentUser.getOrgId()).thenReturn(10L);
+
+        PlanReport existing = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 202L, 103L);
+        existing.setId(3L);
+        when(reportApplicationService.findReportById(3L)).thenReturn(Optional.of(existing));
+        when(reportApplicationService.submitReport(3L, 103L, "已按驳回意见修正", currentUser)).thenReturn(existing);
+
+        SubmitPlanReportRequest body = new SubmitPlanReportRequest();
+        body.setComment("已按驳回意见修正");
+        var response = controller.submitReport(3L, "query说明被body覆盖", body, currentUser);
+
+        assertEquals(200, response.getStatusCodeValue());
+        verify(reportApplicationService).submitReport(3L, 103L, "已按驳回意见修正", currentUser);
+    }
+
+    @Test
+    @DisplayName("submitReport should fall back to query comment when body absent")
+    void submitReportShouldFallBackToQueryComment() {
+        ReportController controller = new ReportController(reportApplicationService, indicatorAppraisalApplicationService,
+                (reportId, orgId) -> false);
+
+        when(currentUser.getId()).thenReturn(103L);
+        when(currentUser.getOrgId()).thenReturn(10L);
+
+        PlanReport existing = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 202L, 103L);
+        existing.setId(3L);
+        when(reportApplicationService.findReportById(3L)).thenReturn(Optional.of(existing));
+        when(reportApplicationService.submitReport(3L, 103L, "query重报说明", currentUser)).thenReturn(existing);
+
+        var response = controller.submitReport(3L, "query重报说明", null, currentUser);
+
+        assertEquals(200, response.getStatusCodeValue());
+        verify(reportApplicationService).submitReport(3L, 103L, "query重报说明", currentUser);
     }
 
     @Test

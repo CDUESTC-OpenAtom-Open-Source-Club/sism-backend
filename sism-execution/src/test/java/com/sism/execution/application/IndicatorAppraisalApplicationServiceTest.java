@@ -16,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
+import org.springframework.security.access.AccessDeniedException;
 
 import java.sql.ResultSet;
 import java.util.List;
@@ -24,21 +25,23 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 2026-10-30 回归：P0 鉴定死锁（状态词表断层）。
+ * 审核进度评定门禁回归（2026-10-30 P0 鉴定死锁 + 2026-10-31 定稿口径）。
  *
- * <p>旧实现拿 "IN_REVIEW" 去比 {@code plan_report.status}，而上报侧「已提交待审批」
- * 的权威值是 {@code SUBMITTED}（legacy 别名 IN_REVIEW 会被归一化成 SUBMITTED）；
- * 「在途」的权威值在审批实例侧（{@code audit_instance.status = IN_REVIEW}）。
- * 两者词表不同 → 「谁能评级」恒为 false → 可评级节点又强制「全部已评定」→ 结构性死锁。
+ * <p>2026-10-30：状态词表断层修复（上报侧 SUBMITTED / 实例侧 IN_REVIEW）。
+ * <p>2026-10-31 定稿：可评定 = 上报审批期间 + 具备审批席角色 + 当前活动节点候选审批人；
+ * 原「步骤白名单」（仅固定 step_order 可评）删除；lockHint 三分：
+ * ①非上报期间 ②无席位角色 ③非当前环节评定人（含节点名）。
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("Indicator Appraisal Application Service Tests")
@@ -48,6 +51,9 @@ class IndicatorAppraisalApplicationServiceTest {
     private static final long INDICATOR_ID = 2046L;
     private static final long INSTANCE_ID = 5L;
     private static final long APPROVER_USER_ID = 302L;
+
+    /** 任一审批席角色即可进入「当前节点候选人」判定（原因②的放行面） */
+    private static final List<String> SEAT_ROLES = List.of("ROLE_APPROVER");
 
     @Mock
     private JdbcTemplate jdbcTemplate;
@@ -65,7 +71,7 @@ class IndicatorAppraisalApplicationServiceTest {
     private ApproverResolver approverResolver;
 
     @Test
-    @DisplayName("上报状态 SUBMITTED + 审批实例 IN_REVIEW + 当前节点负责人 → 可评级")
+    @DisplayName("上报在途 + 有席位角色 + 当前节点候选人 → 可评级")
     void shouldAllowAppraisalWhenReportSubmittedAndInstanceInReview() {
         stubReportRow("SUBMITTED", "IN_REVIEW");
         AuditInstance instance = stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
@@ -74,7 +80,7 @@ class IndicatorAppraisalApplicationServiceTest {
                 .thenReturn(true);
 
         List<IndicatorAppraisalContextResponse> contexts =
-                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID);
+                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID, SEAT_ROLES);
 
         assertEquals(1, contexts.size());
         IndicatorAppraisalContextResponse context = contexts.get(0);
@@ -84,42 +90,78 @@ class IndicatorAppraisalApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("上报状态 SUBMITTED 但审批实例已 APPROVED → 不可评级，提示与「非本节点」可区分")
+    @DisplayName("白名单外节点的候选审批人也可评级（2026-10-31 定稿：删步骤白名单）")
+    void shouldAllowAppraisalAtStepOutsideLegacyWhitelist() {
+        stubReportRow("SUBMITTED", "IN_REVIEW");
+        stubInstance(AuditInstance.STATUS_PENDING, 2, 23L);
+        when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(funcDeptFlow());
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), any(Long.class), any(AuditInstance.class)))
+                .thenReturn(true);
+
+        IndicatorAppraisalContextResponse context =
+                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID, SEAT_ROLES).get(0);
+
+        assertTrue(context.isCanAppraise(),
+                "旧白名单只允许 FUNCDEPT 第 4 步，现候选审批人在任一在途节点都可评，实际：" + context.getLockHint());
+    }
+
+    @Test
+    @DisplayName("上报在途但有席位角色非当前节点候选人 → 拒绝且提示含节点名（原因③）")
+    void shouldRejectAppraisalWithStepNameWhenNotCurrentStepApprover() {
+        stubReportRow("SUBMITTED", "IN_REVIEW");
+        stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
+        when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(collegeFlow());
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), any(Long.class), any(AuditInstance.class)))
+                .thenReturn(false);
+
+        List<IndicatorAppraisalContextResponse> contexts =
+                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID, SEAT_ROLES);
+
+        assertEquals(1, contexts.size());
+        IndicatorAppraisalContextResponse context = contexts.get(0);
+        assertFalse(context.isCanAppraise());
+        assertTrue(context.getLockHint().contains("您不是当前审批环节"),
+                "非当前环节评定人应有独立提示，实际：" + context.getLockHint());
+        assertTrue(context.getLockHint().contains("分管职能部门负责人审批"),
+                "原因③必须带节点名，实际：" + context.getLockHint());
+    }
+
+    @Test
+    @DisplayName("无任一审批席角色 → 拒绝且不再进入节点级判定（原因②）")
+    void shouldRejectAppraisalWithoutAnySeatRole() {
+        stubReportRow("SUBMITTED", "IN_REVIEW");
+        stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
+
+        List<IndicatorAppraisalContextResponse> contexts =
+                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID, List.of());
+
+        assertEquals(1, contexts.size());
+        IndicatorAppraisalContextResponse context = contexts.get(0);
+        assertFalse(context.isCanAppraise());
+        assertEquals("当前角色无评定权限，无法评定审核进度", context.getLockHint());
+        verifyNoInteractions(approverResolver, workflowDefinitionQueryService);
+    }
+
+    @Test
+    @DisplayName("审批实例已 APPROVED → 不可评级：①非上报期间提示优先于角色判定，且与原因③可区分")
     void shouldRejectAppraisalWhenInstanceAlreadyApproved() {
         stubReportRow("SUBMITTED", "APPROVED");
         stubInstance(AuditInstance.STATUS_APPROVED, 3, 13L);
 
         List<IndicatorAppraisalContextResponse> contexts =
-                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID);
+                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID, SEAT_ROLES);
 
         assertEquals(1, contexts.size());
         IndicatorAppraisalContextResponse context = contexts.get(0);
         assertFalse(context.isCanAppraise());
         assertTrue(context.getLockHint().contains("审批已结束"),
                 "审批已结束应有独立提示，实际：" + context.getLockHint());
-        assertFalse(context.getLockHint().contains("只审核"),
-                "「审批已结束」不应与「本节点只审核」混用同一句提示");
+        assertFalse(context.getLockHint().contains("评定人"),
+                "「审批已结束」不应与「非当前环节评定人」混用同一句提示");
     }
 
     @Test
-    @DisplayName("审批在途但当前节点只审核 → 提示与「审批已结束」可区分")
-    void shouldRejectAppraisalWhenCurrentStepCannotAppraise() {
-        stubReportRow("SUBMITTED", "IN_REVIEW");
-        stubInstance(AuditInstance.STATUS_PENDING, 4, 14L);
-        when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(collegeFlow());
-
-        List<IndicatorAppraisalContextResponse> contexts =
-                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID);
-
-        assertEquals(1, contexts.size());
-        IndicatorAppraisalContextResponse context = contexts.get(0);
-        assertFalse(context.isCanAppraise());
-        assertTrue(context.getLockHint().contains("只审核"),
-                "本节点只审核应有独立提示，实际：" + context.getLockHint());
-    }
-
-    @Test
-    @DisplayName("setLevel 在 SUBMITTED + 实例 IN_REVIEW 时能成功落库（本次修复的核心断言）")
+    @DisplayName("setLevel：上报在途 + 席位角色 + 当前节点候选人 → 成功落库")
     void shouldPersistAppraisalLevelWhenReportSubmittedAndInstanceInReview() {
         stubReportRow("SUBMITTED", "IN_REVIEW");
         stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
@@ -128,10 +170,43 @@ class IndicatorAppraisalApplicationServiceTest {
                 .thenReturn(true);
 
         IndicatorAppraisalContextResponse context =
-                service().setLevel(INDICATOR_ID, "normal", APPROVER_USER_ID);
+                service().setLevel(INDICATOR_ID, "normal", APPROVER_USER_ID, SEAT_ROLES);
 
         verify(planReportIndicatorRepository).updateAppraisalLevel(REPORT_ID, INDICATOR_ID, "NORMAL");
         assertTrue(context.isCanAppraise());
+    }
+
+    @Test
+    @DisplayName("setLevel：非当前节点候选人 → AccessDenied 且信息与 context 的 lockHint 同源（含节点名）")
+    void shouldDenySetLevelWithStepNameWhenNotCurrentStepApprover() {
+        stubReportRow("SUBMITTED", "IN_REVIEW");
+        stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
+        when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(collegeFlow());
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), any(Long.class), any(AuditInstance.class)))
+                .thenReturn(false);
+
+        AccessDeniedException exception = assertThrows(
+                AccessDeniedException.class,
+                () -> service().setLevel(INDICATOR_ID, "NORMAL", APPROVER_USER_ID, SEAT_ROLES));
+
+        assertTrue(exception.getMessage().contains("分管职能部门负责人审批"),
+                "写入拒绝必须报出当前节点名，实际：" + exception.getMessage());
+        verify(planReportIndicatorRepository, org.mockito.Mockito.never())
+                .updateAppraisalLevel(any(Long.class), any(Long.class), anyString());
+    }
+
+    @Test
+    @DisplayName("setLevel：无席位角色 → AccessDenied（原因②），即使候选人判定本可通过")
+    void shouldDenySetLevelWithoutSeatRole() {
+        stubReportRow("SUBMITTED", "IN_REVIEW");
+        stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
+
+        AccessDeniedException exception = assertThrows(
+                AccessDeniedException.class,
+                () -> service().setLevel(INDICATOR_ID, "NORMAL", APPROVER_USER_ID, List.of()));
+
+        assertEquals("当前角色无评定权限，无法评定审核进度", exception.getMessage());
+        verifyNoInteractions(approverResolver, workflowDefinitionQueryService);
     }
 
     private IndicatorAppraisalApplicationService service() {
@@ -211,6 +286,28 @@ class IndicatorAppraisalApplicationServiceTest {
         functionalVpStep.setRoleId(4L);
 
         flowDef.setSteps(List.of(functionalHeadStep, functionalVpStep));
+        return flowDef;
+    }
+
+    /** 职能部门链：第 2 步在旧白名单（仅第 4 步）之外，用于验证白名单已删 */
+    private AuditFlowDef funcDeptFlow() {
+        AuditFlowDef flowDef = new AuditFlowDef();
+        flowDef.setId(4L);
+        flowDef.setFlowCode("PLAN_APPROVAL_FUNCDEPT");
+
+        AuditStepDef funcDeptHeadStep = new AuditStepDef();
+        funcDeptHeadStep.setId(23L);
+        funcDeptHeadStep.setStepOrder(2);
+        funcDeptHeadStep.setStepName("职能部门审批人审批");
+        funcDeptHeadStep.setRoleId(2L);
+
+        AuditStepDef strategyStep = new AuditStepDef();
+        strategyStep.setId(24L);
+        strategyStep.setStepOrder(4);
+        strategyStep.setStepName("战略发展部审批");
+        strategyStep.setRoleId(3L);
+
+        flowDef.setSteps(List.of(funcDeptHeadStep, strategyStep));
         return flowDef;
     }
 }

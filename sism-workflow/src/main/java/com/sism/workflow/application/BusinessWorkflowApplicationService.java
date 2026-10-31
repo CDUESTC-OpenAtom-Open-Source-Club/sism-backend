@@ -96,7 +96,10 @@ public class BusinessWorkflowApplicationService {
                 entityType,
                 flowDef.getId());
         if (resumableInstance != null) {
-            AuditInstance resumed = workflowApplicationService.resumeWithdrawnAuditInstance(resumableInstance);
+            // 2026-10-31 修复（重报说明被丢弃，图05）：复活撤回实例时带上本次提交说明，
+            // 写入提交步备注（PLAN 链事件变量已携带 submitComment，此前在此处被丢弃）。
+            AuditInstance resumed = workflowApplicationService.resumeWithdrawnAuditInstance(
+                    resumableInstance, resolveSubmitComment(request));
             return workflowReadModelMapper.toInstanceResponse(resumed);
         }
 
@@ -411,7 +414,10 @@ public class BusinessWorkflowApplicationService {
                 workflowBusinessContextPorts.forEach(port ->
                         effectiveLevels.putAll(port.findIndicatorAppraisalLevels(instance.getEntityId())));
                 effectiveLevels.putAll(normalizedLevels);
-                assertAllIndicatorsAppraised(instance, effectiveLevels);
+                // 2026-10-30 用户定案：拦截文案里的填报部门优先取报告的填报组织名，
+                // 上下文不可得时兜底用审批卡的目标部门名（detailBeforeApproval 在本链路非空）。
+                assertAllIndicatorsAppraised(instance, effectiveLevels,
+                        detailBeforeApproval.getTargetOrgName());
             }
         }
 
@@ -463,13 +469,19 @@ public class BusinessWorkflowApplicationService {
      * 口径是「有效等级」：上一节点已评定的沿用，本级本次提交的覆盖。
      * 因此下级已填、上级不改也能直接通过；下级漏填时，本级会被拦下补齐。
      *
+     * 2026-10-30 用户定案（文案）：拦截消息不报指标 ID（报名称）、不出现「资源冲突」、
+     * 要讲清楚去哪里做什么（见 {@link #buildUnappraisedAuditMessage}）。
+     *
      * @param instance        本次审批的实例（entityType=PLAN_REPORT）
      * @param effectiveLevels 已评定的有效等级（历史 + 本次提交）
+     * @param fallbackOrgName 端上取不到填报组织名时的兜底（如审批卡的目标部门名）
      */
     private void assertAllIndicatorsAppraised(AuditInstance instance,
-                                              java.util.Map<Long, String> effectiveLevels) {
+                                              java.util.Map<Long, String> effectiveLevels,
+                                              String fallbackOrgName) {
         java.util.List<Long> requiredIndicatorIds = workflowBusinessContextPorts.stream()
                 .map(port -> port.findIndicatorIdsByReport(instance.getEntityId()))
+                .filter(java.util.Objects::nonNull)
                 .flatMap(java.util.List::stream)
                 .filter(java.util.Objects::nonNull)
                 .distinct()
@@ -485,12 +497,48 @@ public class BusinessWorkflowApplicationService {
                 })
                 .toList();
         if (!unappraised.isEmpty()) {
-            throw new com.sism.exception.ConflictException(
-                    "存在未评定的审核进度（指标 "
-                            + unappraised.stream().map(String::valueOf)
-                            .collect(java.util.stream.Collectors.joining("、"))
-                            + "），请先在指标列表中完成全部指标的鉴定后再通过");
+            java.util.Map<Long, String> indicatorNames = new java.util.LinkedHashMap<>();
+            workflowBusinessContextPorts.forEach(port -> {
+                java.util.Map<Long, String> names =
+                        port.findIndicatorNamesByReport(instance.getEntityId());
+                if (names != null) {
+                    indicatorNames.putAll(names);
+                }
+            });
+            String reportOrgName = workflowBusinessContextPorts.stream()
+                    .map(port -> port.findReportOrgName(instance.getEntityId()))
+                    .filter(java.util.Objects::nonNull)
+                    .flatMap(java.util.Optional::stream)
+                    .filter(name -> name != null && !name.isBlank())
+                    .findFirst()
+                    .orElse(fallbackOrgName);
+            throw new com.sism.exception.BusinessConflictException(
+                    buildUnappraisedAuditMessage(unappraised, indicatorNames, reportOrgName));
         }
+    }
+
+    /**
+     * 2026-10-30 用户定案的拦截文案（三处修正：不讲资源冲突、不报指标 ID、讲清去哪做什么）：
+     * 「未完成审核：还有 2 项指标的审核进度未鉴定（『教学运行质量』『科研产出增长率』）。
+     *   请到 XX学院 的指标填报页完成全部指标的审核进度鉴定，再回到审批中心通过。」
+     * 取不到填报组织名时退化为「请到指标填报页完成…」；名称缺失兜底「未知指标」。
+     *
+     * 2026-10-30 门禁前移改造：指标点名/20 字截断/「等 N 项」/未知指标兜底的取数与拼装
+     * 抽到 {@link com.sism.shared.domain.indicator.IndicatorGateMessages}，
+     * 与提交侧自评门禁（sism-execution）共用同一套口径。
+     */
+    private String buildUnappraisedAuditMessage(java.util.List<Long> unappraised,
+                                                java.util.Map<Long, String> indicatorNames,
+                                                String reportOrgName) {
+        String goWhere = reportOrgName == null || reportOrgName.isBlank()
+                ? "请到指标填报页"
+                : "请到 " + reportOrgName + " 的指标填报页";
+        return com.sism.shared.domain.indicator.IndicatorGateMessages.buildNamedGateMessage(
+                "未完成审核",
+                "审核进度未鉴定",
+                unappraised,
+                indicatorNames,
+                goWhere + "完成全部指标的审核进度鉴定，再回到审批中心通过。");
     }
 
     @Transactional
@@ -731,8 +779,10 @@ public class BusinessWorkflowApplicationService {
      * 退回填报人节点、链保持存活。仅当实例处于审批中（IN_REVIEW，状态校验在
      * AuditInstance.withdrawToRequester）且调用者为实例发起人（requester）时，
      * 允许把同 batch 的全部异动实例一次性退回填报人：实例 WITHDRAWN、
-     * completedAt 保持 NULL、追加退回提交步骤（与驳回退回填报人同构），
-     * 不进审批历史；之后可修改后重新发起（resume 复用同链）或「取消异动」终结。
+     * completedAt 保持 NULL、在审审批步与最新提交类步原地置 WITHDRAWN
+     * 「提交人撤回」（2026-10-30 二次定案：与上报撤回 cancel 同构的原地翻转、
+     * 零新增行，不再追加退回提交步骤行）。不进审批历史；之后可修改后重新发起
+     * （resume 复用同链）或「取消异动」终结。
      * 作用域收窄到 PLAN_MUTATION_STRATEGY 异动链（INDICATOR/TASK），
      * 上报/下发等其他流程继续走 {@link #cancelInstance}。
      */

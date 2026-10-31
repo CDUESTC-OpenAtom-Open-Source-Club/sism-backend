@@ -88,6 +88,36 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void shouldPassThroughBusinessConflictMessageWithoutResourceConflictPrefix() {
+        // 2026-10-30 用户定案：自带完整指引的审批拦截文案原样透传，
+        // 不叠加「资源冲突」前缀（HTTP 409、错误码 1002 与 ConflictException 一致）。
+        String guidance = "未完成审核：还有 1 项指标的审核进度未鉴定（『科研产出增长率』）。"
+                + "请到 计算机学院 的指标填报页完成全部指标的审核进度鉴定，再回到审批中心通过。";
+        var response = handler.handleBusinessConflictException(new BusinessConflictException(guidance));
+
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+        ApiResponse<Void> body = response.getBody();
+        assertNotNull(body);
+        assertFalse(body.isSuccess());
+        assertEquals(1002, body.getCode());
+        assertEquals(guidance, body.getMessage());
+        assertFalse(body.getMessage().contains("资源冲突"));
+    }
+
+    @Test
+    void shouldKeepResourceConflictPrefixForGenericConflictException() {
+        // 其余 ConflictException 的全局映射行为不变：仍统一加「资源冲突」前缀
+        var response = handler.handleConflictException(
+                new ConflictException("当前月份已有报告正在审批中，请等待审批完成或先撤回"));
+
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+        ApiResponse<Void> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(1002, body.getCode());
+        assertEquals("资源冲突：当前月份已有报告正在审批中，请等待审批完成或先撤回", body.getMessage());
+    }
+
+    @Test
     void shouldConvertMalformedJsonToBadRequestResponse() {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/indicators/reminders/statuses");
         request.addHeader("X-Request-ID", "req-malformed-json");
