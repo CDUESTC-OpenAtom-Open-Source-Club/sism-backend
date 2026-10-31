@@ -55,6 +55,15 @@ public class MessageCenterApplicationService {
     private static final String READ_READ = "READ";
     private static final String ACTION_REQUIRED = "ACTION_REQUIRED";
 
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 一次「发起异动」= 一个 batch = 该计划的一次异动审批（同批审批实例共享 batch_id），
+     * 消息中心对 flow_code=PLAN_MUTATION_STRATEGY 的在途待办按批次聚合成 1 条，
+     * messageId 按批次稳定生成；计数同口径按批次计 1（与列表严格一致，见 Issue #89 教训）。
+     */
+    private static final String FLOW_CODE_PLAN_MUTATION_STRATEGY = "PLAN_MUTATION_STRATEGY";
+    private static final String MUTATION_BATCH_MESSAGE_ID_PREFIX = "workflow-mutation-batch:";
+
     private final UserNotificationRepository userNotificationRepository;
     private final SystemAnnouncementRepository systemAnnouncementRepository;
     private final UserNotificationService userNotificationService;
@@ -71,7 +80,7 @@ public class MessageCenterApplicationService {
         long riskUnread = 0;
 
         try {
-            todoCount = workflowReadModelService.countMyPendingTasks(userId);
+            todoCount = workflowReadModelService.countMyPendingTodoMessages(userId);
         } catch (RuntimeException ex) {
             partialSuccess = true;
             unavailableSources.add("workflow");
@@ -160,11 +169,14 @@ public class MessageCenterApplicationService {
         long duplicateApprovalCount = 0;
 
         try {
-            workflowTotal = workflowReadModelService.countMyPendingTasks(userId);
-            workflowItems = loadWorkflowCandidates(userId, endIndex);
-            workflowLookup = WorkflowIdentityLookup.fromItems(workflowItems);
+            workflowTotal = workflowReadModelService.countMyPendingTodoMessages(userId);
+            // 2026-10-30 用户定案：异动按计划聚合——同 batch 多实例只出 1 条待办消息
+            workflowItems = loadAggregatedWorkflowTodoItems(userId);
+            // 聚合后的条目只暴露每个批次的首个实例，去重对照表改用在途实例全量清单
+            // （含 batchId），确保同批其余实例的结果通知仍能被正确判重
+            workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
             if (workflowLookup.isEmpty()) {
-                workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
+                workflowLookup = WorkflowIdentityLookup.fromItems(workflowItems);
             }
         } catch (RuntimeException ex) {
             partialSuccess = true;
@@ -202,9 +214,10 @@ public class MessageCenterApplicationService {
 
     private MessageCenterModels.ListResponse buildTodoListResponse(Long userId, int safePageNum, int safePageSize) {
         try {
-            long total = workflowReadModelService.countMyPendingTasks(userId);
-            int endIndex = safePageNum * safePageSize;
-            List<MessageCenterModels.Item> items = loadWorkflowCandidates(userId, endIndex);
+            // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+            // 计数（countMyPendingTodoMessages 按批次计 1）与列表（同 batch 合成 1 条）严格同口径
+            long total = workflowReadModelService.countMyPendingTodoMessages(userId);
+            List<MessageCenterModels.Item> items = loadAggregatedWorkflowTodoItems(userId);
             return pageItems(items, total, safePageNum, safePageSize, false, List.of());
         } catch (RuntimeException ex) {
             return emptyListResponse(safePageNum, safePageSize, true, List.of("workflow"));
@@ -223,11 +236,14 @@ public class MessageCenterApplicationService {
         NotificationCandidateResult notificationResult = NotificationCandidateResult.empty();
 
         try {
-            workflowTotal = workflowReadModelService.countMyPendingTasks(userId);
-            workflowItems = loadWorkflowCandidates(userId, endIndex);
-            workflowLookup = WorkflowIdentityLookup.fromItems(workflowItems);
+            workflowTotal = workflowReadModelService.countMyPendingTodoMessages(userId);
+            // 2026-10-30 用户定案：异动按计划聚合——同 batch 多实例只出 1 条待办消息
+            workflowItems = loadAggregatedWorkflowTodoItems(userId);
+            // 聚合后的条目只暴露每个批次的首个实例，去重对照表改用在途实例全量清单
+            // （含 batchId），确保同批其余实例的结果通知仍能被正确判重
+            workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
             if (workflowLookup.isEmpty()) {
-                workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
+                workflowLookup = WorkflowIdentityLookup.fromItems(workflowItems);
             }
         } catch (RuntimeException ex) {
             partialSuccess = true;
@@ -262,9 +278,10 @@ public class MessageCenterApplicationService {
 
         try {
             workflowResult = loadWorkflowKeywordMatches(userId, keyword, endIndex);
-            workflowLookup = WorkflowIdentityLookup.fromItems(workflowResult.items());
+            // 聚合后的条目只暴露每个批次的首个实例，去重对照表优先用在途实例全量清单
+            workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
             if (workflowLookup.isEmpty()) {
-                workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
+                workflowLookup = WorkflowIdentityLookup.fromItems(workflowResult.items());
             }
         } catch (RuntimeException ex) {
             partialSuccess = true;
@@ -308,9 +325,10 @@ public class MessageCenterApplicationService {
 
         try {
             workflowResult = loadWorkflowKeywordMatches(userId, keyword, endIndex);
-            workflowLookup = WorkflowIdentityLookup.fromItems(workflowResult.items());
+            // 聚合后的条目只暴露每个批次的首个实例，去重对照表优先用在途实例全量清单
+            workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
             if (workflowLookup.isEmpty()) {
-                workflowLookup = WorkflowIdentityLookup.from(workflowReadModelService.listPendingTaskIdentities(userId));
+                workflowLookup = WorkflowIdentityLookup.fromItems(workflowResult.items());
             }
         } catch (RuntimeException ex) {
             partialSuccess = true;
@@ -391,6 +409,16 @@ public class MessageCenterApplicationService {
             case "workflow" -> workflowReadModelService.findMyPendingTaskById(userId, parsedMessageId.sourceId())
                     .map(this::toWorkflowItem)
                     .orElseThrow(() -> new IllegalArgumentException("消息不存在或已完成处理"));
+            // 2026-10-30 用户定案：异动按计划聚合——批次级 messageId 回查整批在途实例，
+            // 重建「同 batch 合成 1 条」的待办消息详情
+            case "workflow-mutation-batch" -> aggregateMutationBatchItems(workflowReadModelService
+                    .getMyPendingTasksByBatchId(userId, parsedMessageId.sourceId())
+                    .stream()
+                    .map(this::toWorkflowItem)
+                    .toList())
+                    .stream()
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("消息不存在或已完成处理"));
             default -> throw new IllegalArgumentException("暂不支持的消息类型: " + parsedMessageId.sourceType());
         };
     }
@@ -460,7 +488,9 @@ public class MessageCenterApplicationService {
         List<WorkflowTaskResponse> workflowTasks = List.of();
         try {
             workflowTasks = loadAllPendingWorkflowTasks(userId);
-            items.addAll(workflowTasks.stream().map(this::toWorkflowItem).toList());
+            // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+            // 兜底聚合路径同样按批次合成 1 条
+            items.addAll(aggregateMutationBatchItems(workflowTasks.stream().map(this::toWorkflowItem).toList()));
         } catch (RuntimeException ex) {
             partialSuccess = true;
             unavailableSources.add("workflow");
@@ -559,18 +589,131 @@ public class MessageCenterApplicationService {
         return tasks;
     }
 
-    private List<MessageCenterModels.Item> loadWorkflowCandidates(Long userId, int limit) {
-        if (limit <= 0) {
-            return List.of();
-        }
-        int batchSize = Math.max(limit, 1);
-        PageResult<WorkflowTaskResponse> page = workflowReadModelService.getMyPendingTasks(userId, 1, batchSize);
-        if (page.getItems() == null || page.getItems().isEmpty()) {
-            return List.of();
-        }
-        return page.getItems().stream()
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 先取全部在途待办再按异动批次聚合——同 batch 多实例合成 1 条待办消息，
+     * 保证列表与计数（countMyPendingTodoMessages，同口径按批次计 1）严格一致。
+     */
+    private List<MessageCenterModels.Item> loadAggregatedWorkflowTodoItems(Long userId) {
+        return aggregateMutationBatchItems(loadAllPendingWorkflowTasks(userId).stream()
                 .map(this::toWorkflowItem)
-                .toList();
+                .toList());
+    }
+
+    /** 判定待办条目是否属于可按批次聚合的异动待办（flow_code=PLAN_MUTATION_STRATEGY 且带 batchId）。 */
+    private String mutationBatchIdOf(MessageCenterModels.Item item) {
+        if (item.metadata() == null) {
+            return null;
+        }
+        Object flowCode = item.metadata().get("flowCode");
+        if (flowCode == null
+                || !FLOW_CODE_PLAN_MUTATION_STRATEGY.equalsIgnoreCase(String.valueOf(flowCode).trim())) {
+            return null;
+        }
+        Object batchId = item.metadata().get("batchId");
+        if (!(batchId instanceof String batchIdText) || batchIdText.isBlank()) {
+            return null;
+        }
+        return batchIdText;
+    }
+
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 把 flow_code=PLAN_MUTATION_STRATEGY 且共享 batch_id 的在途待办合成 1 条：
+     * 标题与审批中心卡片一致——「异动审批 · {source_org_name} -> {target_org_name}」，
+     * messageId 按批次稳定（workflow-mutation-batch:{batchId}），metadata 携带
+     * batchId 与 instanceIds，文案不出现任何按条目计数的表述。
+     * 其余流程（PLAN 下发审批、PLAN_REPORT 上报审批等）条目原样保留。
+     */
+    private List<MessageCenterModels.Item> aggregateMutationBatchItems(List<MessageCenterModels.Item> items) {
+        if (items == null || items.isEmpty()) {
+            return List.of();
+        }
+        Map<String, List<MessageCenterModels.Item>> grouped = new LinkedHashMap<>();
+        for (MessageCenterModels.Item item : items) {
+            String batchId = mutationBatchIdOf(item);
+            String groupKey = batchId == null
+                    ? "solo:" + item.messageId()
+                    : MUTATION_BATCH_MESSAGE_ID_PREFIX + batchId;
+            grouped.computeIfAbsent(groupKey, key -> new ArrayList<>()).add(item);
+        }
+
+        List<MessageCenterModels.Item> aggregated = new ArrayList<>(grouped.size());
+        for (Map.Entry<String, List<MessageCenterModels.Item>> entry : grouped.entrySet()) {
+            List<MessageCenterModels.Item> group = entry.getValue();
+            MessageCenterModels.Item representative = group.get(0);
+            if (entry.getKey().startsWith("solo:")) {
+                aggregated.add(representative);
+                continue;
+            }
+            List<String> instanceIds = group.stream()
+                    .map(MessageCenterModels.Item::approvalInstanceId)
+                    .filter(Objects::nonNull)
+                    .map(String::valueOf)
+                    .distinct()
+                    .toList();
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            if (representative.metadata() != null) {
+                metadata.putAll(representative.metadata());
+            }
+            metadata.put("batchId", mutationBatchIdOf(representative));
+            metadata.put("instanceIds", instanceIds);
+
+            // 同批实例几乎同时发起，取组内最新时间参与排序，卡片始终代表该批次的当前进展
+            LocalDateTime latestCreatedAt = group.stream()
+                    .map(MessageCenterModels.Item::createdAt)
+                    .filter(Objects::nonNull)
+                    .max(LocalDateTime::compareTo)
+                    .orElse(representative.createdAt());
+
+            aggregated.add(new MessageCenterModels.Item(
+                    entry.getKey(),
+                    representative.sourceType(),
+                    representative.sourceId(),
+                    representative.category(),
+                    representative.bizType(),
+                    buildMutationBatchTitle(representative),
+                    representative.summary(),
+                    representative.content(),
+                    representative.priority(),
+                    representative.severity(),
+                    representative.readState(),
+                    representative.actionState(),
+                    latestCreatedAt,
+                    latestCreatedAt,
+                    representative.actionUrl(),
+                    representative.entityType(),
+                    representative.entityId(),
+                    representative.approvalInstanceId(),
+                    representative.currentStepName(),
+                    representative.currentAssigneeDisplay(),
+                    representative.senderDisplay(),
+                    representative.canMarkAsRead(),
+                    representative.canViewDetail(),
+                    representative.canProcess(),
+                    metadata
+            ));
+        }
+        return List.copyOf(aggregated);
+    }
+
+    /**
+     * 2026-10-30 用户定案：异动消息标题与审批中心卡片格式一致——
+     * 「异动审批 · {source_org_name} -> {target_org_name}」，不出现按条目计数的表述。
+     */
+    private String buildMutationBatchTitle(MessageCenterModels.Item item) {
+        Map<String, Object> metadata = item.metadata() == null ? Map.of() : item.metadata();
+        String sourceOrg = firstNonBlank(
+                asString(metadata.get("sourceOrgName")),
+                item.currentAssigneeDisplay(),
+                "相关部门");
+        String targetOrg = firstNonBlank(asString(metadata.get("targetOrgName")), sourceOrg);
+        String flowLabel = sourceOrg.equals(targetOrg) ? sourceOrg : sourceOrg + " -> " + targetOrg;
+        return "异动审批 · " + flowLabel;
+    }
+
+    private String asString(Object value) {
+        return value instanceof String text && !text.isBlank() ? text.trim() : null;
     }
 
     private NotificationCandidateResult loadNotificationCandidates(Long userId, int limit, WorkflowIdentityLookup workflowLookup) {
@@ -747,24 +890,19 @@ public class MessageCenterApplicationService {
         if (limit <= 0) {
             return WorkflowKeywordResult.empty();
         }
+        // 2026-10-30 用户定案：异动按计划聚合——关键词命中计数也按批次聚合后的条目统计，
+        // 与 TODO 列表口径一致（同 batch 只计 1）
+        List<MessageCenterModels.Item> aggregatedItems = loadAggregatedWorkflowTodoItems(userId);
         List<MessageCenterModels.Item> matches = new ArrayList<>();
         long totalMatches = 0;
-        int pageNum = 1;
-        PageResult<WorkflowTaskResponse> currentPage;
-        do {
-            currentPage = workflowReadModelService.getMyPendingTasks(userId, pageNum);
-            List<WorkflowTaskResponse> pageItems = currentPage.getItems() == null ? List.of() : currentPage.getItems();
-            for (WorkflowTaskResponse task : pageItems) {
-                MessageCenterModels.Item item = toWorkflowItem(task);
-                if (matchesKeyword(item, keyword)) {
-                    totalMatches++;
-                    if (matches.size() < limit) {
-                        matches.add(item);
-                    }
+        for (MessageCenterModels.Item item : aggregatedItems) {
+            if (matchesKeyword(item, keyword)) {
+                totalMatches++;
+                if (matches.size() < limit) {
+                    matches.add(item);
                 }
             }
-            pageNum++;
-        } while (currentPage.getPageNum() < currentPage.getTotalPages());
+        }
         return new WorkflowKeywordResult(mergeAndSortItems(matches, List.of()), totalMatches);
     }
 
@@ -849,6 +987,8 @@ public class MessageCenterApplicationService {
         metadata.put("sourceOrgName", task.getSourceOrgName());
         metadata.put("targetOrgName", task.getTargetOrgName());
         metadata.put("planName", task.getPlanName());
+        // 2026-10-30 用户定案：异动按计划聚合——批次号随待办下发，供按批次聚合成 1 条
+        metadata.put("batchId", task.getBatchId());
 
         return new MessageCenterModels.Item(
                 buildWorkflowMessageId(task),
@@ -1124,6 +1264,14 @@ public class MessageCenterApplicationService {
                 throw new IllegalArgumentException("无效的通知消息标识: " + messageId);
             }
             return new ParsedMessageId("notification", sourceId, null, notificationId);
+        }
+        if (messageId.startsWith(MUTATION_BATCH_MESSAGE_ID_PREFIX)) {
+            // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——批次级消息标识
+            String batchId = messageId.substring(MUTATION_BATCH_MESSAGE_ID_PREFIX.length());
+            if (!StringUtils.hasText(batchId)) {
+                throw new IllegalArgumentException("无效的异动审批待办标识: " + messageId);
+            }
+            return new ParsedMessageId("workflow-mutation-batch", batchId, null, null);
         }
         if (messageId.startsWith("workflow:")) {
             String[] parts = messageId.split(":", 3);

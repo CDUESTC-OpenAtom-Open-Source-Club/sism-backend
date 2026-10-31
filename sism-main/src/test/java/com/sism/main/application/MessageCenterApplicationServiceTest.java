@@ -79,8 +79,9 @@ class MessageCenterApplicationServiceTest {
                 .createdTime(LocalDateTime.of(2026, 4, 17, 9, 0))
                 .build();
 
-        when(workflowReadModelService.countMyPendingTasks(8L)).thenReturn(1L);
-        when(workflowReadModelService.getMyPendingTasks(8L, 1, 100)).thenReturn(PageResult.of(List.of(pendingTask), 1, 1, 100));
+        when(workflowReadModelService.countMyPendingTodoMessages(8L)).thenReturn(1L);
+        // 2026-10-30 起聚合需要全量在途待办：改为分页扫描（getMyPendingTasks(userId, pageNum)）
+        when(workflowReadModelService.getMyPendingTasks(8L, 1)).thenReturn(PageResult.of(List.of(pendingTask), 1, 1, 10));
         when(userNotificationRepository.countByRecipientUserIdAndStatus(8L, "UNREAD")).thenReturn(2L);
         when(userNotificationRepository.countApprovalLikeUnreadByRecipientUserId(8L)).thenReturn(1L);
         when(userNotificationRepository.countReminderByRecipientUserIdAndStatus(8L, "UNREAD")).thenReturn(1L);
@@ -100,7 +101,7 @@ class MessageCenterApplicationServiceTest {
         assertEquals(2, listResponse.items().size());
         assertTrue(listResponse.items().stream().anyMatch(item -> "APPROVAL_TODO".equals(item.bizType())));
         assertTrue(listResponse.items().stream().anyMatch(item -> "REMINDER_NOTICE".equals(item.bizType())));
-        verify(workflowReadModelService, never()).getMyPendingTasks(8L, 1);
+        verify(workflowReadModelService, never()).getMyPendingTasks(8L, 1, 100);
     }
 
     @Test
@@ -283,6 +284,121 @@ class MessageCenterApplicationServiceTest {
         assertEquals(1, listResponse.total());
         assertEquals(1, listResponse.items().size());
         assertEquals("workflow:31:801", listResponse.items().get(0).messageId());
+    }
+
+    @Test
+    @DisplayName("2026-10-30 定案：同批次异动多实例聚合为 1 条待办，计数按批次=1")
+    void shouldAggregateSameBatchMutationTodosIntoOneMessage() {
+        List<WorkflowTaskResponse> tasks = List.of(
+                mutationTask("batch-88", 21L, 501L, "战略发展部", "党委宣传部"),
+                mutationTask("batch-88", 22L, 502L, "战略发展部", "党委宣传部"),
+                mutationTask("batch-88", 23L, 503L, "战略发展部", "党委宣传部"));
+        when(workflowReadModelService.getMyPendingTasks(8L, 1)).thenReturn(PageResult.of(tasks, 3, 1, 10));
+        when(workflowReadModelService.countMyPendingTodoMessages(8L)).thenReturn(1L);
+
+        MessageCenterModels.Summary summary = messageCenterApplicationService.getSummary(8L);
+        MessageCenterModels.ListResponse listResponse =
+                messageCenterApplicationService.getMessages(8L, "TODO", 1, 100, null, false);
+
+        assertEquals(1, summary.todoCount());
+        assertEquals(1, listResponse.total());
+        assertEquals(1, listResponse.items().size());
+        MessageCenterModels.Item item = listResponse.items().get(0);
+        assertEquals("workflow-mutation-batch:batch-88", item.messageId());
+        // 文案与审批中心卡片一致，且不出现任何按条目计数的表述
+        assertEquals("异动审批 · 战略发展部 -> 党委宣传部", item.title());
+        assertEquals("batch-88", item.metadata().get("batchId"));
+        assertEquals(3, ((List<?>) item.metadata().get("instanceIds")).size());
+    }
+
+    @Test
+    @DisplayName("2026-10-30 定案：不同批次各自独立成条，PLAN/PLAN_REPORT 待办不受影响")
+    void shouldKeepDistinctMutationBatchesAndUnaffectedOtherFlows() {
+        WorkflowTaskResponse planTask = WorkflowTaskResponse.builder()
+                .taskId("701")
+                .instanceId("31")
+                .taskName("部门负责人审批")
+                .currentStepName("部门负责人审批")
+                .entityType("PLAN")
+                .entityId(901L)
+                .planName("2026年度计划")
+                .flowCode("PLAN_DISPATCH_STRATEGY")
+                .sourceOrgName("教务处")
+                .assigneeName("李主任")
+                .createdTime(LocalDateTime.of(2026, 4, 17, 12, 0))
+                .build();
+        WorkflowTaskResponse reportTask = WorkflowTaskResponse.builder()
+                .taskId("702")
+                .instanceId("32")
+                .taskName("学院审核人审批")
+                .currentStepName("学院审核人审批")
+                .entityType("PLAN_REPORT")
+                .entityId(902L)
+                .flowCode("PLAN_APPROVAL_COLLEGE")
+                .sourceOrgName("计算机学院")
+                .targetOrgName("教务处")
+                .assigneeName("王主任")
+                .createdTime(LocalDateTime.of(2026, 4, 17, 11, 0))
+                .build();
+        List<WorkflowTaskResponse> tasks = List.of(
+                mutationTask("batch-a", 21L, 501L, "战略发展部", "党委宣传部"),
+                mutationTask("batch-a", 22L, 502L, "战略发展部", "党委宣传部"),
+                mutationTask("batch-b", 23L, 503L, "战略发展部", "校长办公室"),
+                planTask,
+                reportTask);
+        when(workflowReadModelService.getMyPendingTasks(8L, 1)).thenReturn(PageResult.of(tasks, 5, 1, 10));
+        // 批次a=1 + 批次b=1 + PLAN=1 + PLAN_REPORT=1
+        when(workflowReadModelService.countMyPendingTodoMessages(8L)).thenReturn(4L);
+
+        MessageCenterModels.ListResponse listResponse =
+                messageCenterApplicationService.getMessages(8L, "TODO", 1, 100, null, false);
+
+        assertEquals(4, listResponse.total());
+        assertEquals(4, listResponse.items().size());
+        assertTrue(listResponse.items().stream().anyMatch(item -> "workflow-mutation-batch:batch-a".equals(item.messageId())
+                && "异动审批 · 战略发展部 -> 党委宣传部".equals(item.title())));
+        assertTrue(listResponse.items().stream().anyMatch(item -> "workflow-mutation-batch:batch-b".equals(item.messageId())
+                && "异动审批 · 战略发展部 -> 校长办公室".equals(item.title())));
+        assertTrue(listResponse.items().stream().anyMatch(item -> "workflow:31:701".equals(item.messageId())
+                && "计划审批 · 教务处".equals(item.title())));
+        assertTrue(listResponse.items().stream().anyMatch(item -> "workflow:32:702".equals(item.messageId())
+                && "上报审批 · 计算机学院→教务处".equals(item.title())));
+    }
+
+    @Test
+    @DisplayName("2026-10-30 定案：批次级 messageId 可重建聚合后的待办消息详情")
+    void shouldResolveMutationBatchMessageDetailByBatchId() {
+        List<WorkflowTaskResponse> tasks = List.of(
+                mutationTask("batch-88", 21L, 501L, "战略发展部", "党委宣传部"),
+                mutationTask("batch-88", 22L, 502L, "战略发展部", "党委宣传部"));
+        when(workflowReadModelService.getMyPendingTasksByBatchId(9L, "batch-88")).thenReturn(tasks);
+
+        MessageCenterModels.Item detail =
+                messageCenterApplicationService.getMessageDetail(9L, "workflow-mutation-batch:batch-88");
+
+        assertEquals("workflow-mutation-batch:batch-88", detail.messageId());
+        assertEquals("异动审批 · 战略发展部 -> 党委宣传部", detail.title());
+        assertEquals("batch-88", detail.metadata().get("batchId"));
+        assertEquals(2, ((List<?>) detail.metadata().get("instanceIds")).size());
+    }
+
+    private WorkflowTaskResponse mutationTask(
+            String batchId, Long instanceId, Long taskId, String sourceOrgName, String targetOrgName) {
+        return WorkflowTaskResponse.builder()
+                .taskId(String.valueOf(taskId))
+                .instanceId(String.valueOf(instanceId))
+                .taskName("战略发展部负责人审批")
+                .currentStepName("战略发展部负责人审批")
+                .entityType("INDICATOR")
+                .entityId(instanceId * 10)
+                .flowCode("PLAN_MUTATION_STRATEGY")
+                .flowName("指标异动审批（战略发展部）")
+                .batchId(batchId)
+                .sourceOrgName(sourceOrgName)
+                .targetOrgName(targetOrgName)
+                .assigneeName("审批人甲")
+                .createdTime(LocalDateTime.of(2026, 4, 17, 9, 0))
+                .build();
     }
 
     private UserNotification notification(
