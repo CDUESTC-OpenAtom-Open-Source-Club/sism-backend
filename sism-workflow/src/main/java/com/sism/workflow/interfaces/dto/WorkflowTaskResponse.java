@@ -47,5 +47,11 @@ public class WorkflowTaskResponse {
     private LocalDateTime startedAt;
     private LocalDateTime dueDate;
     private String claimUrl; // 前端可以直接打开的链接
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 异动批次号（仅 PLAN_MUTATION_STRATEGY 流程有值），消息中心按它把
+     * 同一次「发起异动」的多个审批实例聚合成 1 条待办消息。
+     */
+    private String batchId;
     private Map<String, Object> variables;
 }

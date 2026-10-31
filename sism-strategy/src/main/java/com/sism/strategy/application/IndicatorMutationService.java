@@ -122,9 +122,18 @@ public class IndicatorMutationService {
         after.put("indicator_desc", current.get("indicator_desc"));
         after.put("weight_percent", current.get("weight_percent"));
         after.put("remark", current.get("remark"));
+        // 2026-10-30 缺陷修复（新增异动角标按字段过滤）：changed_fields 必须包含
+        // indicator_desc/weight_percent/remark 三个键——前端「权重」「下发备注」列的
+        // 「(新增)」角标按各自字段键匹配审计记录，只落 indicator_desc 会导致
+        // 权重/备注填了值但圆点不显示。before 统一记 "(新增)"，after 与指标当前值一致
+        // （weight_percent 等数值列沿用 String.valueOf 转字符串）。
         Map<String, Object> changedFields = new LinkedHashMap<>();
         changedFields.put("indicator_desc", Map.of("before", "(新增)", "after",
                 String.valueOf(current.get("indicator_desc"))));
+        changedFields.put("weight_percent", Map.of("before", "(新增)", "after",
+                String.valueOf(current.get("weight_percent"))));
+        changedFields.put("remark", Map.of("before", "(新增)", "after",
+                String.valueOf(current.get("remark"))));
 
         insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, null);
 
@@ -497,9 +506,16 @@ public class IndicatorMutationService {
         after.put("indicator_desc", current.get("indicator_desc"));
         after.put("weight_percent", current.get("weight_percent"));
         after.put("remark", current.get("remark"));
+        // 2026-10-30 缺陷修复：与 initiateForCreatedIndicator 同口径——前端「发起异动」
+        // 对新增行走批量入口（create=true → 本方法），changed_fields 只落 indicator_desc
+        // 会让「权重」「下发备注」列的「(新增)」角标匹配不到审计记录而不显示。
         Map<String, Object> changedFields = new LinkedHashMap<>();
         changedFields.put("indicator_desc", Map.of("before", "(新增)", "after",
                 String.valueOf(current.get("indicator_desc"))));
+        changedFields.put("weight_percent", Map.of("before", "(新增)", "after",
+                String.valueOf(current.get("weight_percent"))));
+        changedFields.put("remark", Map.of("before", "(新增)", "after",
+                String.valueOf(current.get("remark"))));
 
         insertAuditLog(indicatorId, before, after, changedFields, operatorUserId, batchId);
 
@@ -917,6 +933,84 @@ public class IndicatorMutationService {
                     row.put("changed_fields", parseJson(rs.getString("changed_fields_json")));
                     row.put("before_json", parseJson(rs.getString("before_json")));
                     row.put("after_json", parseJson(rs.getString("after_json")));
+                    return row;
+                },
+                orgId, orgId, orgId, orgId);
+    }
+
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：「退回待重报」的异动链清单
+     * （填报人侧「取消异动」按钮与被驳回可感知提示的数据源）。
+     *
+     * 判定口径：PLAN_MUTATION_STRATEGY 异动实例 status=WITHDRAWN 且 completed_at
+     * IS NULL（驳回退回填报人后 RejectWorkflowUseCase 置的活链状态）。2026-10-30
+     * 定案修订（异动撤回=退回填报人活链）：发起人在审批中的「撤回」改走
+     * withdrawToRequester 转移，同样落 WITHDRAWN + completed_at NULL + 退回提交
+     * 步骤（CancelWorkflowUseCase.withdrawToRequesterBatch），撤回后的链由本查询
+     * 自然认领（红色横幅/取消异动入口随之可用）；旧 cancel() 终结链
+     * （completed_at 非空）仍被天然排除。退回提交步骤识别（WITHDRAWN 步骤的
+     * 审批人为发起人或步骤名含「提交」）与
+     * WorkflowBusinessStatusSyncService.hasReturnedSubmitStep 同口径。
+     * 审批中心「异动卡」的 IN_REVIEW 过滤不受本查询影响。
+     */
+    public java.util.List<java.util.Map<String, Object>> listReturnedMutationChains(Long orgId) {
+        if (orgId == null) {
+            return java.util.List.of();
+        }
+        return jdbcTemplate.query(
+                """
+                SELECT ai.id AS instance_id,
+                       ai.entity_id AS indicator_id,
+                       ai.entity_type AS entity_type,
+                       ai.batch_id AS batch_id,
+                       ai.requester_id AS requester_id,
+                       left(COALESCE(i.indicator_desc, t.name), 60) AS indicator_desc,
+                       ai.status,
+                       ai.created_at,
+                       rej.reject_comment AS reject_comment,
+                       ru.real_name AS submitter_name
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                LEFT JOIN public.indicator i ON ai.entity_type = 'INDICATOR'
+                    AND i.id = ai.entity_id AND COALESCE(i.is_deleted, false) = false
+                LEFT JOIN public.sys_task t ON ai.entity_type = 'TASK'
+                    AND t.task_id = ai.entity_id AND COALESCE(t.is_deleted, false) = false
+                LEFT JOIN public.sys_user ru ON ru.id = ai.requester_id
+                LEFT JOIN LATERAL (
+                    SELECT si.comment AS reject_comment
+                    FROM public.audit_step_instance si
+                    WHERE si.instance_id = ai.id AND si.status = 'REJECTED'
+                    ORDER BY si.step_no DESC LIMIT 1
+                ) rej ON true
+                WHERE (
+                        (i.target_org_id = ? OR i.owner_org_id = ?)
+                        OR (t.org_id = ? OR t.created_by_org_id = ?)
+                      )
+                  AND ai.status = 'WITHDRAWN'
+                  AND ai.completed_at IS NULL
+                  AND EXISTS (
+                      SELECT 1
+                      FROM public.audit_step_instance rsi
+                      WHERE rsi.instance_id = ai.id
+                        AND rsi.status = 'WITHDRAWN'
+                        AND (rsi.approver_id = ai.requester_id OR rsi.step_name LIKE '%提交%')
+                  )
+                ORDER BY ai.created_at DESC
+                LIMIT 50
+                """,
+                (rs, rowNum) -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("instance_id", rs.getLong("instance_id"));
+                    row.put("indicator_id", rs.getLong("indicator_id"));
+                    row.put("entity_type", rs.getString("entity_type"));
+                    row.put("batch_id", rs.getString("batch_id"));
+                    row.put("requester_id", rs.getObject("requester_id"));
+                    row.put("indicator_desc", rs.getString("indicator_desc"));
+                    row.put("status", rs.getString("status"));
+                    row.put("created_at", rs.getTimestamp("created_at"));
+                    row.put("reject_comment", rs.getString("reject_comment"));
+                    row.put("submitter_name", rs.getString("submitter_name"));
                     return row;
                 },
                 orgId, orgId, orgId, orgId);

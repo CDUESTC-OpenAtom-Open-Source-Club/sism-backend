@@ -47,6 +47,11 @@ public class WorkflowQueryRepositoryImpl implements WorkflowQueryRepository {
     }
 
     @Override
+    public List<AuditInstance> findPendingAuditInstancesByUserIdAndBatchId(Long userId, String batchId) {
+        return jpaWorkflowRepository.findPendingAuditInstancesByUserIdAndBatchId(userId, batchId);
+    }
+
+    @Override
     public List<AuditInstance> findApprovedAuditInstancesByUserId(Long userId) {
         return jpaWorkflowRepository.findApprovedAuditInstancesByUserId(userId);
     }

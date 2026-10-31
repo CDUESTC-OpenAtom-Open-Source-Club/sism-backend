@@ -437,6 +437,102 @@ class WorkflowReadModelServiceTest {
         assertEquals(1, result.get(0).getRoundNo());
     }
 
+    // ==================== 2026-10-30 审批历史准入（取消异动终态） ====================
+
+    @Test
+    void listInstanceHistoryByBusiness_shouldIncludeCancelledMutationChainLikeApproved() {
+        AuditFlowDef flowDef = new AuditFlowDef();
+        AuditStepDef terminalStep = new AuditStepDef();
+        terminalStep.setId(10L);
+        terminalStep.setIsTerminal(true);
+        flowDef.setSteps(List.of(terminalStep));
+
+        AuditInstance approved = new AuditInstance();
+        approved.setId(310L);
+        approved.setFlowDefId(3L);
+        approved.setEntityType("INDICATOR");
+        approved.setEntityId(501L);
+        approved.setRequesterId(100L);
+        approved.setStatus(AuditInstance.STATUS_APPROVED);
+        approved.setStartedAt(LocalDateTime.of(2026, 3, 20, 10, 0));
+        approved.setCompletedAt(LocalDateTime.of(2026, 3, 20, 12, 0));
+        AuditStepInstance approvedTerminal = new AuditStepInstance();
+        approvedTerminal.setId(311L);
+        approvedTerminal.setStepDefId(10L);
+        approvedTerminal.setStepNo(4);
+        approvedTerminal.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        approved.addStepInstance(approvedTerminal);
+
+        // 填报人「取消异动」终结的链：CANCELLED（未走到终审步骤也必须进历史）
+        AuditInstance cancelled = new AuditInstance();
+        cancelled.setId(312L);
+        cancelled.setFlowDefId(3L);
+        cancelled.setEntityType("INDICATOR");
+        cancelled.setEntityId(501L);
+        cancelled.setRequesterId(100L);
+        cancelled.setStatus(AuditInstance.STATUS_CANCELLED);
+        cancelled.setStartedAt(LocalDateTime.of(2026, 3, 21, 10, 0));
+        cancelled.setCompletedAt(LocalDateTime.of(2026, 3, 21, 11, 0));
+        AuditStepInstance returnedSubmit = new AuditStepInstance();
+        returnedSubmit.setId(313L);
+        returnedSubmit.setStepDefId(9L);
+        returnedSubmit.setStepNo(3);
+        returnedSubmit.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
+        cancelled.addStepInstance(returnedSubmit);
+
+        when(auditInstanceRepository.findByBusinessTypeAndBusinessId("INDICATOR", 501L))
+                .thenReturn(List.of(approved, cancelled));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(3L)).thenReturn(flowDef);
+        when(workflowBusinessContextPort.getBusinessSummary("INDICATOR", 501L))
+                .thenReturn(Optional.of(new WorkflowBusinessContextPort.BusinessSummary(501L, "Indicator 501", 35L, "战略发展部", 44L, "教务处", "Indicator 501")));
+        when(userProvider.findIdentity(100L)).thenReturn(Optional.of(namedUser(100L, "填报人")));
+
+        List<WorkflowHistoryCardResponse> result = newService().listInstanceHistoryByBusiness("INDICATOR", 501L);
+
+        // 已通过链与已取消链同样归入审批历史
+        assertEquals(2, result.size());
+        assertEquals("312", result.get(0).getInstanceId());
+        assertEquals(AuditInstance.STATUS_CANCELLED, result.get(0).getStatus());
+        assertNotNull(result.get(0).getCompletedAt());
+        assertEquals("310", result.get(1).getInstanceId());
+    }
+
+    @Test
+    void listInstanceHistoryByBusiness_shouldExcludeReturnedAwaitingResubmission() {
+        // 驳回退回待重报：WITHDRAWN、completedAt 为空——活链，不进历史
+        AuditInstance returnedForResubmission = new AuditInstance();
+        returnedForResubmission.setId(320L);
+        returnedForResubmission.setFlowDefId(3L);
+        returnedForResubmission.setEntityType("INDICATOR");
+        returnedForResubmission.setEntityId(502L);
+        returnedForResubmission.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        returnedForResubmission.setCompletedAt(null);
+        returnedForResubmission.setStartedAt(LocalDateTime.of(2026, 3, 22, 10, 0));
+        AuditStepInstance returnedSubmit = new AuditStepInstance();
+        returnedSubmit.setId(321L);
+        returnedSubmit.setStepDefId(9L);
+        returnedSubmit.setStepNo(3);
+        returnedSubmit.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
+        returnedForResubmission.addStepInstance(returnedSubmit);
+
+        // 发起人审批中撤回：WITHDRAWN、completedAt 非空——维持既有不进历史口径
+        AuditInstance requesterWithdrawn = new AuditInstance();
+        requesterWithdrawn.setId(322L);
+        requesterWithdrawn.setFlowDefId(3L);
+        requesterWithdrawn.setEntityType("INDICATOR");
+        requesterWithdrawn.setEntityId(502L);
+        requesterWithdrawn.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        requesterWithdrawn.setStartedAt(LocalDateTime.of(2026, 3, 21, 10, 0));
+        requesterWithdrawn.setCompletedAt(LocalDateTime.of(2026, 3, 21, 10, 5));
+
+        when(auditInstanceRepository.findByBusinessTypeAndBusinessId("INDICATOR", 502L))
+                .thenReturn(List.of(returnedForResubmission, requesterWithdrawn));
+
+        List<WorkflowHistoryCardResponse> result = newService().listInstanceHistoryByBusiness("INDICATOR", 502L);
+
+        assertTrue(result.isEmpty());
+    }
+
     @Test
     void getInstanceDetailByBusiness_shouldReturnLatestInReviewInstance() {
         AuditInstance rejected = new AuditInstance();
@@ -472,6 +568,95 @@ class WorkflowReadModelServiceTest {
         assertEquals("402", detail.getInstanceId());
         assertEquals("IN_REVIEW", detail.getStatus());
         assertEquals("PLAN_APPROVAL_FUNCDEPT", detail.getFlowCode());
+    }
+
+    @Test
+    void countMyPendingTodoMessages_shouldCountMutationBatchAsOneTodo() {
+        // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+        // 消息中心专用计数与列表严格同口径：同一 batch 的 3 个异动实例计数=1；
+        // 不同批次独立；PLAN / PLAN_REPORT 不受影响（仍按实例计 1）。
+        // 共享的 countMyPendingTasks 语义不变（此处不触碰）。
+        when(workflowQueryRepository.findPendingTaskIdentitiesByUserId(101L)).thenReturn(List.of(
+                identity(1L, 11L, "INDICATOR", 111L, "batch-88"),
+                identity(2L, 12L, "INDICATOR", 112L, "batch-88"),
+                identity(3L, 13L, "INDICATOR", 113L, "batch-88"),
+                identity(4L, 14L, "INDICATOR", 114L, "batch-77"),
+                identity(5L, 15L, "PLAN", 901L, null),
+                identity(6L, 16L, "PLAN_REPORT", 902L, null)));
+
+        long count = newService().countMyPendingTodoMessages(101L);
+
+        assertEquals(4L, count);
+    }
+
+    @Test
+    void countMyPendingTodoMessages_shouldCountLegacyTasksWithoutBatchIndividually() {
+        when(workflowQueryRepository.findPendingTaskIdentitiesByUserId(101L)).thenReturn(List.of(
+                identity(1L, 11L, "PLAN", 901L, null),
+                identity(2L, 12L, "PLAN", 902L, null)));
+
+        assertEquals(2L, newService().countMyPendingTodoMessages(101L));
+    }
+
+    @Test
+    void countMyPendingTasks_shouldKeepSharedStepLevelSemantics() {
+        // 边界约束（2026-10-30）：共享方法语义不得改动——仍按待审步骤实例计数
+        when(workflowQueryRepository.countPendingTasksByUserId(101L)).thenReturn(7L);
+
+        assertEquals(7L, newService().countMyPendingTasks(101L));
+    }
+
+    @Test
+    void getMyPendingTasksByBatchId_shouldReturnBatchTasksWithBatchId() {
+        AuditInstance instance = new AuditInstance();
+        instance.setId(21L);
+        instance.setFlowDefId(2L);
+        instance.setEntityType("INDICATOR");
+        instance.setEntityId(111L);
+        instance.setBatchId("batch-88");
+        instance.setRequesterOrgId(35L);
+        instance.setStartedAt(LocalDateTime.now().minusHours(1));
+
+        AuditStepInstance pending = new AuditStepInstance();
+        pending.setId(210L);
+        pending.setStepDefId(5L);
+        pending.setStepNo(2);
+        pending.setStepName("战略发展部负责人审批");
+        pending.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        pending.setApproverId(101L);
+        pending.setApproverOrgId(35L);
+        pending.setCreatedAt(LocalDateTime.now());
+        instance.addStepInstance(pending);
+
+        AuditFlowDef flowDef = new AuditFlowDef();
+        flowDef.setFlowCode("PLAN_MUTATION_STRATEGY");
+        flowDef.setFlowName("指标异动审批（战略发展部）");
+        AuditStepDef stepDef = new AuditStepDef();
+        stepDef.setId(5L);
+        stepDef.setRoleId(3L);
+        flowDef.setSteps(List.of(stepDef));
+
+        when(workflowQueryRepository.findPendingAuditInstancesByUserIdAndBatchId(101L, "batch-88"))
+                .thenReturn(List.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(2L)).thenReturn(flowDef);
+        when(userProvider.findIdentity(101L)).thenReturn(Optional.of(new UserIdentity(101L, "approver101", "审批人A", 35L, true)));
+
+        List<WorkflowTaskResponse> tasks = newService().getMyPendingTasksByBatchId(101L, "batch-88");
+
+        assertEquals(1, tasks.size());
+        assertEquals("batch-88", tasks.get(0).getBatchId());
+        assertEquals("PLAN_MUTATION_STRATEGY", tasks.get(0).getFlowCode());
+        assertEquals("INDICATOR", tasks.get(0).getEntityType());
+    }
+
+    @Test
+    void getMyPendingTasksByBatchId_shouldReturnEmptyForBlankBatchId() {
+        assertTrue(newService().getMyPendingTasksByBatchId(101L, " ").isEmpty());
+    }
+
+    private WorkflowQueryRepository.PendingTaskIdentity identity(
+            Long stepInstanceId, Long instanceId, String entityType, Long entityId, String batchId) {
+        return new WorkflowQueryRepository.PendingTaskIdentity(stepInstanceId, instanceId, entityType, entityId, batchId);
     }
 
     private UserIdentity namedUser(Long id, String realName) {

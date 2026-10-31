@@ -76,6 +76,8 @@ public class IndicatorController {
     }
 
     private final com.sism.strategy.application.IndicatorMutationService indicatorMutationService;
+    /** 2026-10-30（异动驳回后重报/取消闭环）：「取消异动」终态动作走工作流应用服务。 */
+    private final com.sism.workflow.application.BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final StrategyApplicationService strategyApplicationService;
     private final BatchIndicatorDistributionApplicationService batchIndicatorDistributionApplicationService;
     private final OrganizationRepository organizationRepository;
@@ -1043,6 +1045,67 @@ public class IndicatorController {
     public ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> mutationApprovals(
             @org.springframework.web.bind.annotation.RequestParam Long orgId) {
         return ResponseEntity.ok(ApiResponse.success(indicatorMutationService.listMutationApprovals(orgId)));
+    }
+
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：「退回待重报」异动链清单——
+     * 填报人侧「取消异动」按钮可点性与「有被驳回异动」提示的数据源。
+     * 只查驳回退回的活链（WITHDRAWN、completed_at 为空、存在退回提交步骤），
+     * 不含审批中（IN_REVIEW）与已终结实例，审批中心异动卡口径不受影响。
+     */
+    @org.springframework.web.bind.annotation.GetMapping("/mutations/returned")
+    @Operation(summary = "退回待重报异动链清单", description = "按组织查被驳回退回填报人的异动活链（取消异动按钮数据源）")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> returnedMutationChains(
+            @org.springframework.web.bind.annotation.RequestParam Long orgId) {
+        return ResponseEntity.ok(
+                ApiResponse.success(indicatorMutationService.listReturnedMutationChains(orgId)));
+    }
+
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：「取消异动」终态动作。
+     * 仅异动发起人可操作；把该实例所在批次的全部「退回待重报」异动实例一次
+     * 置为 CANCELLED（completedAt=now），整链归入审批历史。权限、流程范围
+     * （PLAN_MUTATION_STRATEGY）与状态校验在应用层/领域层完成。
+     */
+    @org.springframework.web.bind.annotation.PostMapping("/mutations/{instanceId}/cancel-returned")
+    @Operation(summary = "取消异动（终结退回待重报的整批异动链）",
+            description = "仅异动发起人；同批次全部退回待重报实例一次性置为 CANCELLED 并归入审批历史")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<Long>>> cancelReturnedMutation(
+            @org.springframework.web.bind.annotation.PathVariable String instanceId,
+            @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
+        Long operator = currentUser == null ? null : currentUser.getId();
+        java.util.List<Long> cancelledIds = businessWorkflowApplicationService
+                .cancelReturnedMutationBatch(instanceId, operator)
+                .stream()
+                .map(instance -> instance.getId())
+                .toList();
+        return ResponseEntity.ok(ApiResponse.success("已取消异动", cancelledIds));
+    }
+
+    /**
+     * 2026-10-30 用户定案（异动撤回=退回填报人活链）：发起人在审批中的「撤回」
+     * 退回填报人节点、链保持存活。仅异动发起人可操作；把该实例所在批次的全部
+     * 在审异动实例一次性退回（实例 WITHDRAWN、completed_at 保持 NULL、追加
+     * 退回提交步骤，形态与驳回退回填报人同构），不进审批历史。权限、流程范围
+     * （PLAN_MUTATION_STRATEGY）与状态校验在应用层/领域层完成。之后可修改后
+     * 重新发起（resume 复用同链），或「取消异动」终结归审批历史。
+     */
+    @org.springframework.web.bind.annotation.PostMapping("/mutations/{instanceId}/withdraw")
+    @Operation(summary = "撤回异动（退回填报人节点，链保持存活）",
+            description = "仅异动发起人；同批次全部在审异动实例一次性退回填报人（WITHDRAWN 且未完结），可修改后重新发起或取消异动终结")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<java.util.List<Long>>> withdrawMutation(
+            @org.springframework.web.bind.annotation.PathVariable String instanceId,
+            @AuthenticationPrincipal com.sism.shared.application.dto.CurrentUser currentUser) {
+        Long operator = currentUser == null ? null : currentUser.getId();
+        java.util.List<Long> withdrawnIds = businessWorkflowApplicationService
+                .withdrawMutationBatchToRequester(instanceId, operator)
+                .stream()
+                .map(instance -> instance.getId())
+                .toList();
+        return ResponseEntity.ok(ApiResponse.success("已撤回异动", withdrawnIds));
     }
 
     @org.springframework.web.bind.annotation.GetMapping("/{id}/mutation-history")

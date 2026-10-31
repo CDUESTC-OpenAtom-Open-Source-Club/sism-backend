@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
@@ -161,6 +163,237 @@ class BusinessWorkflowApplicationServiceTest {
     void cancelInstance_shouldRejectNonNumericInstanceId() {
         assertThrows(IllegalArgumentException.class,
                 () -> businessWorkflowApplicationService.cancelInstance("not-a-number", 1L));
+    }
+
+    // ==================== 2026-10-30 取消异动（退回待重报整链终结） ====================
+
+    /** 构造 PLAN_MUTATION_STRATEGY 异动链的「驳回退回填报人」实例（WITHDRAWN、未完结）。 */
+    private AuditInstance returnedMutationInstance(
+            Long id, Long flowDefId, String batchId, Long entityId, Long requesterId) {
+        AuditInstance instance = new AuditInstance();
+        instance.setId(id);
+        instance.setFlowDefId(flowDefId);
+        instance.setEntityType("INDICATOR");
+        instance.setEntityId(entityId);
+        instance.setBatchId(batchId);
+        instance.setRequesterId(requesterId);
+        instance.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        instance.setCompletedAt(null);
+
+        var rejectedStep = new com.sism.workflow.domain.runtime.AuditStepInstance();
+        rejectedStep.setStepNo(2);
+        rejectedStep.setStatus(AuditInstance.STEP_STATUS_REJECTED);
+        rejectedStep.setApproverId(300L);
+        instance.addStepInstance(rejectedStep);
+
+        var returnedSubmit = new com.sism.workflow.domain.runtime.AuditStepInstance();
+        returnedSubmit.setStepNo(3);
+        returnedSubmit.setStatus(AuditInstance.STEP_STATUS_WITHDRAWN);
+        returnedSubmit.setApproverId(requesterId);
+        returnedSubmit.setComment("驳回后退回填报人重新提交");
+        instance.addStepInstance(returnedSubmit);
+        return instance;
+    }
+
+    private AuditFlowDef mutationFlowDef(Long id) {
+        AuditFlowDef flowDef = new AuditFlowDef();
+        flowDef.setId(id);
+        flowDef.setFlowCode("PLAN_MUTATION_STRATEGY");
+        flowDef.setFlowName("指标异动审批（战略发展部）");
+        flowDef.setEntityType("INDICATOR");
+        return flowDef;
+    }
+
+    @Test
+    void cancelReturnedMutationBatch_shouldRejectNonRequester() {
+        AuditInstance instance = returnedMutationInstance(60L, 8L, "batch-77", 2001L, 100L);
+        when(auditInstanceRepository.findById(60L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef(8L));
+
+        assertThrows(SecurityException.class,
+                () -> businessWorkflowApplicationService.cancelReturnedMutationBatch("60", 999L));
+
+        verify(workflowApplicationService, never()).cancelReturnedMutationBatch(any());
+        verify(auditInstanceRepository, never()).save(any(AuditInstance.class));
+    }
+
+    @Test
+    void cancelReturnedMutationBatch_shouldRejectNonMutationChain() {
+        AuditInstance instance = returnedMutationInstance(61L, 9L, "batch-78", 2002L, 100L);
+        AuditFlowDef reportFlow = new AuditFlowDef();
+        reportFlow.setId(9L);
+        reportFlow.setFlowCode("PLAN_APPROVAL_FUNCDEPT");
+        when(auditInstanceRepository.findById(61L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(9L)).thenReturn(reportFlow);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> businessWorkflowApplicationService.cancelReturnedMutationBatch("61", 100L));
+
+        verify(workflowApplicationService, never()).cancelReturnedMutationBatch(any());
+    }
+
+    @Test
+    void cancelReturnedMutationBatch_shouldCancelWholeBatchByBatchId() {
+        AuditInstance first = returnedMutationInstance(70L, 8L, "batch-88", 2001L, 100L);
+        AuditInstance second = returnedMutationInstance(71L, 8L, "batch-88", 2002L, 100L);
+        when(auditInstanceRepository.findById(70L)).thenReturn(Optional.of(first));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef(8L));
+        when(auditInstanceRepository.findByBatchId("batch-88")).thenReturn(List.of(first, second));
+        when(workflowApplicationService.cancelReturnedMutationBatch(any()))
+                .thenAnswer(invocation -> {
+                    List<AuditInstance> batch = invocation.getArgument(0);
+                    batch.forEach(item -> item.cancelReturned());
+                    return batch;
+                });
+
+        List<AuditInstance> cancelled =
+                businessWorkflowApplicationService.cancelReturnedMutationBatch("70", 100L);
+
+        assertEquals(2, cancelled.size());
+        assertEquals("70", cancelled.get(0).getId().toString());
+        for (AuditInstance item : cancelled) {
+            assertEquals(AuditInstance.STATUS_CANCELLED, item.getStatus());
+            assertNotNull(item.getCompletedAt());
+        }
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<AuditInstance>> batchCaptor = ArgumentCaptor.forClass(List.class);
+        verify(workflowApplicationService).cancelReturnedMutationBatch(batchCaptor.capture());
+        assertEquals(2, batchCaptor.getValue().size());
+        // 终结后清理钉钉待办（驳回时已清理过一次，幂等兜底）
+        verify(dingTalkTodoProvider).completeInstanceTodos(70L);
+        verify(dingTalkTodoProvider).completeInstanceTodos(71L);
+    }
+
+    @Test
+    void cancelReturnedMutationBatch_shouldCancelSingleInstanceWithoutBatchId() {
+        AuditInstance instance = returnedMutationInstance(72L, 8L, null, 2003L, 100L);
+        when(auditInstanceRepository.findById(72L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef(8L));
+        when(workflowApplicationService.cancelReturnedMutationBatch(any()))
+                .thenAnswer(invocation -> {
+                    List<AuditInstance> batch = invocation.getArgument(0);
+                    batch.forEach(item -> item.cancelReturned());
+                    return batch;
+                });
+
+        List<AuditInstance> cancelled =
+                businessWorkflowApplicationService.cancelReturnedMutationBatch("72", 100L);
+
+        assertEquals(1, cancelled.size());
+        assertEquals(AuditInstance.STATUS_CANCELLED, cancelled.get(0).getStatus());
+        // 无批次号的孤例不查 batch，直接终结自身
+        verify(auditInstanceRepository, never()).findByBatchId(any());
+    }
+
+    // ==================== 2026-10-30 异动撤回（退回填报人活链） ====================
+
+    /** 构造 PLAN_MUTATION_STRATEGY 异动链的「审批中」实例（提交步骤 APPROVED + 审批 PENDING）。 */
+    private AuditInstance inReviewMutationInstance(
+            Long id, Long flowDefId, String batchId, Long entityId, Long requesterId) {
+        AuditInstance instance = new AuditInstance();
+        instance.setId(id);
+        instance.setFlowDefId(flowDefId);
+        instance.setEntityType("INDICATOR");
+        instance.setEntityId(entityId);
+        instance.setBatchId(batchId);
+        instance.setRequesterId(requesterId);
+        instance.setStatus(AuditInstance.STATUS_PENDING);
+        instance.setCompletedAt(null);
+
+        var submitStep = new com.sism.workflow.domain.runtime.AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitStep.setApproverId(requesterId);
+        instance.addStepInstance(submitStep);
+
+        var currentApproval = new com.sism.workflow.domain.runtime.AuditStepInstance();
+        currentApproval.setStepNo(2);
+        currentApproval.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        currentApproval.setApproverId(300L);
+        instance.addStepInstance(currentApproval);
+        return instance;
+    }
+
+    @Test
+    void withdrawMutationBatchToRequester_shouldRejectNonRequester() {
+        AuditInstance instance = inReviewMutationInstance(80L, 8L, "batch-101", 3001L, 100L);
+        when(auditInstanceRepository.findById(80L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef(8L));
+
+        assertThrows(SecurityException.class,
+                () -> businessWorkflowApplicationService.withdrawMutationBatchToRequester("80", 999L));
+
+        verify(workflowApplicationService, never()).withdrawMutationBatchToRequester(any());
+        verify(auditInstanceRepository, never()).save(any(AuditInstance.class));
+    }
+
+    @Test
+    void withdrawMutationBatchToRequester_shouldRejectNonMutationChain() {
+        AuditInstance instance = inReviewMutationInstance(81L, 9L, "batch-102", 3002L, 100L);
+        AuditFlowDef reportFlow = new AuditFlowDef();
+        reportFlow.setId(9L);
+        reportFlow.setFlowCode("PLAN_APPROVAL_FUNCDEPT");
+        when(auditInstanceRepository.findById(81L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(9L)).thenReturn(reportFlow);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> businessWorkflowApplicationService.withdrawMutationBatchToRequester("81", 100L));
+
+        verify(workflowApplicationService, never()).withdrawMutationBatchToRequester(any());
+    }
+
+    @Test
+    void withdrawMutationBatchToRequester_shouldWithdrawWholeBatchByBatchId() {
+        AuditInstance first = inReviewMutationInstance(90L, 8L, "batch-103", 3003L, 100L);
+        AuditInstance second = inReviewMutationInstance(91L, 8L, "batch-103", 3004L, 100L);
+        when(auditInstanceRepository.findById(90L)).thenReturn(Optional.of(first));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef(8L));
+        when(auditInstanceRepository.findByBatchId("batch-103")).thenReturn(List.of(first, second));
+        when(workflowApplicationService.withdrawMutationBatchToRequester(any()))
+                .thenAnswer(invocation -> {
+                    List<AuditInstance> batch = invocation.getArgument(0);
+                    batch.forEach(AuditInstance::withdrawToRequester);
+                    return batch;
+                });
+
+        List<AuditInstance> withdrawn =
+                businessWorkflowApplicationService.withdrawMutationBatchToRequester("90", 100L);
+
+        assertEquals(2, withdrawn.size());
+        for (AuditInstance item : withdrawn) {
+            // 链保持存活：WITHDRAWN 且 completedAt 为空（不进审批历史）
+            assertEquals(AuditInstance.STATUS_WITHDRAWN, item.getStatus());
+            assertNull(item.getCompletedAt());
+        }
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<AuditInstance>> batchCaptor = ArgumentCaptor.forClass(List.class);
+        verify(workflowApplicationService).withdrawMutationBatchToRequester(batchCaptor.capture());
+        assertEquals(2, batchCaptor.getValue().size());
+        // 退回填报人后清理原待审批人的钉钉待办
+        verify(dingTalkTodoProvider).completeInstanceTodos(90L);
+        verify(dingTalkTodoProvider).completeInstanceTodos(91L);
+    }
+
+    @Test
+    void withdrawMutationBatchToRequester_shouldWithdrawSingleInstanceWithoutBatchId() {
+        AuditInstance instance = inReviewMutationInstance(92L, 8L, null, 3005L, 100L);
+        when(auditInstanceRepository.findById(92L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(8L)).thenReturn(mutationFlowDef(8L));
+        when(workflowApplicationService.withdrawMutationBatchToRequester(any()))
+                .thenAnswer(invocation -> {
+                    List<AuditInstance> batch = invocation.getArgument(0);
+                    batch.forEach(AuditInstance::withdrawToRequester);
+                    return batch;
+                });
+
+        List<AuditInstance> withdrawn =
+                businessWorkflowApplicationService.withdrawMutationBatchToRequester("92", 100L);
+
+        assertEquals(1, withdrawn.size());
+        assertEquals(AuditInstance.STATUS_WITHDRAWN, withdrawn.get(0).getStatus());
+        assertNull(withdrawn.get(0).getCompletedAt());
+        // 无批次号的孤例不查 batch，直接退回自身
+        verify(auditInstanceRepository, never()).findByBatchId(any());
     }
 
     @Test
@@ -774,6 +1007,99 @@ class BusinessWorkflowApplicationServiceTest {
         verify(port, never()).applyAppraisalLevel(any(), any(), any());
     }
 
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 前端对整批异动逐实例调用 approveTask；同批次仍有同环节待审实例时
+     * 整批动作未完成，期间不得为单个实例写结果/推进通知。
+     */
+    @Test
+    void approveTask_shouldSuppressPerInstanceNotificationWhileMutationBatchIncomplete() {
+        AuditInstance instance = mutationBatchInstance(810L, 811L, "batch-88", AuditInstance.STATUS_PENDING);
+        AuditFlowDef flowDef = stepDefOf(instance);
+
+        ApprovalRequest request = new ApprovalRequest();
+        request.setComment("同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(811L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(61L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.approveAuditInstance(instance, 61L, "同意", null)).thenReturn(instance);
+        // 同批次仍有同环节（stepNo=3）待审实例 → 整批动作未完成
+        when(auditInstanceRepository.countPendingBatchSiblingsAtStep("batch-88", 810L, 3)).thenReturn(1L);
+        when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
+                WorkflowInstanceResponse.builder().instanceId("810").status("IN_REVIEW").build()
+        );
+
+        serviceWithPorts(List.of()).approveTask("811", request, 61L);
+
+        verify(notificationProvider, never()).createApprovalResultNotification(
+                any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean(), any()
+        );
+        verify(notificationProvider, never()).createStepAdvancedNotification(
+                any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+        verify(notificationProvider, never()).createFlowAdvancedNotification(
+                any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    /**
+     * 2026-10-30 用户定案：整批异动动作完成（批次内已无同环节待审实例）时，
+     * 只产生 1 条结果通知。
+     */
+    @Test
+    void approveTask_shouldEmitSingleResultNotificationWhenMutationBatchRoundCompletes() {
+        AuditInstance instance = mutationBatchInstance(820L, 821L, "batch-88", AuditInstance.STATUS_APPROVED);
+        instance.setRequesterId(77L);
+        AuditFlowDef flowDef = stepDefOf(instance);
+
+        ApprovalRequest request = new ApprovalRequest();
+        request.setComment("同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(821L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(62L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.approveAuditInstance(instance, 62L, "同意", null)).thenReturn(instance);
+        // 批次内已无同环节待审实例 → 本次是整批动作的最后一个，产生唯一 1 条结果通知
+        when(auditInstanceRepository.countPendingBatchSiblingsAtStep("batch-88", 820L, 3)).thenReturn(0L);
+        when(userProvider.getUserOrgId(62L)).thenReturn(Optional.empty());
+        when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
+                WorkflowInstanceResponse.builder().instanceId("820").status("APPROVED").build()
+        );
+
+        serviceWithPorts(List.of()).approveTask("821", request, 62L);
+
+        verify(notificationProvider).createApprovalResultNotification(
+                eq(77L), eq(62L), any(), eq(820L), eq("INDICATOR"), eq(820L),
+                any(), any(), eq(true), eq("同意")
+        );
+    }
+
+    /** 2026-10-30 用户定案：整批驳回同理——批次动作未完成时不逐实例写结果通知。 */
+    @Test
+    void rejectTask_shouldSuppressPerInstanceNotificationWhileMutationBatchIncomplete() {
+        AuditInstance instance = mutationBatchInstance(830L, 831L, "batch-88", AuditInstance.STATUS_REJECTED);
+        AuditFlowDef flowDef = stepDefOf(instance);
+
+        RejectionRequest request = new RejectionRequest();
+        request.setReason("不同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(831L)).thenReturn(Optional.of(instance));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(63L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.rejectAuditInstance(instance, 63L, "不同意")).thenReturn(instance);
+        when(auditInstanceRepository.countPendingBatchSiblingsAtStep("batch-88", 830L, 3)).thenReturn(1L);
+        when(workflowReadModelMapper.toInstanceResponse(instance)).thenReturn(
+                WorkflowInstanceResponse.builder().instanceId("830").status("REJECTED").build()
+        );
+
+        serviceWithPorts(List.of()).rejectTask("831", request, 63L);
+
+        verify(notificationProvider, never()).createApprovalResultNotification(
+                any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean(), any()
+        );
+    }
+
     private BusinessWorkflowApplicationService serviceWithPorts(
             List<com.sism.shared.domain.workflow.WorkflowBusinessContextPort> ports) {
         return new BusinessWorkflowApplicationService(
@@ -810,6 +1136,14 @@ class BusinessWorkflowApplicationServiceTest {
         currentStep.setStepName("分管校领导审批");
         currentStep.setStatus(AuditInstance.STEP_STATUS_PENDING);
         instance.addStepInstance(currentStep);
+        return instance;
+    }
+
+    /** 2026-10-30 用户定案：异动按计划聚合——带 batch_id 的指标异动实例构造器。 */
+    private AuditInstance mutationBatchInstance(long instanceId, long stepId, String batchId, String statusAfterApproval) {
+        AuditInstance instance = approvableInstance(instanceId, stepId, statusAfterApproval);
+        instance.setEntityType("INDICATOR");
+        instance.setBatchId(batchId);
         return instance;
     }
 

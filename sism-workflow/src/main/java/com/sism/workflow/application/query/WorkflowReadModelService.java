@@ -151,8 +151,62 @@ public class WorkflowReadModelService {
         return workflowQueryRepository.countPendingTasksByUserId(userId);
     }
 
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 消息中心专用待办计数（独立方法，不改动 {@link #countMyPendingTasks} 的共享语义）：
+     * 与列表严格同口径（本项目曾因计数与列表不一致出过 Issue #89）——
+     * 同一 batch_id 的多个异动实例（一次「发起异动」= 一个批次）只计 1；
+     * 无批次号的流程（PLAN 下发审批 / PLAN_REPORT 上报审批）行为不变，仍按实例计 1。
+     */
+    public long countMyPendingTodoMessages(Long userId) {
+        List<WorkflowQueryRepository.PendingTaskIdentity> identities =
+                workflowQueryRepository.findPendingTaskIdentitiesByUserId(userId);
+        Set<String> pendingTodoGroupKeys = new java.util.LinkedHashSet<>();
+        for (WorkflowQueryRepository.PendingTaskIdentity identity : identities) {
+            pendingTodoGroupKeys.add(pendingTodoGroupKey(identity));
+        }
+        return pendingTodoGroupKeys.size();
+    }
+
+    /** 待办聚合分组键：有异动批次号的按批次归组，其余按实例归组。 */
+    private String pendingTodoGroupKey(WorkflowQueryRepository.PendingTaskIdentity identity) {
+        if (identity.batchId() != null && !identity.batchId().isBlank()) {
+            return "batch:" + identity.batchId();
+        }
+        return "instance:" + identity.instanceId();
+    }
+
     public List<WorkflowQueryRepository.PendingTaskIdentity> listPendingTaskIdentities(Long userId) {
         return workflowQueryRepository.findPendingTaskIdentitiesByUserId(userId);
+    }
+
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 按异动批次号回查某用户名下的全部在途实例（逐实体一条），供消息中心
+     * 重建「同 batch 合成 1 条」的待办消息详情。
+     */
+    public List<WorkflowTaskResponse> getMyPendingTasksByBatchId(Long userId, String batchId) {
+        if (batchId == null || batchId.isBlank()) {
+            return List.of();
+        }
+        List<AuditInstance> instances =
+                workflowQueryRepository.findPendingAuditInstancesByUserIdAndBatchId(userId, batchId);
+        if (instances.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, String> orgNameCache = new HashMap<>();
+        Map<Long, String> userNameCache = new HashMap<>();
+        Map<Long, AuditFlowDef> flowDefCache = new HashMap<>();
+        Map<String, WorkflowBusinessContext> businessContextCache = new HashMap<>();
+        primeReadModelCaches(instances, userNameCache, orgNameCache, businessContextCache);
+        return instances.stream()
+                .flatMap(instance -> instance.getStepInstances().stream()
+                        .filter(step -> AuditInstance.STEP_STATUS_PENDING.equals(step.getStatus()))
+                        .filter(step -> Objects.equals(step.getApproverId(), userId))
+                        .map(step -> enrichTaskResponse(instance, step, orgNameCache, userNameCache, flowDefCache, businessContextCache)))
+                .sorted(Comparator.comparing(WorkflowTaskResponse::getCreatedTime,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
     }
 
     public Optional<WorkflowTaskResponse> findMyPendingTaskById(Long userId, String taskId) {
@@ -306,6 +360,8 @@ public class WorkflowReadModelService {
         response.setCurrentStepName(step.getStepName());
         response.setAssigneeName(resolveUserName(step.getApproverId(), userNameCache));
         response.setApproverOrgName(resolveOrgName(step.getApproverOrgId(), orgNameCache));
+        // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案
+        response.setBatchId(instance.getBatchId());
         return response;
     }
 
@@ -397,7 +453,18 @@ public class WorkflowReadModelService {
     }
 
     private boolean isHistoryQualified(AuditInstance instance, Map<Long, AuditFlowDef> flowDefCache) {
-        if (instance == null || !AuditInstance.STATUS_APPROVED.equalsIgnoreCase(instance.getStatus())) {
+        if (instance == null) {
+            return false;
+        }
+        // 2026-10-30 用户定案（异动驳回后重报/取消闭环）：审批历史只认两种终态——
+        // ① 整链走到最后节点且审批通过（既有口径，仍要求终审步骤已通过）；
+        // ② 填报人「取消异动」主动终结（CANCELLED，completedAt=now）。
+        // 驳回退回待重报（WITHDRAWN 且 completedAt 为空）是活链，可重新发起或取消，
+        // 不进历史；发起人审批中撤回（WITHDRAWN 且 completedAt 非空）维持既有不进历史口径。
+        if (AuditInstance.STATUS_CANCELLED.equalsIgnoreCase(instance.getStatus())) {
+            return true;
+        }
+        if (!AuditInstance.STATUS_APPROVED.equalsIgnoreCase(instance.getStatus())) {
             return false;
         }
         AuditFlowDef flowDef = resolveFlowDef(instance.getFlowDefId(), flowDefCache);

@@ -127,6 +127,9 @@ public class WorkflowReadModelMapper {
                 .assigneeName(null)
                 .approverOrgId(step.getApproverOrgId())
                 .stepNo(step.getStepNo())
+                // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+                // 待办响应携带异动批次号，消息中心据此把同批实例聚合成 1 条
+                .batchId(instance.getBatchId())
                 .createdTime(step.getCreatedAt() != null ? step.getCreatedAt() : instance.getStartedAt())
                 .startedAt(instance.getStartedAt())
                 .build();

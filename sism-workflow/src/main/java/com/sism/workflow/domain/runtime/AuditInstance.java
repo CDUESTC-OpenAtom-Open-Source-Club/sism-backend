@@ -34,6 +34,12 @@ public class AuditInstance extends AggregateRoot<Long> {
     public static final String STATUS_REJECTED = "REJECTED";
     public static final String STATUS_WITHDRAWN = "WITHDRAWN";
     public static final String STATUS_RETURNED = "RETURNED";
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：填报人「取消异动」主动终结的终态。
+     * 与 APPROVED 同为链条仅有的两种终态，均归入「审批历史」；
+     * 驳回退回待重报（WITHDRAWN 且 completedAt 为空）是活链，不进历史。
+     */
+    public static final String STATUS_CANCELLED = "CANCELLED";
     public static final String STEP_STATUS_PENDING = "PENDING";
     public static final String STEP_STATUS_WAITING = "WAITING";
     public static final String STEP_STATUS_APPROVED = "APPROVED";
@@ -66,6 +72,16 @@ public class AuditInstance extends AggregateRoot<Long> {
 
     @Column(name = "is_deleted", nullable = false)
     private Boolean isDeleted = false;
+
+    /**
+     * 异动批次号（audit_instance.batch_id 列早已存在，V94 迁移引入，由
+     * sism-strategy 发起异动时直写；2026-10-30 起映射到实体供读模型使用）。
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+     * 同一次「发起异动」的多个审批实例共享同一批次号，消息中心按该批次号
+     * 聚合成 1 条待办。此处仅映射既有列做读取，不改变「每实体一个实例」的模型。
+     */
+    @Column(name = "batch_id")
+    private String batchId;
 
     @OneToMany(mappedBy = "instance", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("stepNo ASC")
@@ -238,6 +254,30 @@ public class AuditInstance extends AggregateRoot<Long> {
     }
 
     /**
+     * 2026-10-30 用户定案（异动撤回=退回填报人活链）：异动发起人在审批中的「撤回」。
+     * 与 {@link #cancel()}（撤回即终结，completedAt=now 归历史）不同：把链退回
+     * 填报人节点、链保持存活——当前在审步骤置 WITHDRAWN（备注「提交人撤回」）、
+     * 实例转 WITHDRAWN 且 completedAt 保持 NULL，形态与「驳回退回填报人」
+     * （RejectWorkflowUseCase.createReturnedStep 的 submit 步骤分支）完全同构。
+     * 追加「退回提交步骤」由用例层完成（需流程定义解析提交步骤，与驳回同构）；
+     * 之后填报人可重新发起（resume 复用同链）或「取消异动」终结归历史。
+     */
+    public void withdrawToRequester() {
+        if (!STATUS_PENDING.equals(status)) {
+            throw new IllegalStateException("Cannot withdraw: workflow is not in review");
+        }
+        AuditStepInstance current = resolveCurrentPendingStep()
+                .orElseThrow(() -> new IllegalStateException("Cannot withdraw: no pending step available"));
+
+        current.setStatus(STEP_STATUS_WITHDRAWN);
+        current.setComment("提交人撤回");
+        current.setApprovedAt(LocalDateTime.now());
+
+        this.status = STATUS_WITHDRAWN;
+        this.completedAt = null;
+    }
+
+    /**
      * 2026-10-07：撤回前抓取当前待审批步骤的审批人名单，
      * 供「审批链已撤回」实时通知使用（人被置回 WAITING 后就查不到了）。
      */
@@ -247,6 +287,27 @@ public class AuditInstance extends AggregateRoot<Long> {
                 .map(AuditStepInstance::getApproverId)
                 .filter(approverId -> approverId != null)
                 .toList();
+    }
+
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：填报人对「退回待重报」
+     * 异动链的主动终结（取消异动）。与 {@link #cancel()}（审批中撤回）不同：
+     * 仅当链条处于驳回退回填报人状态时允许——状态 WITHDRAWN、completedAt 为空
+     * （未完结）、且存在退回的提交步骤；取消后整条链进入终态 CANCELLED 并归入
+     * 审批历史。退回的提交步骤保持原样留痕，不额外改写步骤状态。
+     */
+    public void cancelReturned() {
+        if (!STATUS_WITHDRAWN.equals(status) || completedAt != null) {
+            throw new IllegalStateException("Cannot cancel: workflow is not returned for resubmission");
+        }
+        boolean hasReturnedSubmitStep = stepInstances.stream()
+                .filter(step -> STEP_STATUS_WITHDRAWN.equals(step.getStatus()))
+                .anyMatch(this::isRequesterSubmitStep);
+        if (!hasReturnedSubmitStep) {
+            throw new IllegalStateException("Cannot cancel: no returned submit step available");
+        }
+        this.status = STATUS_CANCELLED;
+        this.completedAt = LocalDateTime.now();
     }
 
     public void reactivateWithdrawnStep() {
@@ -279,6 +340,13 @@ public class AuditInstance extends AggregateRoot<Long> {
                 step.setApprovedAt(null);
             } else {
                 appendReplayStepFromLatestRejectedStep();
+                // 2026-10-30（异动撤回=退回填报人活链）：发起人撤回的链形里在审环节
+                // 被置为 WITHDRAWN——既无 WAITING 兄弟可复活、也无 REJECTED 可重放，
+                // 重新提交后把被撤回的审批环节复活为 PENDING，审批人继续审。
+                // 旧 cancel 链形（有 WAITING）与 reject 链形（有 REJECTED）不会走到这里。
+                if (resolveCurrentPendingStep().isEmpty()) {
+                    reviveLatestWithdrawnApprovalStep();
+                }
             }
         } else {
             withdrawnStep.setStatus(STEP_STATUS_PENDING);
@@ -305,6 +373,25 @@ public class AuditInstance extends AggregateRoot<Long> {
 
         String stepName = step.getStepName();
         return stepName != null && stepName.contains("提交");
+    }
+
+    /**
+     * 2026-10-30（异动撤回=退回填报人活链）：把被撤回的在审审批环节（WITHDRAWN
+     * 且非提交步骤）复活为 PENDING。仅在重新提交后既无 WAITING 兄弟、也无
+     * REJECTED 可重放时调用（发起人撤回链形专用品），对既有链形零影响。
+     */
+    private void reviveLatestWithdrawnApprovalStep() {
+        stepInstances.stream()
+                .filter(step -> STEP_STATUS_WITHDRAWN.equals(step.getStatus()))
+                .filter(step -> !isRequesterSubmitStep(step))
+                .max(Comparator
+                        .comparing((AuditStepInstance step) -> step.getStepNo() == null ? Integer.MIN_VALUE : step.getStepNo())
+                        .thenComparing(step -> step.getCreatedAt() == null ? LocalDateTime.MIN : step.getCreatedAt()))
+                .ifPresent(step -> {
+                    step.setStatus(STEP_STATUS_PENDING);
+                    step.setComment(null);
+                    step.setApprovedAt(null);
+                });
     }
 
     private void appendReplayStepFromLatestRejectedStep() {

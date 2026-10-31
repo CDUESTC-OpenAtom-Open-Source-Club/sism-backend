@@ -229,6 +229,8 @@ class IndicatorControllerTest {
         try {
             Constructor<IndicatorController> constructor = IndicatorController.class.getDeclaredConstructor(
                     com.sism.strategy.application.IndicatorMutationService.class,
+                    // 2026-10-30（异动驳回后重报/取消闭环）：「取消异动」终态动作走工作流应用服务
+                    com.sism.workflow.application.BusinessWorkflowApplicationService.class,
                     StrategyApplicationService.class,
                     BatchIndicatorDistributionApplicationService.class,
                     OrganizationRepository.class,
@@ -250,6 +252,8 @@ class IndicatorControllerTest {
                             null,
                             // 2026-10-21：任务改名异动留痕依赖（本测试不触发异动，传 null）
                             null),
+                    // 取消异动依赖（本测试不触发取消，传 null）
+                    null,
                     strategyApplicationService,
                     batchIndicatorDistributionApplicationService,
                     organizationRepository,

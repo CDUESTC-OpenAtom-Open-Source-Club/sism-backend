@@ -99,7 +99,8 @@ public interface JpaWorkflowRepository extends JpaRepository<AuditInstance, Long
                 s.id,
                 a.id,
                 a.entityType,
-                a.entityId
+                a.entityId,
+                a.batchId
             )
               FROM WorkflowAuditInstance a
               JOIN a.stepInstances s
@@ -110,6 +111,54 @@ public interface JpaWorkflowRepository extends JpaRepository<AuditInstance, Long
             """)
     List<com.sism.workflow.domain.query.repository.WorkflowQueryRepository.PendingTaskIdentity>
     findPendingTaskIdentitiesByUserId(@Param("userId") Long userId);
+
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+     * 消息中心按异动批次号回查某用户名下的全部在途实例，重建聚合后的待办消息详情。
+     */
+    @EntityGraph(attributePaths = "stepInstances")
+    @Query("""
+            SELECT DISTINCT a
+              FROM WorkflowAuditInstance a
+              JOIN a.stepInstances s
+             WHERE a.status = 'IN_REVIEW'
+               AND a.batchId = :batchId
+               AND s.status = 'PENDING'
+               AND s.approverId = :userId
+             ORDER BY a.id ASC
+            """)
+    List<AuditInstance> findPendingAuditInstancesByUserIdAndBatchId(
+            @Param("userId") Long userId,
+            @Param("batchId") String batchId);
+
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 统计同一异动批次内、与刚被审批实例同环节（stepNo）的其余在途实例数——
+     * 大于 0 说明整批动作尚未完成（前端逐实例调用审批接口），
+     * 期间跳过逐实例的结果/推进通知，由最后一个实例的动作统一产生 1 条。
+     */
+    @Query("""
+            SELECT COUNT(a)
+              FROM WorkflowAuditInstance a
+              JOIN a.stepInstances s
+             WHERE a.batchId = :batchId
+               AND a.id <> :excludeInstanceId
+               AND a.status = 'IN_REVIEW'
+               AND s.status = 'PENDING'
+               AND s.stepNo = :stepNo
+            """)
+    long countPendingBatchSiblingsAtStep(
+            @Param("batchId") String batchId,
+            @Param("excludeInstanceId") Long excludeInstanceId,
+            @Param("stepNo") Integer stepNo);
+
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：按批次号取同批全部实例
+     * （含步骤实例），供「取消异动」整批终结校验与落库。
+     */
+    @EntityGraph(attributePaths = "stepInstances")
+    @Query("SELECT DISTINCT a FROM WorkflowAuditInstance a WHERE a.batchId = :batchId ORDER BY a.id ASC")
+    List<AuditInstance> findByBatchId(@Param("batchId") String batchId);
 
     @Query("SELECT DISTINCT a FROM WorkflowAuditInstance a JOIN a.stepInstances s " +
             "WHERE a.status = 'APPROVED' AND s.approverId = :userId")

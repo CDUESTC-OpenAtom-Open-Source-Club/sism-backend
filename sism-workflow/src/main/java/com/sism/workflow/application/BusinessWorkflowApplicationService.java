@@ -357,6 +357,9 @@ public class BusinessWorkflowApplicationService {
         AuditStepDef currentStepDef = resolveStepDefinition(instance, currentStep);
         WorkflowInstanceDetailResponse detailBeforeApproval =
                 workflowReadModelService.getInstanceDetail(String.valueOf(instance.getId()));
+        // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+        // 记录本动作审批的环节号，供「整批动作是否完成」判定使用
+        Integer approvedStepNo = currentStep.getStepNo();
 
         // N-03（2026-10-30）：审批范围组织统一由 ApproverResolver.resolveStepScopeOrgId 解析，
         // 这里不再用 instance.getRequesterOrgId() 直接决定「谁能审这一步」
@@ -422,18 +425,31 @@ public class BusinessWorkflowApplicationService {
                     instance.getEntityType(), instance.getEntityId(), appraisalLevel));
         }
         endMutationIfTerminal(instance);
-        createApprovalResultNotification(
-                approved,
-                userId,
-                detailBeforeApproval,
-                currentStepDef,
-                true,
-                resolvedComment
-        );
+        // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+        // 前端对整批异动是逐实例调用 approveTask；同一 batch 的每个实例各写一条
+        // 结果/推进通知会让一次「审批动作」产生 N 条消息。按「批次内仍有同环节
+        // 待审实例」判定整批动作未完成，未完成时跳过本实例的通知，由最后一个
+        // 实例的动作统一产生 1 条结果/推进通知。仅作用于异动批次（batchId 非空），
+        // PLAN 下发审批 / PLAN_REPORT 上报审批行为不变。
+        boolean batchActionRoundIncomplete =
+                isMutationBatchActionRoundIncomplete(instance, approvedStepNo);
+        if (!batchActionRoundIncomplete) {
+            createApprovalResultNotification(
+                    approved,
+                    userId,
+                    detailBeforeApproval,
+                    currentStepDef,
+                    true,
+                    resolvedComment
+            );
+        }
         syncDingTalkTodosOnApproval(approved, currentStep, detailBeforeApproval);
         // 2026-10-10 跨窗口实时修复：中间节点推进时通知提交人与下一环节审批人
         // （站内信 + WebSocket 推送），此前中间环节推进零通知，各窗口只能等心跳兜底。
-        notifyNextStepOnApproval(approved, detailBeforeApproval, currentStepDef, userId);
+        // 2026-10-30：整批异动动作未完成时同样跳过，避免一次动作产生 N 条推进通知。
+        if (!batchActionRoundIncomplete) {
+            notifyNextStepOnApproval(approved, detailBeforeApproval, currentStepDef, userId);
+        }
         // 2026-09-27（main）：审批动作完成后将本人该实例的待审批通知标记已读留痕
         markOwnSubmittedNotificationsRead(instance.getId(), userId);
 
@@ -523,14 +539,19 @@ public class BusinessWorkflowApplicationService {
         String resolvedReason = resolveRejectComment(request == null ? null : request.getReason());
         AuditInstance rejected = workflowApplicationService.rejectAuditInstance(
                 instance, userId, resolvedReason);
-        createApprovalResultNotification(
-                rejected,
-                userId,
-                detailBeforeRejection,
-                currentStepDef,
-                false,
-                resolvedReason
-        );
+        // 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案——
+        // 整批驳回同样是前端逐实例调用 rejectTask，只在整批动作完成时产生 1 条结果通知
+        Integer rejectedStepNo = currentStep.getStepNo();
+        if (!isMutationBatchActionRoundIncomplete(rejected, rejectedStepNo)) {
+            createApprovalResultNotification(
+                    rejected,
+                    userId,
+                    detailBeforeRejection,
+                    currentStepDef,
+                    false,
+                    resolvedReason
+            );
+        }
         dingTalkTodoProvider.completeInstanceTodos(rejected.getId());
         markOwnSubmittedNotificationsRead(rejected.getId(), userId);
 
@@ -649,6 +670,104 @@ public class BusinessWorkflowApplicationService {
         dingTalkTodoProvider.completeInstanceTodos(instance.getId());
     }
 
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：异动「取消异动」终态动作。
+     * 仅当实例处于「退回待重报」（驳回后退回填报人：WITHDRAWN、completedAt 为空、
+     * 存在退回提交步骤，状态校验在 AuditInstance.cancelReturned）且调用者为实例
+     * 发起人（requester）时，允许把同 batch 的全部异动实例一次性置为终态
+     * CANCELLED（completedAt=now），整链归入「审批历史」。
+     * 作用域收窄到 PLAN_MUTATION_STRATEGY 异动链（INDICATOR/TASK），
+     * 上报/下发等其他流程继续走 {@link #cancelInstance}。
+     */
+    @Transactional
+    public List<AuditInstance> cancelReturnedMutationBatch(String instanceId, Long userId) {
+        log.info("Cancelling returned mutation batch by instance: {}, userId: {}", instanceId, userId);
+
+        AuditInstance instance = auditInstanceRepository.findById(parseRequiredLong(instanceId, "instanceId"))
+                .orElseThrow(() -> new IllegalArgumentException("Instance not found: " + instanceId));
+
+        assertMutationChainInstance(instance);
+
+        // 权限检查：只有异动发起人可以取消
+        if (!java.util.Objects.equals(instance.getRequesterId(), userId)) {
+            throw new SecurityException("仅异动发起人可取消");
+        }
+
+        // 同 batch 全部实例一次终结；无批次号的孤例只终结自身
+        String batchId = instance.getBatchId();
+        List<AuditInstance> batchInstances = batchId == null || batchId.isBlank()
+                ? List.of(instance)
+                : auditInstanceRepository.findByBatchId(batchId);
+        boolean containsSelf = batchInstances.stream()
+                .anyMatch(item -> instance.getId() != null && instance.getId().equals(item.getId()));
+        if (!containsSelf) {
+            batchInstances = java.util.stream.Stream.concat(batchInstances.stream(), java.util.stream.Stream.of(instance))
+                    .toList();
+        }
+
+        List<AuditInstance> cancelled = workflowApplicationService.cancelReturnedMutationBatch(batchInstances);
+        cancelled.forEach(item -> dingTalkTodoProvider.completeInstanceTodos(item.getId()));
+        return cancelled;
+    }
+
+    /** 取消异动仅作用于 PLAN_MUTATION_STRATEGY 异动链（指标异动 INDICATOR / 任务改名 TASK）。 */
+    private void assertMutationChainInstance(AuditInstance instance) {
+        assertMutationChainInstance(instance, "取消");
+    }
+
+    /** action 用于错误文案区分「取消 / 撤回」等异动链专属动作。 */
+    private void assertMutationChainInstance(AuditInstance instance, String action) {
+        AuditFlowDef flowDef = workflowDefinitionQueryService.getAuditFlowDefById(instance.getFlowDefId());
+        String flowCode = flowDef == null ? null : flowDef.getFlowCode();
+        if (!"PLAN_MUTATION_STRATEGY".equalsIgnoreCase(String.valueOf(flowCode))
+                || (!"INDICATOR".equalsIgnoreCase(instance.getEntityType())
+                        && !"TASK".equalsIgnoreCase(instance.getEntityType()))) {
+            throw new IllegalArgumentException("仅异动审批链支持" + action + "操作");
+        }
+    }
+
+    /**
+     * 2026-10-30 用户定案（异动撤回=退回填报人活链）：异动发起人在审批中的「撤回」
+     * 退回填报人节点、链保持存活。仅当实例处于审批中（IN_REVIEW，状态校验在
+     * AuditInstance.withdrawToRequester）且调用者为实例发起人（requester）时，
+     * 允许把同 batch 的全部异动实例一次性退回填报人：实例 WITHDRAWN、
+     * completedAt 保持 NULL、追加退回提交步骤（与驳回退回填报人同构），
+     * 不进审批历史；之后可修改后重新发起（resume 复用同链）或「取消异动」终结。
+     * 作用域收窄到 PLAN_MUTATION_STRATEGY 异动链（INDICATOR/TASK），
+     * 上报/下发等其他流程继续走 {@link #cancelInstance}。
+     */
+    @Transactional
+    public List<AuditInstance> withdrawMutationBatchToRequester(String instanceId, Long userId) {
+        log.info("Withdrawing mutation batch to requester by instance: {}, userId: {}", instanceId, userId);
+
+        AuditInstance instance = auditInstanceRepository.findById(parseRequiredLong(instanceId, "instanceId"))
+                .orElseThrow(() -> new IllegalArgumentException("Instance not found: " + instanceId));
+
+        assertMutationChainInstance(instance, "撤回");
+
+        // 权限检查：只有异动发起人可以撤回
+        if (!java.util.Objects.equals(instance.getRequesterId(), userId)) {
+            throw new SecurityException("仅异动发起人可撤回");
+        }
+
+        // 同 batch 全部实例一次退回；无批次号的孤例只退回自身
+        String batchId = instance.getBatchId();
+        List<AuditInstance> batchInstances = batchId == null || batchId.isBlank()
+                ? List.of(instance)
+                : auditInstanceRepository.findByBatchId(batchId);
+        boolean containsSelf = batchInstances.stream()
+                .anyMatch(item -> instance.getId() != null && instance.getId().equals(item.getId()));
+        if (!containsSelf) {
+            batchInstances = java.util.stream.Stream.concat(batchInstances.stream(), java.util.stream.Stream.of(instance))
+                    .toList();
+        }
+
+        List<AuditInstance> withdrawn = workflowApplicationService.withdrawMutationBatchToRequester(batchInstances);
+        // 退回填报人后原待审批人不再持有待办，清理钉钉待办（与取消异动同口径）
+        withdrawn.forEach(item -> dingTalkTodoProvider.completeInstanceTodos(item.getId()));
+        return withdrawn;
+    }
+
     // ==================== 流程定义管理 ====================
 
     /**
@@ -735,6 +854,32 @@ public class BusinessWorkflowApplicationService {
     }
 
     // ==================== 私有方法 ====================
+
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 判断本次审批动作之后，同一异动批次内是否仍有同环节（stepNo）待审的兄弟实例：
+     * 有则说明整批动作未完成（前端逐实例调用审批接口），本次跳过结果/推进通知，
+     * 由最后一个实例的动作统一产生 1 条通知。无批次号的实例（PLAN 下发 /
+     * PLAN_REPORT 上报等）一律返回 false，行为与改造前完全一致。
+     */
+    private boolean isMutationBatchActionRoundIncomplete(AuditInstance handledInstance, Integer handledStepNo) {
+        if (handledInstance == null) {
+            return false;
+        }
+        String batchId = handledInstance.getBatchId();
+        if (batchId == null || batchId.isBlank() || handledStepNo == null) {
+            return false;
+        }
+        try {
+            return auditInstanceRepository.countPendingBatchSiblingsAtStep(
+                    batchId, handledInstance.getId(), handledStepNo) > 0;
+        } catch (Exception ex) {
+            // 判定失败不阻断审批主流程，退回逐实例通知的旧行为
+            log.warn("Failed to count pending mutation batch siblings for instance {}: {}",
+                    handledInstance.getId(), ex.getMessage());
+            return false;
+        }
+    }
 
     /**
      * 2026-10-10 跨窗口实时修复：中间节点审批通过、流程推进到下一环节时——

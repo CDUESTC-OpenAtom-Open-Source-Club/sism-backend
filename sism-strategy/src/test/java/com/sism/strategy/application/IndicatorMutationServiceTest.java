@@ -19,6 +19,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -400,6 +401,80 @@ class IndicatorMutationServiceTest {
     }
 
     @Test
+    @DisplayName("2026-10-30 缺陷回归：单条新增异动的 changed_fields 必须含三个字段键"
+            + "（权重/下发备注列的「(新增)」角标按各自字段键匹配审计记录）")
+    void initiateForCreatedIndicator_shouldRecordAllThreeFieldsInChangedFields() {
+        stubReporter();
+        Map<String, Object> row = indicatorRow("DRAFT", "DISTRIBUTED");
+        row.put("indicator_desc", "新增指标A");
+        row.put("weight_percent", new java.math.BigDecimal("10"));
+        row.put("remark", "战略新增备注");
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
+                .thenReturn(row);
+        stubWorkflowStart("1101");
+
+        String instanceId = service.initiateForCreatedIndicator(INDICATOR_ID, OPERATOR_ID);
+
+        assertEquals("1101", instanceId);
+        Map<String, Map<String, Object>> changedFields = capturedCreateChangedFields();
+        // 三个键齐备：核心指标 / 权重 / 下发备注
+        assertEquals(Set.of("indicator_desc", "weight_percent", "remark"), changedFields.keySet());
+        // before 均为「(新增)」，after 与指标当前值一致（数值权重沿用 String.valueOf）
+        changedFields.forEach((field, diff) -> assertEquals(
+                "(新增)", String.valueOf(diff.get("before")), field + " 的 before 应为 (新增)"));
+        assertEquals("新增指标A", changedFields.get("indicator_desc").get("after"));
+        assertEquals("10", changedFields.get("weight_percent").get("after"));
+        assertEquals("战略新增备注", changedFields.get("remark").get("after"));
+        // 异动标记照常打上，审批链照常启动
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status = ?"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+    }
+
+    @Test
+    @DisplayName("2026-10-30 缺陷回归：批量新增条目（create=true）的 changed_fields 同样含三个字段键"
+            + "（前端「发起异动」对新增行即走此批量路径）")
+    void initiateBatch_shouldRecordAllThreeFieldsForCreatedIndicator() {
+        stubReporter();
+        Map<String, Object> row = indicatorRow("DRAFT", "DISTRIBUTED");
+        row.put("indicator_desc", "批量新增指标");
+        row.put("weight_percent", new java.math.BigDecimal("10.00"));
+        row.put("remark", "下发备注内容");
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
+                .thenReturn(row);
+        stubWorkflowStart("1201");
+
+        List<String> instanceIds = service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "create", true)),
+                OPERATOR_ID);
+
+        assertEquals(List.of("1201"), instanceIds);
+        Map<String, Map<String, Object>> changedFields = capturedCreateChangedFields();
+        assertEquals(Set.of("indicator_desc", "weight_percent", "remark"), changedFields.keySet());
+        changedFields.forEach((field, diff) -> assertEquals(
+                "(新增)", String.valueOf(diff.get("before")), field + " 的 before 应为 (新增)"));
+        assertEquals("批量新增指标", changedFields.get("indicator_desc").get("after"));
+        assertEquals("10.00", changedFields.get("weight_percent").get("after"));
+        assertEquals("下发备注内容", changedFields.get("remark").get("after"));
+    }
+
+    /**
+     * 捕获 audit_log 落库参数并取出 changed_fields 快照：
+     * varargs 顺序为 [0]=action, [1]=before_json, [2]=after_json, [3]=changed_fields,
+     * [4]=entity_id, [5]=reason, [6]=actor_user_id, [7]=batch_id。
+     * insertAuditLog 落库前用 toJson 序列化，这里按 JSON 字符串反序列化后断言。
+     */
+    private Map<String, Map<String, Object>> capturedCreateChangedFields() {
+        ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).update(contains("INSERT INTO public.audit_log"), args.capture());
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                    String.valueOf(args.getValue()[3]), Map.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("解析 changed_fields JSON 失败", e);
+        }
+    }
+
+    @Test
     @DisplayName("异动资格按计划判定：计划未下发时，指标即便是 DISTRIBUTED 也拒绝")
     void initiateBatch_shouldRejectWhenPlanIsNotDistributed() {
         stubReporter();
@@ -528,6 +603,39 @@ class IndicatorMutationServiceTest {
         when(jdbcTemplate.queryForList(
                 contains("FROM public.sys_user_role"), eq(String.class), eq(OPERATOR_ID)))
                 .thenReturn(List.of("ROLE_REPORTER"));
+    }
+
+    @Test
+    @DisplayName("退回待重报清单：只查 WITHDRAWN 且 completed_at 为空的活链（含退回提交步骤），异动取消按钮数据源")
+    @SuppressWarnings("unchecked")
+    void listReturnedMutationChains_shouldOnlyQueryReturnedActiveChains() {
+        when(jdbcTemplate.query(
+                contains("public.audit_instance"),
+                any(RowMapper.class),
+                eq(STRATEGY_ORG_ID), eq(STRATEGY_ORG_ID), eq(STRATEGY_ORG_ID), eq(STRATEGY_ORG_ID)))
+                .thenReturn(List.of(Map.of("instance_id", 88L, "batch_id", "batch-88")));
+
+        var result = service.listReturnedMutationChains(STRATEGY_ORG_ID);
+
+        assertEquals(1, result.size());
+        // 断言查询口径：终态在审批历史（listInstanceHistoryByBusiness），此处只取驳回退回的活链
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).query(
+                sqlCaptor.capture(),
+                any(RowMapper.class),
+                eq(STRATEGY_ORG_ID), eq(STRATEGY_ORG_ID), eq(STRATEGY_ORG_ID), eq(STRATEGY_ORG_ID));
+        assertTrue(sqlCaptor.getValue().contains("ai.status = 'WITHDRAWN'"));
+        assertTrue(sqlCaptor.getValue().contains("ai.completed_at IS NULL"));
+        assertTrue(sqlCaptor.getValue().contains("PLAN_MUTATION_STRATEGY"));
+        // 不含审批中实例：IN_REVIEW 过滤（审批中心异动卡口径）不被本查询破坏
+        assertFalse(sqlCaptor.getValue().contains("ai.status = 'IN_REVIEW'"));
+    }
+
+    @Test
+    @DisplayName("退回待重报清单：orgId 缺失直接返回空，不打数据库")
+    void listReturnedMutationChains_shouldReturnEmptyForNullOrg() {
+        assertTrue(service.listReturnedMutationChains(null).isEmpty());
+        verifyNoInteractions(jdbcTemplate);
     }
 
     private Map<String, Object> indicatorRow(String indicatorStatus, String planStatus) {

@@ -72,6 +72,16 @@ public class AuditInstanceRepositoryImpl implements AuditInstanceRepository {
     }
 
     @Override
+    public long countPendingBatchSiblingsAtStep(String batchId, Long excludeInstanceId, Integer stepNo) {
+        return jpaWorkflowRepository.countPendingBatchSiblingsAtStep(batchId, excludeInstanceId, stepNo);
+    }
+
+    @Override
+    public List<AuditInstance> findByBatchId(String batchId) {
+        return jpaWorkflowRepository.findByBatchId(batchId);
+    }
+
+    @Override
     public Page<AuditInstance> findByFlowDefId(Long flowDefId, Pageable pageable) {
         return jpaWorkflowRepository.findAuditInstancesByFlowDefId(flowDefId, pageable);
     }

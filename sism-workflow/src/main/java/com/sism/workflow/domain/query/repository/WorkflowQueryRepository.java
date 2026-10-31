@@ -21,6 +21,13 @@ public interface WorkflowQueryRepository {
 
     List<PendingTaskIdentity> findPendingTaskIdentitiesByUserId(Long userId);
 
+    /**
+     * 2026-10-30 用户定案：异动按计划聚合，消息只有一条，无 N 项文案。
+     * 按异动批次号查询某用户名下的在途审批实例（仅 PLAN_MUTATION_STRATEGY 批次有值），
+     * 供消息中心按批次重建聚合后的待办消息详情。
+     */
+    List<AuditInstance> findPendingAuditInstancesByUserIdAndBatchId(Long userId, String batchId);
+
     List<AuditInstance> findApprovedAuditInstancesByUserId(Long userId);
 
     Page<AuditInstance> findApprovedAuditInstancesByUserId(Long userId, Pageable pageable);
@@ -35,7 +42,9 @@ public interface WorkflowQueryRepository {
             Long stepInstanceId,
             Long instanceId,
             String entityType,
-            Long entityId
+            Long entityId,
+            /** 2026-10-30 用户定案：异动按计划聚合——同批次实例计数/展示只计 1，无 N 项文案。 */
+            String batchId
     ) {
     }
 }

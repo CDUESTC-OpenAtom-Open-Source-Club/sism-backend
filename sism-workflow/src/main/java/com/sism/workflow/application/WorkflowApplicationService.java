@@ -112,6 +112,25 @@ public class WorkflowApplicationService {
         return cancelWorkflowUseCase.cancel(instance);
     }
 
+    /**
+     * 2026-10-30 用户定案（异动驳回后重报/取消闭环）：填报人「取消异动」——
+     * 把「退回待重报」的整批异动实例一次性终结为 CANCELLED。状态校验在领域内
+     * （AuditInstance.cancelReturned），调用方须先做发起人权限校验。
+     */
+    public List<AuditInstance> cancelReturnedMutationBatch(List<AuditInstance> instances) {
+        return cancelWorkflowUseCase.cancelReturnedBatch(instances);
+    }
+
+    /**
+     * 2026-10-30 用户定案（异动撤回=退回填报人活链）：异动发起人在审批中的「撤回」
+     * 把整批异动实例退回填报人节点、链保持存活（WITHDRAWN、completedAt 为空、
+     * 含退回提交步骤，形态与驳回退回同构）。状态校验在领域内
+     * （AuditInstance.withdrawToRequester），调用方须先做发起人权限校验。
+     */
+    public List<AuditInstance> withdrawMutationBatchToRequester(List<AuditInstance> instances) {
+        return cancelWorkflowUseCase.withdrawToRequesterBatch(instances);
+    }
+
     public AuditInstance resumeWithdrawnAuditInstance(AuditInstance instance) {
         instance.reactivateWithdrawnStep();
         return approveOrSavePassthrough(instance);
