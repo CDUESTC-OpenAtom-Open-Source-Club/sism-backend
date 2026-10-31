@@ -180,6 +180,96 @@ class WorkflowReadModelServiceTest {
     }
 
     @Test
+    void getMyPendingTasks_shouldExposeRequesterOrgNameAsSubmitterForReportChain() {
+        // 2026-10-30 修复：上报链（PLAN_REPORT）的 sourceOrg 是下发方向（plan.createdByOrgId），
+        // requesterOrgId 才是真实提交组织——requesterOrgName 应解析 requesterOrgId 对应组织名。
+        AuditInstance instance = new AuditInstance();
+        instance.setId(51L);
+        instance.setFlowDefId(2L);
+        instance.setEntityType("PLAN_REPORT");
+        instance.setEntityId(810L);
+        instance.setRequesterOrgId(44L);
+        instance.setStartedAt(LocalDateTime.now().minusHours(1));
+
+        AuditStepInstance pending = new AuditStepInstance();
+        pending.setId(510L);
+        pending.setStepDefId(5L);
+        pending.setStepNo(2);
+        pending.setStepName("职能部门审批人审批");
+        pending.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        pending.setApproverId(301L);
+        pending.setApproverOrgId(44L);
+        pending.setCreatedAt(LocalDateTime.now());
+        instance.addStepInstance(pending);
+
+        AuditFlowDef flowDef = new AuditFlowDef();
+        AuditStepDef stepDef = new AuditStepDef();
+        stepDef.setId(5L);
+        stepDef.setRoleId(2L);
+        flowDef.setSteps(List.of(stepDef));
+
+        UserIdentity approver = new UserIdentity(301L, "approver301", "审批人C", 44L, true);
+        when(userProvider.findIdentity(301L)).thenReturn(Optional.of(approver));
+        when(workflowQueryRepository.findPendingAuditInstancesByUserId(301L, PageRequest.of(0, 10)))
+                .thenReturn(new PageImpl<>(List.of(instance), PageRequest.of(0, 10), 1));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(2L)).thenReturn(flowDef);
+        // source=战略发展部（下发方向），target=教务处=提交组织（requesterOrgId 44）
+        when(workflowBusinessContextPort.getBusinessSummary("PLAN_REPORT", 810L))
+                .thenReturn(Optional.of(new WorkflowBusinessContextPort.BusinessSummary(
+                        3L, "202610 教务处月报", 35L, "战略发展部", 44L, "教务处", "202610 教务处月报")));
+
+        PageResult<WorkflowTaskResponse> result = newService().getMyPendingTasks(301L, 1);
+
+        WorkflowTaskResponse task = result.getItems().get(0);
+        assertEquals("教务处", task.getRequesterOrgName());
+        assertEquals("战略发展部", task.getSourceOrgName());
+    }
+
+    @Test
+    void getMyPendingTasks_shouldKeepRequesterOrgNameEqualToSourceForDispatchChain() {
+        // 下发链（PLAN）requester=原 source：requesterOrgName 与 sourceOrgName 同值，行为不变
+        AuditInstance instance = new AuditInstance();
+        instance.setId(52L);
+        instance.setFlowDefId(2L);
+        instance.setEntityType("PLAN");
+        instance.setEntityId(811L);
+        instance.setRequesterOrgId(35L);
+        instance.setStartedAt(LocalDateTime.now().minusHours(1));
+
+        AuditStepInstance pending = new AuditStepInstance();
+        pending.setId(520L);
+        pending.setStepDefId(5L);
+        pending.setStepNo(2);
+        pending.setStepName("部门负责人审批");
+        pending.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        pending.setApproverId(302L);
+        pending.setApproverOrgId(44L);
+        pending.setCreatedAt(LocalDateTime.now());
+        instance.addStepInstance(pending);
+
+        AuditFlowDef flowDef = new AuditFlowDef();
+        AuditStepDef stepDef = new AuditStepDef();
+        stepDef.setId(5L);
+        stepDef.setRoleId(2L);
+        flowDef.setSteps(List.of(stepDef));
+
+        UserIdentity approver = new UserIdentity(302L, "approver302", "审批人D", 44L, true);
+        when(userProvider.findIdentity(302L)).thenReturn(Optional.of(approver));
+        when(workflowQueryRepository.findPendingAuditInstancesByUserId(302L, PageRequest.of(0, 10)))
+                .thenReturn(new PageImpl<>(List.of(instance), PageRequest.of(0, 10), 1));
+        when(workflowDefinitionQueryService.getAuditFlowDefById(2L)).thenReturn(flowDef);
+        when(workflowBusinessContextPort.getBusinessSummary("PLAN", 811L))
+                .thenReturn(Optional.of(new WorkflowBusinessContextPort.BusinessSummary(
+                        9L, "Plan 811", 35L, "战略发展部", 44L, "教务处", "Plan 811")));
+
+        PageResult<WorkflowTaskResponse> result = newService().getMyPendingTasks(302L, 1);
+
+        WorkflowTaskResponse task = result.getItems().get(0);
+        assertEquals("战略发展部", task.getRequesterOrgName());
+        assertEquals("战略发展部", task.getSourceOrgName());
+    }
+
+    @Test
     void findMyPendingTaskById_shouldReturnDirectTaskMatch() {
         AuditInstance instance = new AuditInstance();
         instance.setId(33L);
