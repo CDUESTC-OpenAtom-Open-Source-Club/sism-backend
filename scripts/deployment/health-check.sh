@@ -26,6 +26,12 @@ DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-sism_prod}"
 DB_USER="${DB_USER:-postgres}"
 DB_PASSWORD="${DB_PASSWORD:-}"
+# 凭据经 PGPASSFILE 传递（libpq 官方机制），避免口令出现在命令行与环境变量
+PGPASS_FILE="$(mktemp -t sism-pgpass-XXXXXX)"
+printf '*:*:*:%s:%s\n' "$DB_USER" "$DB_PASSWORD" > "$PGPASS_FILE"
+chmod 600 "$PGPASS_FILE"
+export PGPASSFILE="$PGPASS_FILE"
+trap 'rm -f "$PGPASS_FILE"' EXIT
 
 # 选项
 OUTPUT_JSON=false
@@ -140,7 +146,7 @@ check_database() {
     
     local start_time=$(date +%s%3N)
     
-    if PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" > /dev/null 2>&1; then
+    if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" > /dev/null 2>&1; then
         local end_time=$(date +%s%3N)
         local response_time=$((end_time - start_time))
         

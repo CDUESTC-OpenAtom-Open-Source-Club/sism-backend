@@ -39,6 +39,12 @@ DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-sism_prod}"
 DB_USER="${DB_USER:-sism_user}"
 DB_PASSWORD="${DB_PASSWORD:-}"
+# 凭据经 PGPASSFILE 传递（libpq 官方机制），避免口令出现在命令行与环境变量
+PGPASS_FILE="$(mktemp -t sism-pgpass-XXXXXX)"
+printf '*:*:*:%s:%s\n' "$DB_USER" "$DB_PASSWORD" > "$PGPASS_FILE"
+chmod 600 "$PGPASS_FILE"
+export PGPASSFILE="$PGPASS_FILE"
+trap 'rm -f "$PGPASS_FILE"' EXIT
 
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/sism}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
@@ -61,7 +67,7 @@ ensure_backup_dir() {
 check_connection() {
     log_info "检查数据库连接..."
     
-    if ! PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" > /dev/null 2>&1; then
+    if ! psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" > /dev/null 2>&1; then
         log_error "无法连接到数据库"
         exit 1
     fi
@@ -76,7 +82,7 @@ backup_full() {
     log_info "开始全量备份..."
     log_info "备份文件: $BACKUP_FILE"
     
-    PGPASSWORD="$DB_PASSWORD" pg_dump \
+    pg_dump \
         -h "$DB_HOST" \
         -p "$DB_PORT" \
         -U "$DB_USER" \
@@ -104,7 +110,7 @@ backup_schema() {
     log_info "开始 Schema 备份..."
     log_info "备份文件: $BACKUP_FILE"
     
-    PGPASSWORD="$DB_PASSWORD" pg_dump \
+    pg_dump \
         -h "$DB_HOST" \
         -p "$DB_PORT" \
         -U "$DB_USER" \
@@ -132,7 +138,7 @@ backup_data() {
     log_info "开始数据备份..."
     log_info "备份文件: $BACKUP_FILE"
     
-    PGPASSWORD="$DB_PASSWORD" pg_dump \
+    pg_dump \
         -h "$DB_HOST" \
         -p "$DB_PORT" \
         -U "$DB_USER" \
