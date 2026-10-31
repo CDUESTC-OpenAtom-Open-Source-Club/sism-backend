@@ -152,18 +152,25 @@ public class ReportApplicationService {
      */
     @Transactional
     public PlanReport updateReport(Long reportId, String title, Long indicatorId, String content, String summary, Integer progress,
-                                   String issues, String nextPlan, Long operatorUserId) {
+                                   String selfRating, String issues, String nextPlan, Long operatorUserId) {
         PlanReport report = planReportRepository.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report", reportId));
 
-        validatePendingProgress(indicatorId, progress);
         report.markCreatedByIfAbsent(operatorUserId);
         report.updateContent(content, summary, progress, issues, nextPlan);
         if (title != null) {
             report.setTitle(title);
         }
+        // 2026-10-30 修复（等级制填报保存必失败）：原先在此无条件调用 validatePendingProgress，
+        // 而「进度必须大于真实进度」是百分比时代的校验——2026-10-07 裁决改为等级制后，
+        // 前端提交 progress 恒为 0（占位，不再采集百分比），indicator.progress 也是 0，
+        // 于是 `progress <= currentProgress` 恒成立 → 每次单条填报保存都 400
+        // 「填报进度必须大于真实进度，当前真实进度为 0%」，等级制填报彻底不可用。
+        // 现按等级制语义豁免：带 selfRating 即等级制填报，跳过百分比递增校验；
+        // 无等级的历史百分比路径保留原校验。校验仍在落库前完成，失败不留脏数据。
+        assertProgressNotRegressed(indicatorId, progress, isLevelBased(selfRating));
         PlanReport savedReport = planReportRepository.save(report);
-        upsertIndicatorDetail(savedReport.getId(), indicatorId, progress, content, null, List.of(), operatorUserId);
+        upsertIndicatorDetail(savedReport.getId(), indicatorId, progress, content, selfRating, List.of(), operatorUserId);
         return enrichReportMetadata(savedReport);
     }
 
@@ -185,13 +192,28 @@ public class ReportApplicationService {
         if (title != null) {
             report.setTitle(title);
         }
-        PlanReport savedReport = planReportRepository.save(report);
 
         List<UpdatePlanReportIndicatorDetailRequest> normalizedDetails = indicatorDetails == null
                 ? List.of()
                 : indicatorDetails.stream()
                 .filter(Objects::nonNull)
                 .toList();
+
+        // 2026-10-30 修复（等级制批量保存必失败）：整批只要有一条带自评进度等级，
+        // 本次提交就是等级制填报——等级制下百分比 progress 恒为 0，
+        // 对未单独带等级的条目再套「进度必须大于真实进度」判定必然 `0 <= 0` 失败，
+        // 导致整次保存回滚、报「保存指标填报失败」。
+        boolean levelBasedBatch = normalizedDetails.stream()
+                .anyMatch(detail -> isLevelBased(detail.getSelfRating()));
+
+        // 校验在落库前完成：等级制整批豁免；历史百分比路径逐条保留原校验，失败不留脏数据。
+        if (!levelBasedBatch) {
+            for (UpdatePlanReportIndicatorDetailRequest detail : normalizedDetails) {
+                assertProgressNotRegressed(detail.getIndicatorId(), detail.getProgress(), false);
+            }
+        }
+
+        PlanReport savedReport = planReportRepository.save(report);
 
         for (UpdatePlanReportIndicatorDetailRequest detail : normalizedDetails) {
             upsertIndicatorDetail(
@@ -206,6 +228,23 @@ public class ReportApplicationService {
         }
 
         return enrichReportMetadata(savedReport);
+    }
+
+    /**
+     * 2026-10-30：判断一次填报是否属于等级制（自评进度等级）语境。
+     */
+    private boolean isLevelBased(String selfRating) {
+        return selfRating != null && !selfRating.isBlank();
+    }
+
+    /**
+     * 2026-10-30：落库前的进度校验。等级制填报跳过百分比递增校验。
+     */
+    private void assertProgressNotRegressed(Long indicatorId, Integer progress, boolean levelBased) {
+        if (levelBased) {
+            return;
+        }
+        validatePendingProgress(indicatorId, progress);
     }
 
     private void validatePendingProgress(Long indicatorId, Integer progress) {
@@ -229,7 +268,7 @@ public class ReportApplicationService {
     @Transactional
     public PlanReport updateReport(Long reportId, String content, String summary, Integer progress,
                                    String issues, String nextPlan) {
-        return updateReport(reportId, null, null, content, summary, progress, issues, nextPlan, null);
+        return updateReport(reportId, null, null, content, summary, progress, null, issues, nextPlan, null);
     }
 
     /**
@@ -1076,11 +1115,9 @@ public class ReportApplicationService {
         }
 
         // 2026-10-07 裁决：进度改为等级制（自评进度等级）定性评价，不再采集百分比。
-        // 带 selfRating 的等级制填报跳过「进度必须递增」的百分比校验；
-        // 旧的无等级路径保持原校验以兼容历史调用。
-        if (selfRating == null || selfRating.isBlank()) {
-            validatePendingProgress(indicatorId, progress);
-        }
+        // 2026-10-30 修复（等级制批量保存必失败）：「进度必须大于真实进度」是百分比时代的校验，
+        // 等级制下 progress 恒为 0 → `0 <= 0` 恒成立 → 保存必失败。
+        // 校验已前移到落库前（见 assertProgressNotRegressed），此处只负责明细落库。
         ProgressLevel rating = ProgressLevel.normalize(selfRating);
         String normalizedRating = rating == null ? null : rating.name();
         // 完成情况描述同时落 comment 与 description（口径：两列语义合并，读侧优先 description）

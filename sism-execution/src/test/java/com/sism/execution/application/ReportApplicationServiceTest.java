@@ -467,6 +467,7 @@ class ReportApplicationServiceTest {
                 "本月推进完成",
                 "本月推进完成",
                 45,
+                null,
                 "本月推进完成",
                 "本月推进完成",
                 8001L
@@ -496,6 +497,7 @@ class ReportApplicationServiceTest {
                 "进度未增长",
                 "进度未增长",
                 30,
+                null,
                 "进度未增长",
                 "进度未增长",
                 9001L
@@ -545,6 +547,128 @@ class ReportApplicationServiceTest {
         assertThat(updated.getCreatedBy()).isEqualTo(8002L);
         verify(planReportIndicatorRepository)
                 .attachFiles(7001L, List.of(301L, 302L), 8002L);
+    }
+
+    // ==================== 2026-10-30 回归：等级制填报保存必失败 ====================
+    //
+    // 线上现象：二级学院在「指标填报」页点保存，报「保存指标填报失败」。
+    // 根因：后端「填报进度必须大于真实进度」是百分比时代的校验，等级制下
+    // progress 恒为 0、indicator.progress 也是 0 → `0 <= 0` 恒成立 → 必 400。
+
+    @Test
+    void updateReport_shouldSaveLevelBasedFillEvenWhenProgressIsZero() {
+        // 等级制填报：progress 恒为 0（占位），indicator.progress 也是 0。
+        // 修复前会在这里抛「填报进度必须大于真实进度，当前真实进度为 0%」。
+        PlanReport report = PlanReport.createDraft("202610", 57L, ReportOrgType.COLLEGE, 370L);
+        report.setId(70L);
+        Indicator indicator = new Indicator();
+        indicator.setId(2044L);
+        indicator.setProgress(0);
+
+        when(planReportRepository.findById(70L)).thenReturn(Optional.of(report));
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(planReportIndicatorRepository.upsertDraftIndicator(
+                70L, 2044L, 0, "我觉得是", "AHEAD", "我觉得是"))
+                .thenReturn(7001L);
+
+        PlanReport updated = reportApplicationService.updateReport(
+                70L,
+                "指标 A",
+                2044L,
+                "我觉得是",
+                "我觉得是",
+                0,
+                "AHEAD",
+                "我觉得是",
+                "我觉得是",
+                370L
+        );
+
+        assertThat(updated.getId()).isEqualTo(70L);
+        verify(planReportIndicatorRepository)
+                .upsertDraftIndicator(70L, 2044L, 0, "我觉得是", "AHEAD", "我觉得是");
+        verify(planReportIndicatorRepository).attachFiles(7001L, List.of(), 370L);
+    }
+
+    @Test
+    void updateReportBatch_shouldSaveWhenOnlySomeItemsCarrySelfRating() {
+        // 线上实测的请求形态：批量提交里「非当前编辑条目」没有 selfRating（前端列表接口
+        // 不返回该字段），只有当前编辑的那条带等级。修复前，非当前条目会落回百分比校验，
+        // 而等级制下 progress 恒为 0 → `0 <= 0` → 整次保存回滚。
+        PlanReport report = PlanReport.createDraft("202610", 57L, ReportOrgType.COLLEGE, 370L);
+        report.setId(71L);
+
+        UpdatePlanReportIndicatorDetailRequest otherDetail = new UpdatePlanReportIndicatorDetailRequest();
+        otherDetail.setIndicatorId(2044L);
+        otherDetail.setContent("我觉得是");
+        otherDetail.setProgress(0);
+        // 故意不设 selfRating —— 复现线上「非当前条目无等级」的真实形态
+
+        UpdatePlanReportIndicatorDetailRequest currentDetail = new UpdatePlanReportIndicatorDetailRequest();
+        currentDetail.setIndicatorId(2047L);
+        currentDetail.setContent("本月已完成");
+        currentDetail.setProgress(0);
+        currentDetail.setSelfRating("AHEAD");
+
+        when(planReportRepository.findById(71L)).thenReturn(Optional.of(report));
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        // 等级制豁免后不会再去读 indicator 的真实进度，故不 stub indicatorRepository
+        when(planReportIndicatorRepository.upsertDraftIndicator(71L, 2044L, 0, "我觉得是", null, "我觉得是"))
+                .thenReturn(7002L);
+        when(planReportIndicatorRepository.upsertDraftIndicator(71L, 2047L, 0, "本月已完成", "AHEAD", "本月已完成"))
+                .thenReturn(7003L);
+
+        PlanReport updated = reportApplicationService.updateReportBatch(
+                71L,
+                "标题",
+                "内容",
+                "摘要",
+                0,
+                "问题",
+                "计划",
+                370L,
+                List.of(otherDetail, currentDetail)
+        );
+
+        assertThat(updated.getId()).isEqualTo(71L);
+        // 两条明细都要落库——修复前第二条会抛异常导致整次回滚
+        verify(planReportIndicatorRepository)
+                .upsertDraftIndicator(71L, 2044L, 0, "我觉得是", null, "我觉得是");
+        verify(planReportIndicatorRepository)
+                .upsertDraftIndicator(71L, 2047L, 0, "本月已完成", "AHEAD", "本月已完成");
+    }
+
+    @Test
+    void updateReportBatch_shouldStillRejectPercentageRegressionWhenNoItemCarriesLevel() {
+        // 兜底：真正的历史百分比路径（整批都无等级）必须保留「进度必须大于真实进度」校验，
+        // 不能被等级制豁免规则一并放过。
+        PlanReport report = PlanReport.createDraft("202603", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        report.setId(72L);
+        Indicator indicator = new Indicator();
+        indicator.setId(2009L);
+        indicator.setProgress(30);
+
+        UpdatePlanReportIndicatorDetailRequest detail = new UpdatePlanReportIndicatorDetailRequest();
+        detail.setIndicatorId(2009L);
+        detail.setContent("百分比回退");
+        detail.setProgress(30);
+
+        when(planReportRepository.findById(72L)).thenReturn(Optional.of(report));
+        when(indicatorRepository.findById(2009L)).thenReturn(Optional.of(indicator));
+
+        assertThatThrownBy(() -> reportApplicationService.updateReportBatch(
+                72L,
+                "标题",
+                "内容",
+                "摘要",
+                30,
+                "问题",
+                "计划",
+                9001L,
+                List.of(detail)
+        ))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("填报进度必须大于真实进度，当前真实进度为 30%");
     }
 
     @Test
@@ -742,7 +866,7 @@ class ReportApplicationServiceTest {
         ReportApplicationService service = newService(List.of(workflowBusinessContextPort));
 
         assertThatCode(() -> service.updateReport(
-                60L, "指标 A", 2001L, "内容", "摘要", 45, "问题", "计划", 8001L))
+                60L, "指标 A", 2001L, "内容", "摘要", 45, null, "问题", "计划", 8001L))
                 .doesNotThrowAnyException();
     }
 

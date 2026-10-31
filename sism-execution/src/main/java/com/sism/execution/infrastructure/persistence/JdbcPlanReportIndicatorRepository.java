@@ -40,7 +40,10 @@ public class JdbcPlanReportIndicatorRepository implements PlanReportIndicatorRep
                 ON CONFLICT (report_id, indicator_id) DO UPDATE SET
                     progress = EXCLUDED.progress,
                     comment = EXCLUDED.comment,
-                    self_rating = EXCLUDED.self_rating,
+                    -- 2026-10-30 修复（已存自评进度被清空）：批量保存时非当前条目若没回传等级，
+                    -- 直接用 EXCLUDED.self_rating（null）会覆盖掉该条已存的等级。
+                    -- 等级没有「主动清空」的业务动作，故入参为空时保留原值。
+                    self_rating = COALESCE(EXCLUDED.self_rating, plan_report_indicator.self_rating),
                     description = EXCLUDED.description,
                     created_at = now()
                 RETURNING id

@@ -94,6 +94,7 @@ class ReportControllerTest {
                 eq("content"),
                 eq("summary"),
                 eq(55),
+                eq("AHEAD"),
                 eq("issues"),
                 eq("next"),
                 eq(102L)
@@ -105,6 +106,7 @@ class ReportControllerTest {
         request.setContent("content");
         request.setSummary("summary");
         request.setProgress(55);
+        request.setSelfRating("AHEAD");
         request.setIssues("issues");
         request.setNextPlan("next");
         request.setOperatorUserId(999L);
@@ -113,7 +115,7 @@ class ReportControllerTest {
 
         assertEquals(200, response.getStatusCodeValue());
         verify(reportApplicationService).updateReport(
-                2L, "title", 11L, "content", "summary", 55, "issues", "next", 102L);
+                2L, "title", 11L, "content", "summary", 55, "AHEAD", "issues", "next", 102L);
     }
 
     @Test

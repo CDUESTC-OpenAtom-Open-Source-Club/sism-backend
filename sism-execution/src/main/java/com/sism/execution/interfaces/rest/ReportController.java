@@ -101,6 +101,7 @@ public class ReportController {
                                 request.getContent(),
                                 request.getSummary(),
                                 request.getProgress(),
+                                request.getSelfRating(),
                                 request.getIssues(),
                                 request.getNextPlan(),
                                 requireCurrentUserId(currentUser)
