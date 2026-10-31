@@ -108,6 +108,29 @@ public class ExecutionWorkflowBusinessContextAdapter implements WorkflowBusiness
         return planReportIndicatorRepository.findAppraisalLevelsByReport(entityId);
     }
 
+    /**
+     * 2026-10-30 用户定案：审批拦截文案要报指标名称、不报指标 ID。
+     */
+    @Override
+    public java.util.Map<Long, String> findIndicatorNamesByReport(Long entityId) {
+        if (entityId == null || entityId <= 0) {
+            return java.util.Map.of();
+        }
+        return planReportIndicatorRepository.findIndicatorNamesByReport(entityId);
+    }
+
+    /**
+     * 2026-10-30 用户定案：审批拦截文案要指出去哪里操作——取报告的填报组织名。
+     */
+    @Override
+    public java.util.Optional<String> findReportOrgName(Long entityId) {
+        if (entityId == null || entityId <= 0) {
+            return java.util.Optional.empty();
+        }
+        return planReportRepository.findById(entityId)
+                .map(report -> resolveOrgName(report.getReportOrgId()));
+    }
+
     @Override
     public Optional<BusinessSummary> getBusinessSummary(String entityType, Long entityId) {
         if (entityId == null || entityType == null || entityType.isBlank()) {

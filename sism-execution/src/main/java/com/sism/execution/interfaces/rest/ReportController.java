@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -130,13 +131,20 @@ public class ReportController {
     // ==================== Report Action Operations ====================
 
     @PostMapping("/{id}/submit")
-    @Operation(summary = "提交报告", description = "将草稿状态的报告提交审批")
+    @Operation(summary = "提交报告", description = "将草稿状态的报告提交审批；可选携带重报说明（comment，query 或 body，body 优先）")
     @PreAuthorize(REPORT_WRITE_ACCESS)
     public ResponseEntity<ApiResponse<PlanReportResponse>> submitReport(
             @Parameter(description = "报告ID") @PathVariable Long id,
+            @Parameter(description = "重报/提交说明（可空）") @RequestParam(required = false) String comment,
+            @RequestBody(required = false) SubmitPlanReportRequest request,
             @AuthenticationPrincipal CurrentUser currentUser) {
         requireReportWithPermission(id, currentUser);
-        PlanReport report = reportApplicationService.submitReport(id, requireCurrentUserId(currentUser), currentUser);
+        String resolvedComment = request != null
+                && request.getComment() != null && !request.getComment().isBlank()
+                ? request.getComment().trim()
+                : comment;
+        PlanReport report = reportApplicationService.submitReport(
+                id, requireCurrentUserId(currentUser), resolvedComment, currentUser);
         return ResponseEntity.ok(ApiResponse.success(PlanReportResponse.fromEntity(report)));
     }
 
@@ -388,12 +396,14 @@ public class ReportController {
             @AuthenticationPrincipal CurrentUser currentUser) {
         return ResponseEntity.ok(ApiResponse.success(
                 indicatorAppraisalApplicationService.getContexts(
-                        request.getIndicatorIds(), requireCurrentUserId(currentUser))));
+                        request.getIndicatorIds(), requireCurrentUserId(currentUser),
+                        extractRoleCodes(currentUser))));
     }
 
     /**
      * 2026-10-28：审批链上的行内鉴定——只有当前审批节点负责人可改。
      * 改了就覆盖上一级，不改则沿用；同时同步 Alert 手动等级供看板/列表展示。
+     * 2026-10-31 定稿：写入与 canAppraise 同源校验（席位角色 + 当前节点候选审批人）。
      */
     @PutMapping("/indicators/{indicatorId}/appraisal-level")
     @Operation(summary = "调整指标审核进度",
@@ -405,7 +415,8 @@ public class ReportController {
             @AuthenticationPrincipal CurrentUser currentUser) {
         return ResponseEntity.ok(ApiResponse.success(
                 indicatorAppraisalApplicationService.setLevel(
-                        indicatorId, request.getLevel(), requireCurrentUserId(currentUser))));
+                        indicatorId, request.getLevel(), requireCurrentUserId(currentUser),
+                        extractRoleCodes(currentUser))));
     }
 
     @GetMapping("/count/status/{status}")
@@ -504,6 +515,21 @@ public class ReportController {
                 .map(authority -> authority.getAuthority())
                 .anyMatch(authority -> "ROLE_ADMIN".equals(authority)
                         || "ROLE_SYSTEM_ADMIN".equals(authority));
+    }
+
+    /**
+     * 2026-10-31 定稿：审核进度评定门禁需要「当前用户具备哪些审批席角色」——
+     * 与 isAdmin/isSystemAdmin 同源（Spring Security authorities），透传给应用服务，
+     * 服务层不再自行反查角色表。
+     */
+    private List<String> extractRoleCodes(CurrentUser currentUser) {
+        if (currentUser == null || currentUser.getAuthorities() == null) {
+            return List.of();
+        }
+        return currentUser.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     private Long requireCurrentOrgId(CurrentUser currentUser) {

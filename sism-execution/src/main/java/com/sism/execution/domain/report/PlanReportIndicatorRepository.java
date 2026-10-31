@@ -42,6 +42,12 @@ public interface PlanReportIndicatorRepository {
     Map<Long, String> findAppraisalLevelsByReport(Long reportId);
 
     /**
+     * 2026-10-30 用户定案：审批拦截文案要报指标名称（indicator_desc）、不报指标 ID。
+     * 返回该报告轮次下 指标ID→指标名称 映射（关联 indicator 表；缺失兜底「未知指标」）。
+     */
+    Map<Long, String> findIndicatorNamesByReport(Long reportId);
+
+    /**
      * 2026-10-28 用户定案：审批链上的行内鉴定——直接更新当前报告轮次的单指标等级。
      * level 为 null 表示恢复未评定。
      */
