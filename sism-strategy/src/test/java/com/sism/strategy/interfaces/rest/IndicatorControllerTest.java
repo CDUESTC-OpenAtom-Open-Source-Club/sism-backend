@@ -255,6 +255,11 @@ class IndicatorControllerTest {
                             // 2026-10-31：重发原地续链依赖（本测试不触发重发，传 null）
                             null,
                             null,
+                            null,
+                            // 2026-10-31 缺陷修复：重发后续链通知依赖（本测试不触发重发，传 null）
+                            null,
+                            null,
+                            null,
                             null),
                     // 取消异动依赖（本测试不触发取消，传 null）
                     null,

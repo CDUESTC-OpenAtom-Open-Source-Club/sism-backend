@@ -371,6 +371,12 @@ class PlanApplicationServiceTest {
                 eq(functionalDeptOrgId),
                 eq(cycleId)
         )).thenReturn(0);
+        // 2026-10-31 学院级联分支：无「目标为学院」的在审异动，放行
+        when(jdbcTemplate.queryForObject(
+                contains("sys_org"),
+                eq(Integer.class),
+                eq(cycleId)
+        )).thenReturn(0);
         when(planRepository.save(same(plan))).thenReturn(plan);
 
         PlanResponse response = service.submitPlanForApproval(9102L, request, 188L, functionalDeptOrgId);
@@ -379,6 +385,49 @@ class PlanApplicationServiceTest {
         assertEquals(PlanStatus.PENDING.value(), response.getStatus());
         verify(planRepository).save(same(plan));
         verify(eventPublisher, times(2)).publish(any());
+    }
+
+    /**
+     * 2026-10-31 缺陷修复（学院级联全锁，线上实证）：教务处→计算机学院的子计划
+     * 异动在审时，向商学院（另一个学院）发起下发此前后端照常受理——原校验只查
+     * 「异动指标 target_org_id = 职能部门自身」，学院子计划异动（target=学院）
+     * 永不命中。按 2026-10-11 定案补齐级联分支：同周期内存在任意「目标为学院」
+     * 的异动在审时，任何以学院为目标的下发一律拒绝。
+     */
+    @Test
+    @DisplayName("学院级联全锁：学院子计划异动在审时向另一学院下发被拒")
+    void shouldBlockCollegeDispatchWhenCollegeSubPlanMutationInReview() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 35L;
+        Long businessCollegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, businessCollegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9105L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+
+        when(planRepository.findById(9105L)).thenReturn(Optional.of(plan));
+        // 部门自身指标无在审异动（原分支不命中——线上缺陷正是漏了学院 target 的级联）
+        when(jdbcTemplate.queryForObject(
+                contains("PLAN_MUTATION_STRATEGY"),
+                eq(Integer.class),
+                eq(functionalDeptOrgId),
+                eq(cycleId)
+        )).thenReturn(0);
+        // 同周期存在目标组织为学院（sys_org.type='academic'）的异动审批在审
+        when(jdbcTemplate.queryForObject(
+                contains("sys_org"),
+                eq(Integer.class),
+                eq(cycleId)
+        )).thenReturn(1);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.submitPlanForApproval(9105L, request, 188L, functionalDeptOrgId));
+
+        assertTrue(error.getMessage().contains("暂不能向学院下发"));
+        // 整体拒绝：不落库、不发事件（下发审批链不得启动）
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
     }
 
     @Test

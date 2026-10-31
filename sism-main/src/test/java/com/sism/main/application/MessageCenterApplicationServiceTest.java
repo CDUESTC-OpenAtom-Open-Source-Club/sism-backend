@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -337,6 +338,7 @@ class MessageCenterApplicationServiceTest {
                 .flowCode("PLAN_APPROVAL_COLLEGE")
                 .sourceOrgName("计算机学院")
                 .targetOrgName("教务处")
+                .requesterOrgName("计算机学院")
                 .assigneeName("王主任")
                 .createdTime(LocalDateTime.of(2026, 4, 17, 11, 0))
                 .build();
@@ -362,7 +364,76 @@ class MessageCenterApplicationServiceTest {
         assertTrue(listResponse.items().stream().anyMatch(item -> "workflow:31:701".equals(item.messageId())
                 && "计划审批 · 教务处".equals(item.title())));
         assertTrue(listResponse.items().stream().anyMatch(item -> "workflow:32:702".equals(item.messageId())
-                && "上报审批 · 计算机学院→教务处".equals(item.title())));
+                && "上报审批 · 计算机学院→教务处".equals(item.title())
+                && "计算机学院".equals(item.senderDisplay())));
+    }
+
+    @Test
+    @DisplayName("2026-10-30 修复：上报链待办提交人=填报组织（requesterOrgName），不再写成下发方向组织")
+    void shouldUseRequesterOrgNameAsApplicantForReportChainTodo() {
+        // 现实场景：战略发展部下发给教务处的计划，教务处填报人提交 202610 月报——
+        // sourceOrg=战略发展部（下发方向），requester=教务处（真实提交方）。
+        WorkflowTaskResponse reportTask = WorkflowTaskResponse.builder()
+                .taskId("901")
+                .instanceId("41")
+                .taskName("职能部门审批人审批")
+                .currentStepName("职能部门审批人审批")
+                .entityType("PLAN_REPORT")
+                .entityId(810L)
+                .planName("202610 教务处月报")
+                .flowCode("PLAN_APPROVAL_FUNCDEPT")
+                .sourceOrgName("战略发展部")
+                .targetOrgName("教务处")
+                .requesterOrgName("教务处")
+                .assigneeName("李主任")
+                .createdTime(LocalDateTime.of(2026, 10, 30, 9, 0))
+                .build();
+        when(workflowReadModelService.getMyPendingTasks(8L, 1))
+                .thenReturn(PageResult.of(List.of(reportTask), 1, 1, 10));
+        when(workflowReadModelService.countMyPendingTodoMessages(8L)).thenReturn(1L);
+
+        MessageCenterModels.ListResponse listResponse =
+                messageCenterApplicationService.getMessages(8L, "TODO", 1, 100, null, false);
+
+        assertEquals(1, listResponse.total());
+        MessageCenterModels.Item item = listResponse.items().get(0);
+        assertEquals("上报审批 · 战略发展部→教务处", item.title());
+        // 提交人=填报组织教务处，而不是下发方战略发展部
+        assertEquals("教务处", item.senderDisplay());
+        assertTrue(item.summary().contains("教务处提交了“202610 教务处月报”"));
+        assertFalse(item.summary().contains("战略发展部提交了"));
+    }
+
+    @Test
+    @DisplayName("2026-10-30 修复回归：下发链 requester=原 source，待办提交人方向不变")
+    void shouldKeepDispatchChainApplicantUnchanged() {
+        WorkflowTaskResponse planTask = WorkflowTaskResponse.builder()
+                .taskId("902")
+                .instanceId("42")
+                .taskName("部门负责人审批")
+                .currentStepName("部门负责人审批")
+                .entityType("PLAN")
+                .entityId(811L)
+                .planName("2026年度计划")
+                .flowCode("PLAN_DISPATCH_STRATEGY")
+                .sourceOrgName("教务处")
+                .targetOrgName("计算机学院")
+                .requesterOrgName("教务处")
+                .assigneeName("王主任")
+                .createdTime(LocalDateTime.of(2026, 10, 30, 10, 0))
+                .build();
+        when(workflowReadModelService.getMyPendingTasks(9L, 1))
+                .thenReturn(PageResult.of(List.of(planTask), 1, 1, 10));
+        when(workflowReadModelService.countMyPendingTodoMessages(9L)).thenReturn(1L);
+
+        MessageCenterModels.ListResponse listResponse =
+                messageCenterApplicationService.getMessages(9L, "TODO", 1, 100, null, false);
+
+        assertEquals(1, listResponse.total());
+        MessageCenterModels.Item item = listResponse.items().get(0);
+        assertEquals("计划审批 · 教务处→计算机学院", item.title());
+        assertEquals("教务处", item.senderDisplay());
+        assertTrue(item.summary().contains("教务处提交了“2026年度计划”"));
     }
 
     @Test
@@ -396,6 +467,7 @@ class MessageCenterApplicationServiceTest {
                 .batchId(batchId)
                 .sourceOrgName(sourceOrgName)
                 .targetOrgName(targetOrgName)
+                .requesterOrgName(sourceOrgName)
                 .assigneeName("审批人甲")
                 .createdTime(LocalDateTime.of(2026, 4, 17, 9, 0))
                 .build();

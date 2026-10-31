@@ -3,8 +3,11 @@ package com.sism.strategy.application;
 import com.sism.workflow.application.BusinessWorkflowApplicationService;
 import com.sism.workflow.application.WorkflowBusinessStatusSyncService;
 import com.sism.workflow.application.support.WorkflowEventDispatcher;
+import com.sism.workflow.domain.definition.AuditFlowDef;
+import com.sism.workflow.domain.definition.AuditStepDef;
 import com.sism.workflow.domain.runtime.AuditInstance;
 import com.sism.workflow.domain.runtime.AuditInstanceRepository;
+import com.sism.workflow.domain.runtime.AuditStepInstance;
 import com.sism.workflow.interfaces.dto.StartWorkflowRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,6 +63,17 @@ public class IndicatorMutationService {
     private final AuditInstanceRepository auditInstanceRepository;
     private final WorkflowBusinessStatusSyncService workflowBusinessStatusSyncService;
     private final WorkflowEventDispatcher workflowEventDispatcher;
+    /**
+     * 2026-10-31 缺陷修复（原样重发后审批人无待办通知）：重发续链成功后向下一环节
+     * 候选审批人补发与首发起同口径的「待审批」通知。首发起的上报链经
+     * PlanSubmittedForApprovalEvent → PlanWorkflowEventListener 走同一通知方法，
+     * 异动链直连 startWorkflow 无事件监听、publish 对异动实例恒为空事件
+     * （AuditInstance 不注册领域事件）——重发路径此前整条通知链路缺位。
+     */
+    private final com.sism.iam.application.service.UserNotificationService userNotificationService;
+    private final com.sism.workflow.application.support.ApproverResolver approverResolver;
+    private final com.sism.workflow.application.definition.WorkflowDefinitionQueryService workflowDefinitionQueryService;
+    private final com.sism.workflow.application.query.WorkflowReadModelService workflowReadModelService;
 
     /**
      * 异动发起权只属于填报人（2026-10-21 用户定案）。
@@ -899,6 +913,7 @@ public class IndicatorMutationService {
                        cur.approver_org_id AS approver_org_id,
                        so1.name AS source_org_name,
                        so2.name AS target_org_name,
+                       so2.type::text AS target_org_type,
                        COALESCE(i.owner_org_id, t.created_by_org_id) AS source_org_id,
                        COALESCE(i.target_org_id, t.org_id) AS target_org_id,
                        ru.real_name AS submitter_name,
@@ -956,6 +971,7 @@ public class IndicatorMutationService {
                     row.put("approver_org_id", rs.getObject("approver_org_id"));
                     row.put("source_org_name", rs.getString("source_org_name"));
                     row.put("target_org_name", rs.getString("target_org_name"));
+                    row.put("target_org_type", rs.getString("target_org_type"));
                     row.put("source_org_id", rs.getObject("source_org_id"));
                     row.put("target_org_id", rs.getObject("target_org_id"));
                     row.put("submitter_name", rs.getString("submitter_name"));
@@ -1092,6 +1108,9 @@ public class IndicatorMutationService {
      *    实例回 IN_REVIEW、completedAt 保持 NULL、batch_id 不改写；逐实例
      *    save → syncAfterWorkflowChanged → workflowEventDispatcher.publish（保持
      *    现有通知行为）。
+     * ⑥ 通知（2026-10-31 缺陷修复，线上实证 02 号日志异常3）：重发成功后下一环节
+     *    候选审批人收到与首发起同口径的「待审批」站内信（首批实例的当前审批节点，
+     *    批次只发 1 条，fail-safe）——修复重发后消息中心「待处理/审批通知」双 0。
      *
      * @param items 可选的改后条目（结构同 {@link #initiateBatch}）；null/空 = 原样重发
      */
@@ -1286,6 +1305,7 @@ public class IndicatorMutationService {
         // ⑦ 逐实例原地续链：WITHDRAWN 活链 resume（零新增行、batch_id 不改写），
         //    同批已在审的兄弟实例保持活动；终态实例说明批次状态不一致，整批拒绝
         List<String> instanceIds = new ArrayList<>();
+        List<AuditInstance> resumedInstances = new ArrayList<>();
         for (RoundRow row : rows) {
             AuditInstance domain = auditInstanceRepository.findById(row.instanceId())
                     .orElseThrow(() -> new IllegalStateException(
@@ -1297,6 +1317,7 @@ public class IndicatorMutationService {
                 AuditInstance saved = auditInstanceRepository.save(domain);
                 workflowBusinessStatusSyncService.syncAfterWorkflowChanged(saved);
                 workflowEventDispatcher.publish(saved);
+                resumedInstances.add(saved);
                 instanceIds.add(String.valueOf(saved.getId()));
             } else if (AuditInstance.STATUS_PENDING.equalsIgnoreCase(status)) {
                 instanceIds.add(String.valueOf(domain.getId()));
@@ -1305,10 +1326,81 @@ public class IndicatorMutationService {
             }
         }
 
+        // ⑧ 通知（2026-10-31 缺陷修复）：下一环节候选审批人收到与首发起同口径的
+        //    「待审批」通知——重发后消息中心/铃铛与首发起一致，不再「待处理 0」
+        notifyNextStepCandidatesAfterResume(resumedInstances, operatorUserId);
+
         String message = withDraft ? "异动已按修改内容重新发起" : "异动已重新发起";
         log.info("[IndicatorMutation] 退回异动已原地续链重发: instanceId={}, batchId={}, 实例数={}, 改后重发={}",
                 instanceId, batchId, instanceIds.size(), withDraft);
         return new ResubmitResult(instanceIds, message);
+    }
+
+    /**
+     * 2026-10-31 缺陷修复（原样重发后审批人无待办通知，线上实证 02 号日志异常3）：
+     * 重发续链成功后，复活实例的当前审批节点候选审批人收到与首发起同口径的「待审批」
+     * 站内信（createSubmissionNotification：type=APPROVAL_SUBMITTED、标题
+     * 「异动审批待处理」、正文「{提交人}提交了“X”，当前待处理环节为“Y”，请尽快审批。」，
+     * 与上报链首发起 PlanWorkflowEventListener.notifyNextApprovers 同一通知方法）。
+     *
+     * 批次口径：一次重发（同批可能多实例、且审批人集合相同）只发 1 条——按批次首个
+     * 复活实例解析当前节点候选，与「异动按计划聚合，消息只有一条」的既有定案一致。
+     * fail-safe：通知失败仅告警，绝不阻断重发主流程（与 notifyNextStepOnApproval 同策略）。
+     */
+    private void notifyNextStepCandidatesAfterResume(java.util.List<AuditInstance> resumedInstances,
+                                                     Long operatorUserId) {
+        if (resumedInstances == null || resumedInstances.isEmpty()) {
+            return;
+        }
+        try {
+            AuditInstance representative = resumedInstances.get(0);
+            AuditStepInstance currentStep = representative.resolveCurrentPendingStep().orElse(null);
+            if (currentStep == null) {
+                return;
+            }
+            AuditStepDef currentStepDef = resolveResumedStepDefinition(representative, currentStep);
+            if (currentStepDef == null) {
+                return;
+            }
+            String businessName = workflowReadModelService
+                    .getInstanceDetail(String.valueOf(representative.getId()))
+                    .getPlanName();
+            String submitterName = approverResolver.resolveApproverName(operatorUserId);
+            Long senderOrgId = userProvider.getUserOrgId(operatorUserId).orElse(null);
+            approverResolver
+                    .resolveCandidates(currentStepDef, representative.getRequesterOrgId(), representative)
+                    .forEach(candidate -> userNotificationService.createSubmissionNotification(
+                            candidate.getUserId(),
+                            operatorUserId,
+                            senderOrgId,
+                            representative.getId(),
+                            representative.getEntityType(),
+                            representative.getEntityId(),
+                            businessName,
+                            currentStep.getStepName(),
+                            submitterName
+                    ));
+        } catch (Exception ex) {
+            log.warn("[IndicatorMutation] 重发后通知下一环节审批人失败（不影响重发）: instanceIds={}, error={}",
+                    resumedInstances.stream()
+                            .map(instance -> String.valueOf(instance.getId()))
+                            .toList(),
+                    ex.getMessage(), ex);
+        }
+    }
+
+    /** 复活实例当前审批节点定义解析（与 BusinessWorkflowApplicationService.resolveStepDefinition 同口径）。 */
+    private AuditStepDef resolveResumedStepDefinition(AuditInstance instance, AuditStepInstance currentStep) {
+        AuditFlowDef flowDef = instance.getFlowDefId() == null
+                ? null
+                : workflowDefinitionQueryService.getAuditFlowDefById(instance.getFlowDefId());
+        if (flowDef == null || flowDef.getSteps() == null || flowDef.getSteps().isEmpty()) {
+            return null;
+        }
+        return flowDef.getSteps().stream()
+                .filter(step -> step.getId() != null && step.getId().equals(currentStep.getStepDefId()))
+                .findFirst()
+                .orElse(null);
     }
 
     /** audit_instance 行（带 flow_code）转 Map，供原样重发校验与批次装载使用。 */
