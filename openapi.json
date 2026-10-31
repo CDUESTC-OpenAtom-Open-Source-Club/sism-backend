@@ -1,5 +1,5 @@
 {
-  "openapi": "3.0.1",
+  "openapi": "3.1.0",
   "info": {
     "title": "SISM Backend API",
     "description": "Strategic Indicator Management System - RESTful API Documentation",
@@ -11,11 +11,11 @@
       "name": "Proprietary",
       "url": "https://sism.example.com/license"
     },
-    "version": "1.1.0"
+    "version": "1.0.0"
   },
   "servers": [
     {
-      "url": "http://localhost:8080",
+      "url": "http://localhost:8081",
       "description": "Generated server url"
     }
   ],
@@ -42,6 +42,10 @@
       "description": "仪表盘管理接口"
     },
     {
+      "name": "消息中心",
+      "description": "统一消息中心聚合接口"
+    },
+    {
       "name": "仪表盘汇总",
       "description": "仪表盘汇总和分析接口"
     },
@@ -58,8 +62,12 @@
       "description": "业务工作流管理接口"
     },
     {
-      "name": "里程碑",
-      "description": "战略侧里程碑主要接口。这是规划的权威入口点。"
+      "name": "钉钉免登",
+      "description": "钉钉 H5 微应用免登相关接口"
+    },
+    {
+      "name": "系统公告管理",
+      "description": "系统维护公告的发布、撤回和查询接口"
     },
     {
       "name": "组织管理",
@@ -76,6 +84,10 @@
     {
       "name": "System Health",
       "description": "前端兼容性健康检查接口"
+    },
+    {
+      "name": "Business Imports",
+      "description": "业务表格导入与自动审批接口"
     },
     {
       "name": "分析报告",
@@ -547,6 +559,50 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponsePlanReportResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reports/indicators/{indicatorId}/appraisal-level": {
+      "put": {
+        "tags": [
+          "计划报告"
+        ],
+        "summary": "调整指标审核进度",
+        "description": "仅当前审批节点负责人可调整；null/空表示恢复未评定",
+        "operationId": "setIndicatorAppraisalLevel",
+        "parameters": [
+          {
+            "name": "indicatorId",
+            "in": "path",
+            "description": "指标ID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetIndicatorAppraisalLevelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseIndicatorAppraisalContextResponse"
                 }
               }
             }
@@ -1262,6 +1318,111 @@
         }
       }
     },
+    "/api/v1/auth/users/me/contact": {
+      "put": {
+        "tags": [
+          "认证管理"
+        ],
+        "summary": "更新当前用户联系信息",
+        "operationId": "updateMyContact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateContactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseUserSummaryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/announcements/{id}": {
+      "get": {
+        "tags": [
+          "系统公告管理"
+        ],
+        "summary": "查看公告详情",
+        "description": "根据ID查看公告详情",
+        "operationId": "getById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseAnnouncementResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "系统公告管理"
+        ],
+        "summary": "编辑公告",
+        "description": "编辑草稿或已撤回公告，已发布公告不允许修改",
+        "operationId": "update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAnnouncementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseAnnouncementResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/analytics/reports/{id}": {
       "get": {
         "tags": [
@@ -1504,6 +1665,49 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponseDashboardDTO"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alerts/indicator/{indicatorId}/manual-level": {
+      "put": {
+        "tags": [
+          "预警管理"
+        ],
+        "summary": "设置指标手动预警等级",
+        "description": "战略发展部、分管校领导及指标所属填报部门可手动设置或取消审核进度（后写覆盖，2026-10-07 裁决 B）",
+        "operationId": "setManualAlertLevel",
+        "parameters": [
+          {
+            "name": "indicatorId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualAlertLevelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseAlertResponse"
                 }
               }
             }
@@ -2381,6 +2585,70 @@
         }
       }
     },
+    "/api/v1/reports/indicator-attachments/latest": {
+      "post": {
+        "tags": [
+          "计划报告"
+        ],
+        "summary": "批量查询指标最新可见填报附件",
+        "description": "导出用：按当前登录人可见范围返回每个指标最新一轮填报的附件",
+        "operationId": "getLatestVisibleIndicatorAttachments",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndicatorAttachmentQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListIndicatorLatestAttachmentResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reports/indicator-appraisal/context": {
+      "post": {
+        "tags": [
+          "计划报告"
+        ],
+        "summary": "批量查询指标鉴定进度上下文",
+        "description": "返回当前有效审核进度、当前审批节点，以及当前用户是否可调整",
+        "operationId": "getIndicatorAppraisalContexts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndicatorAppraisalContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListIndicatorAppraisalContextResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/profile/password": {
       "post": {
         "tags": [
@@ -2404,7 +2672,7 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponseVoid"
+                  "$ref": "#/components/schemas/ApiResponseObject"
                 }
               }
             }
@@ -2916,7 +3184,7 @@
           "组织管理"
         ],
         "summary": "获取所有组织（分页，别名）",
-        "operationId": "getAllOrganizations_2_1",
+        "operationId": "getAllOrganizations",
         "parameters": [
           {
             "name": "pageNum",
@@ -2924,10 +3192,10 @@
             "description": "页码，从1开始",
             "required": false,
             "schema": {
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 1
+              "default": 1,
+              "minimum": 1
             }
           },
           {
@@ -2936,11 +3204,11 @@
             "description": "每页大小",
             "required": false,
             "schema": {
-              "maximum": 100,
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 10
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1
             }
           },
           {
@@ -2949,10 +3217,10 @@
             "description": "页码，从1开始",
             "required": false,
             "schema": {
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 1
+              "default": 1,
+              "minimum": 1
             }
           },
           {
@@ -2961,11 +3229,11 @@
             "description": "每页大小",
             "required": false,
             "schema": {
-              "maximum": 100,
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 10
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1
             }
           }
         ],
@@ -2975,7 +3243,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponseListOrgResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultOrgResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListOrgResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -3018,7 +3293,7 @@
           "组织管理"
         ],
         "summary": "获取所有组织（分页，别名）",
-        "operationId": "getAllOrganizations_1_1_1",
+        "operationId": "getAllOrganizations_1",
         "parameters": [
           {
             "name": "pageNum",
@@ -3026,10 +3301,10 @@
             "description": "页码，从1开始",
             "required": false,
             "schema": {
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 1
+              "default": 1,
+              "minimum": 1
             }
           },
           {
@@ -3038,11 +3313,11 @@
             "description": "每页大小",
             "required": false,
             "schema": {
-              "maximum": 100,
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 10
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1
             }
           },
           {
@@ -3051,10 +3326,10 @@
             "description": "页码，从1开始",
             "required": false,
             "schema": {
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 1
+              "default": 1,
+              "minimum": 1
             }
           },
           {
@@ -3063,11 +3338,11 @@
             "description": "每页大小",
             "required": false,
             "schema": {
-              "maximum": 100,
-              "minimum": 1,
               "type": "integer",
               "format": "int32",
-              "default": 10
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1
             }
           }
         ],
@@ -3077,7 +3352,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponseListOrgResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultOrgResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListOrgResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -3323,6 +3605,58 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponseMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/message-center/messages/{messageId}/read": {
+      "post": {
+        "tags": [
+          "消息中心"
+        ],
+        "summary": "标记消息已读",
+        "operationId": "markMessageAsRead",
+        "parameters": [
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseReadResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/message-center/messages/read-all": {
+      "post": {
+        "tags": [
+          "消息中心"
+        ],
+        "summary": "全部标记已读",
+        "operationId": "markAllAsRead",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseReadResult"
                 }
               }
             }
@@ -3700,6 +4034,39 @@
         }
       }
     },
+    "/api/v1/indicators/{id}/mutation-for-create": {
+      "post": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "已下发计划新增指标后发起异动审批",
+        "description": "仅战略发展部；为新建指标打异动标记并启动 PLAN_MUTATION_STRATEGY",
+        "operationId": "initiateMutationForCreate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseString"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/indicators/{id}/distribute": {
       "post": {
         "tags": [
@@ -3918,6 +4285,106 @@
         }
       }
     },
+    "/api/v1/indicators/mutations/{instanceId}/withdraw": {
+      "post": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "撤回异动（退回填报人节点，链保持存活）",
+        "description": "仅异动发起人；同批次全部在审异动实例一次性退回填报人（WITHDRAWN 且未完结），可修改后重新发起或取消异动终结",
+        "operationId": "withdrawMutation",
+        "parameters": [
+          {
+            "name": "instanceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListLong"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/indicators/mutations/{instanceId}/cancel-returned": {
+      "post": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "取消异动（终结退回待重报的整批异动链）",
+        "description": "仅异动发起人；同批次全部退回待重报实例一次性置为 CANCELLED 并归入审批历史",
+        "operationId": "cancelReturnedMutation",
+        "parameters": [
+          {
+            "name": "instanceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListLong"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/indicators/mutations/batch": {
+      "post": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "批量发起指标异动",
+        "description": "仅战略发展部；多条指标攒改与新增指标整批提交，权重合计校验整批一次，任一失败整批回滚",
+        "operationId": "initiateMutationBatch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListString"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/indicators/batch-withdraw": {
       "post": {
         "tags": [
@@ -3973,6 +4440,249 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponseBatchDistributeIndicatorsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/strategic-tasks/{batchId}/commit": {
+      "post": {
+        "tags": [
+          "Business Imports"
+        ],
+        "summary": "确认战略任务指标导入",
+        "description": "填报人可确认导入（含覆盖）；自动发起审批仅部门负责人及以上角色可用",
+        "operationId": "commitStrategicTasks",
+        "parameters": [
+          {
+            "name": "batchId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportCommitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseImportCommitResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/strategic-tasks/preview": {
+      "post": {
+        "tags": [
+          "Business Imports"
+        ],
+        "summary": "预览战略任务指标导入",
+        "description": "填报人可解析预览；自动发起审批仅部门负责人及以上角色可用",
+        "operationId": "previewStrategicTasks",
+        "parameters": [
+          {
+            "name": "cycleId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "targetOrgId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sheetName",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sequenceMap",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseImportPreviewResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/distribution/{batchId}/commit": {
+      "post": {
+        "tags": [
+          "Business Imports"
+        ],
+        "summary": "确认学院子指标导入",
+        "operationId": "commitDistribution",
+        "parameters": [
+          {
+            "name": "batchId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportCommitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseImportCommitResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/distribution/preview": {
+      "post": {
+        "tags": [
+          "Business Imports"
+        ],
+        "summary": "预览学院子指标导入",
+        "operationId": "previewDistribution",
+        "parameters": [
+          {
+            "name": "cycleId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "targetCollegeOrgId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sourceOrgId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sheetName",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sequenceMap",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseImportPreviewResponse"
                 }
               }
             }
@@ -4353,6 +5063,99 @@
         }
       }
     },
+    "/api/v1/auth/password-reset/verify": {
+      "post": {
+        "tags": [
+          "认证管理"
+        ],
+        "summary": "校验密码找回验证码",
+        "operationId": "verifyPasswordResetCode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password-reset/send": {
+      "post": {
+        "tags": [
+          "认证管理"
+        ],
+        "summary": "发送密码找回验证码",
+        "operationId": "sendPasswordResetCode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password-reset/confirm": {
+      "post": {
+        "tags": [
+          "认证管理"
+        ],
+        "summary": "确认密码重置",
+        "operationId": "confirmPasswordReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/logout": {
       "post": {
         "tags": [
@@ -4415,6 +5218,37 @@
         }
       }
     },
+    "/api/v1/auth/dingtalk/login": {
+      "post": {
+        "tags": [
+          "钉钉免登"
+        ],
+        "summary": "钉钉免登",
+        "operationId": "login_1",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DingTalkLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseLoginResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/attachments/upload": {
       "post": {
         "tags": [
@@ -4437,16 +5271,16 @@
           "content": {
             "multipart/form-data": {
               "schema": {
-                "required": [
-                  "file"
-                ],
                 "type": "object",
                 "properties": {
                   "file": {
                     "type": "string",
                     "format": "binary"
                   }
-                }
+                },
+                "required": [
+                  "file"
+                ]
               }
             }
           }
@@ -4987,6 +5821,154 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponseAuditInstance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/announcements": {
+      "get": {
+        "tags": [
+          "系统公告管理"
+        ],
+        "summary": "公告列表",
+        "description": "分页查询公告列表，可按状态筛选",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "系统公告管理"
+        ],
+        "summary": "创建公告",
+        "description": "创建一条系统维护公告（草稿状态）",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAnnouncementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseAnnouncementResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/announcements/{id}/withdraw": {
+      "post": {
+        "tags": [
+          "系统公告管理"
+        ],
+        "summary": "撤回公告",
+        "description": "撤回已发布的公告",
+        "operationId": "withdraw",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseAnnouncementResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/announcements/{id}/publish": {
+      "post": {
+        "tags": [
+          "系统公告管理"
+        ],
+        "summary": "发布公告",
+        "description": "立即发布公告，发布后所有活跃用户将收到站内通知和邮件",
+        "operationId": "publish",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseAnnouncementResponse"
                 }
               }
             }
@@ -6000,6 +6982,39 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponseWorkflowDefinitionPreviewResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}/mutation-history": {
+      "get": {
+        "tags": [
+          "任务管理"
+        ],
+        "summary": "战略任务变更历史",
+        "description": "该任务全部改名快照（已更改 N 次）",
+        "operationId": "taskMutationHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListMapStringObject"
                 }
               }
             }
@@ -7382,6 +8397,160 @@
         }
       }
     },
+    "/api/v1/message-center/summary": {
+      "get": {
+        "tags": [
+          "消息中心"
+        ],
+        "summary": "获取消息中心摘要",
+        "operationId": "getSummary",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/message-center/messages": {
+      "get": {
+        "tags": [
+          "消息中心"
+        ],
+        "summary": "获取消息中心列表",
+        "operationId": "getMessages",
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "ALL"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 100
+            }
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "includeRisk",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/message-center/messages/{messageId}": {
+      "get": {
+        "tags": [
+          "消息中心"
+        ],
+        "summary": "获取消息详情",
+        "operationId": "getMessageDetail",
+        "parameters": [
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseItem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/indicators/{id}/mutation-history": {
+      "get": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "指标异动历史",
+        "description": "该指标全部异动快照（已更改 N 次）",
+        "operationId": "mutationHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/indicators/{id}/distribution-eligibility": {
       "get": {
         "tags": [
@@ -7553,9 +8722,29 @@
           {
             "name": "keyword",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 10
             }
           }
         ],
@@ -7598,6 +8787,125 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponseListIndicatorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/indicators/mutations/returned": {
+      "get": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "退回待重报异动链清单",
+        "description": "按组织查被驳回退回填报人的异动活链（取消异动按钮数据源）",
+        "operationId": "returnedMutationChains",
+        "parameters": [
+          {
+            "name": "orgId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/indicators/mutations/in-progress": {
+      "get": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "异动中指标清单",
+        "description": "看板异动汇总数据源",
+        "operationId": "inMutation",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/indicators/mutation-approvals": {
+      "get": {
+        "tags": [
+          "指标管理"
+        ],
+        "summary": "异动审批实例清单",
+        "description": "按组织查异动审批链（审批中心卡片数据源，含进行中与已完成）",
+        "operationId": "mutationApprovals",
+        "parameters": [
+          {
+            "name": "orgId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{batchId}": {
+      "get": {
+        "tags": [
+          "Business Imports"
+        ],
+        "summary": "查询导入批次预览",
+        "operationId": "getImportPreview",
+        "parameters": [
+          {
+            "name": "batchId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseImportPreviewResponse"
                 }
               }
             }
@@ -7890,6 +9198,27 @@
         }
       }
     },
+    "/api/v1/auth/permissions/effective": {
+      "get": {
+        "tags": [
+          "认证管理"
+        ],
+        "summary": "获取当前用户有效权限明细（含角色与组织作用域）",
+        "operationId": "getEffectivePermissions",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListEffectivePermission"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/me": {
       "get": {
         "tags": [
@@ -7918,6 +9247,27 @@
         ],
         "summary": "健康检查",
         "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/dingtalk/status": {
+      "get": {
+        "tags": [
+          "钉钉免登"
+        ],
+        "summary": "钉钉集成开关状态",
+        "operationId": "status",
         "responses": {
           "200": {
             "description": "OK",
@@ -8349,6 +9699,50 @@
         }
       }
     },
+    "/api/v1/announcements/public": {
+      "get": {
+        "tags": [
+          "系统公告管理"
+        ],
+        "summary": "公开公告列表",
+        "description": "公开查询已发布公告列表，供登录页等未登录场景使用",
+        "operationId": "listPublished",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 5
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/analytics/reports/user/{generatedBy}": {
       "get": {
         "tags": [
@@ -8418,7 +9812,7 @@
           "分析报告"
         ],
         "summary": "按状态获取报告",
-        "operationId": "getReportsByStatusPage_1",
+        "operationId": "getReportsByStatusPage",
         "parameters": [
           {
             "name": "status",
@@ -8455,7 +9849,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultReportDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListReportDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultReportDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -8520,7 +9921,7 @@
           "分析报告"
         ],
         "summary": "按名称搜索报告",
-        "operationId": "searchReportsByNamePage_1",
+        "operationId": "searchReportsByNamePage",
         "parameters": [
           {
             "name": "name",
@@ -8557,7 +9958,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultReportDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListReportDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultReportDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -8622,7 +10030,7 @@
           "分析报告"
         ],
         "summary": "获取所有已生成的报告",
-        "operationId": "getAllGeneratedReportsPage_1",
+        "operationId": "getAllGeneratedReportsPage",
         "parameters": [
           {
             "name": "pageNum",
@@ -8651,7 +10059,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultReportDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListReportDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultReportDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9011,7 +10426,7 @@
           "分析数据导出"
         ],
         "summary": "按状态获取数据导出",
-        "operationId": "getDataExportsByStatusPage_1",
+        "operationId": "getDataExportsByStatusPage",
         "parameters": [
           {
             "name": "status",
@@ -9048,7 +10463,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDataExportDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9113,7 +10535,7 @@
           "分析数据导出"
         ],
         "summary": "按名称搜索数据导出",
-        "operationId": "searchDataExportsByNamePage_1",
+        "operationId": "searchDataExportsByNamePage",
         "parameters": [
           {
             "name": "name",
@@ -9150,7 +10572,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDataExportDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9257,7 +10686,7 @@
           "分析数据导出"
         ],
         "summary": "获取所有失败的数据导出",
-        "operationId": "getAllFailedPage_1",
+        "operationId": "getAllFailedPage",
         "parameters": [
           {
             "name": "pageNum",
@@ -9286,7 +10715,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDataExportDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9343,7 +10779,7 @@
           "分析数据导出"
         ],
         "summary": "获取所有可下载的数据导出",
-        "operationId": "getAllDownloadablePage_1",
+        "operationId": "getAllDownloadablePage",
         "parameters": [
           {
             "name": "pageNum",
@@ -9372,7 +10808,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDataExportDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDataExportDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9533,7 +10976,7 @@
           "分析仪表盘"
         ],
         "summary": "根据用户ID获取仪表盘",
-        "operationId": "getDashboardsByUserIdPage_1",
+        "operationId": "getDashboardsByUserIdPage",
         "parameters": [
           {
             "name": "userId",
@@ -9571,7 +11014,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDashboardDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9585,7 +11035,7 @@
           "分析仪表盘"
         ],
         "summary": "按名称搜索仪表盘",
-        "operationId": "searchDashboardsByNamePage_1",
+        "operationId": "searchDashboardsByNamePage",
         "parameters": [
           {
             "name": "userId",
@@ -9631,7 +11081,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDashboardDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9705,7 +11162,7 @@
           "分析仪表盘"
         ],
         "summary": "根据用户ID获取公开仪表盘",
-        "operationId": "getPublicDashboardsByUserIdPage_1",
+        "operationId": "getPublicDashboardsByUserIdPage",
         "parameters": [
           {
             "name": "userId",
@@ -9743,7 +11200,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDashboardDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -9861,7 +11325,7 @@
           "分析仪表盘"
         ],
         "summary": "获取所有公开仪表盘",
-        "operationId": "getAllPublicDashboardsPage_1",
+        "operationId": "getAllPublicDashboardsPage",
         "parameters": [
           {
             "name": "pageNum",
@@ -9890,7 +11354,14 @@
             "content": {
               "*/*": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponseListDashboardDTO"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiResponsePageResultDashboardDTO"
+                    }
+                  ]
                 }
               }
             }
@@ -10418,6 +11889,42 @@
         }
       }
     },
+    "/api/v1/alerts/manual-levels": {
+      "get": {
+        "tags": [
+          "预警管理"
+        ],
+        "summary": "批量获取指标手动预警等级",
+        "description": "按指标ID查询战略任务管理手动设置的当前预警等级；自动忽略当前用户无权访问的指标",
+        "operationId": "getManualAlertLevels",
+        "parameters": [
+          {
+            "name": "indicatorIds",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMapLongString"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/alerts/indicator/{indicatorId}": {
       "get": {
         "tags": [
@@ -10641,75 +12148,16 @@
           }
         }
       }
-    },
-    "/api/v1/auth/dingtalk/login": {
-      "post": {
-        "tags": [
-          "钉钉免登"
-        ],
-        "summary": "钉钉免登",
-        "operationId": "dingtalkLogin",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DingTalkLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "*/*": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponseLoginResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/dingtalk/status": {
-      "get": {
-        "tags": [
-          "钉钉免登"
-        ],
-        "summary": "钉钉集成开关状态",
-        "operationId": "dingtalkStatus",
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "*/*": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponseMapStringObject"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
     "schemas": {
       "UpdateTaskRequest": {
-        "required": [
-          "createdByOrgId",
-          "cycleId",
-          "name",
-          "orgId",
-          "planId",
-          "taskType"
-        ],
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "desc": {
             "type": "string"
@@ -10744,7 +12192,15 @@
           "remark": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "createdByOrgId",
+          "cycleId",
+          "name",
+          "orgId",
+          "planId",
+          "taskType"
+        ]
       },
       "ApiResponseTaskResponse": {
         "type": "object",
@@ -10827,49 +12283,59 @@
         }
       },
       "UpdateTaskRemarkRequest": {
-        "required": [
-          "remark"
-        ],
         "type": "object",
         "properties": {
           "remark": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
-        }
+        },
+        "required": [
+          "remark"
+        ]
       },
       "UpdateTaskNameRequest": {
-        "required": [
-          "name"
-        ],
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
-        }
+        },
+        "required": [
+          "name"
+        ]
       },
       "UpdateTaskDescRequest": {
-        "required": [
-          "desc"
-        ],
         "type": "object",
         "properties": {
           "desc": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
-        }
+        },
+        "required": [
+          "desc"
+        ]
       },
       "UpdateRoleRequest": {
         "type": "object",
         "properties": {
           "roleCode": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "[A-Za-z0-9_:-]+"
           },
           "roleName": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 2
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 0
           }
         }
       },
@@ -10953,6 +12419,9 @@
           "nextPlan": {
             "type": "string"
           },
+          "selfRating": {
+            "type": "string"
+          },
           "attachmentIds": {
             "type": "array",
             "items": {
@@ -10981,6 +12450,9 @@
           "progress": {
             "type": "integer",
             "format": "int32"
+          },
+          "selfRating": {
+            "type": "string"
           },
           "issues": {
             "type": "string"
@@ -11033,6 +12505,15 @@
             "format": "int32"
           },
           "comment": {
+            "type": "string"
+          },
+          "selfRating": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "appraisalLevel": {
             "type": "string"
           },
           "attachments": {
@@ -11158,19 +12639,89 @@
           }
         }
       },
+      "SetIndicatorAppraisalLevelRequest": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "string",
+            "pattern": "^$|^(AHEAD|NORMAL|DELAYED)$"
+          }
+        }
+      },
+      "ApiResponseIndicatorAppraisalContextResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/IndicatorAppraisalContextResponse"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "IndicatorAppraisalContextResponse": {
+        "type": "object",
+        "properties": {
+          "indicatorId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reportId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reportMonth": {
+            "type": "string"
+          },
+          "reportStatus": {
+            "type": "string"
+          },
+          "appraisalLevel": {
+            "type": "string"
+          },
+          "canAppraise": {
+            "type": "boolean"
+          },
+          "currentStepName": {
+            "type": "string"
+          },
+          "lockHint": {
+            "type": "string"
+          }
+        }
+      },
       "UpdateProfileRequest": {
-        "required": [
-          "realName"
-        ],
         "type": "object",
         "properties": {
           "realName": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
+          },
+          "email": {
+            "type": "string",
+            "pattern": "^$|^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^$|^1[3-9]\\d{9}$"
           },
           "avatar": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "realName"
+        ]
       },
       "ApiResponseUserProfileResponse": {
         "type": "object",
@@ -11206,9 +12757,21 @@
           "realName": {
             "type": "string"
           },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
           "orgId": {
             "type": "integer",
             "format": "int64"
+          },
+          "orgName": {
+            "type": "string"
+          },
+          "orgType": {
+            "type": "string"
           },
           "isActive": {
             "type": "boolean"
@@ -11234,6 +12797,7 @@
       },
       "UpdatePlanRequest": {
         "type": "object",
+        "description": "更新计划请求",
         "properties": {
           "planName": {
             "type": "string",
@@ -11245,13 +12809,13 @@
           },
           "startDate": {
             "type": "string",
-            "description": "开始日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "开始日期"
           },
           "endDate": {
             "type": "string",
-            "description": "结束日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "结束日期"
           },
           "ownerDepartment": {
             "type": "string",
@@ -11259,16 +12823,15 @@
           },
           "targetOrgId": {
             "type": "integer",
-            "description": "目标组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "目标组织ID"
           },
           "createdByOrgId": {
             "type": "integer",
-            "description": "创建组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "创建组织ID"
           }
-        },
-        "description": "更新计划请求"
+        }
       },
       "ApiResponsePlanResponse": {
         "type": "object",
@@ -11293,11 +12856,12 @@
       },
       "PlanResponse": {
         "type": "object",
+        "description": "计划响应",
         "properties": {
           "id": {
             "type": "integer",
-            "description": "计划ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "计划ID"
           },
           "planName": {
             "type": "string",
@@ -11319,13 +12883,18 @@
           },
           "startDate": {
             "type": "string",
-            "description": "开始日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "开始日期"
           },
           "endDate": {
             "type": "string",
-            "description": "结束日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "结束日期"
+          },
+          "dispatchMonth": {
+            "type": "string",
+            "description": "下发月份（YYYYMM），月度填报的起算月",
+            "example": "202610"
           },
           "ownerDepartment": {
             "type": "string",
@@ -11333,18 +12902,18 @@
           },
           "completionPercentage": {
             "type": "integer",
-            "description": "完成百分比",
-            "format": "int32"
+            "format": "int32",
+            "description": "完成百分比"
           },
           "indicatorCount": {
             "type": "integer",
-            "description": "指标数量",
-            "format": "int32"
+            "format": "int32",
+            "description": "指标数量"
           },
           "createTime": {
             "type": "string",
-            "description": "创建时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "创建时间"
           },
           "year": {
             "type": "string",
@@ -11352,13 +12921,13 @@
           },
           "cycleId": {
             "type": "integer",
-            "description": "周期ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "周期ID"
           },
           "targetOrgId": {
             "type": "integer",
-            "description": "目标组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "目标组织ID"
           },
           "targetOrgName": {
             "type": "string",
@@ -11366,8 +12935,8 @@
           },
           "createdByOrgId": {
             "type": "integer",
-            "description": "创建组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "创建组织ID"
           },
           "createdByOrgName": {
             "type": "string",
@@ -11380,13 +12949,13 @@
           },
           "workflowInstanceId": {
             "type": "integer",
-            "description": "关联的工作流实例ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "关联的工作流实例ID"
           },
           "submittedBy": {
             "type": "integer",
-            "description": "提交人ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "提交人ID"
           },
           "submittedByName": {
             "type": "string",
@@ -11394,8 +12963,8 @@
           },
           "submittedAt": {
             "type": "string",
-            "description": "提交时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "提交时间"
           },
           "lastRejectReason": {
             "type": "string",
@@ -11419,8 +12988,8 @@
           },
           "currentApproverId": {
             "type": "integer",
-            "description": "当前审批人ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "当前审批人ID"
           },
           "currentApproverName": {
             "type": "string",
@@ -11430,8 +12999,7 @@
             "type": "boolean",
             "description": "是否可撤回"
           }
-        },
-        "description": "计划响应"
+        }
       },
       "ApiResponseOrgResponse": {
         "type": "object",
@@ -11456,11 +13024,12 @@
       },
       "OrgResponse": {
         "type": "object",
+        "description": "Organization response DTO",
         "properties": {
           "id": {
             "type": "integer",
-            "description": "Organization ID",
             "format": "int64",
+            "description": "Organization ID",
             "example": 1
           },
           "name": {
@@ -11471,12 +13040,12 @@
           "type": {
             "type": "string",
             "description": "Organization type",
-            "example": "functional",
             "enum": [
               "admin",
               "functional",
               "academic"
-            ]
+            ],
+            "example": "functional"
           },
           "isActive": {
             "type": "boolean",
@@ -11485,31 +13054,31 @@
           },
           "sortOrder": {
             "type": "integer",
-            "description": "Sort order",
             "format": "int32",
+            "description": "Sort order",
             "example": 0
           },
           "parentOrgId": {
             "type": "integer",
-            "description": "Parent organization ID",
             "format": "int64",
+            "description": "Parent organization ID",
             "example": 1
           },
           "level": {
             "type": "integer",
-            "description": "Organization level",
             "format": "int32",
+            "description": "Organization level",
             "example": 2
           },
           "createdAt": {
             "type": "string",
-            "description": "Organization creation time",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Organization creation time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "Organization last update time",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Organization last update time"
           },
           "children": {
             "type": "array",
@@ -11528,70 +13097,36 @@
             "description": "Organization type name",
             "example": "FUNCTIONAL_DEPT"
           }
-        },
-        "description": "Organization response DTO"
+        }
       },
       "RenameOrgRequest": {
-        "required": [
-          "name"
-        ],
         "type": "object",
+        "description": "Organization rename request DTO",
         "properties": {
           "name": {
-            "maxLength": 100,
-            "minLength": 0,
             "type": "string",
             "description": "New organization name",
-            "example": "Computer Science Department"
+            "example": "Computer Science Department",
+            "maxLength": 100,
+            "minLength": 0
           }
         },
-        "description": "Organization rename request DTO"
-      },
-      "Item": {
-        "required": [],
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "description": {
-            "type": "string"
-          },
-          "dueDate": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "targetProgress": {
-            "maximum": 100,
-            "minimum": 0,
-            "type": "integer",
-            "format": "int32"
-          },
-          "status": {
-            "type": "string"
-          },
-          "sortOrder": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "isPaired": {
-            "type": "boolean"
-          },
-          "inheritedFrom": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
+        "required": [
+          "name"
+        ]
       },
       "UpdateIndicatorRequest": {
         "type": "object",
         "properties": {
           "indicatorName": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 0
           },
           "indicatorDesc": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 0
           },
           "taskId": {
             "type": "integer",
@@ -11606,18 +13141,25 @@
             "format": "int64"
           },
           "weightPercent": {
-            "type": "number"
+            "type": "number",
+            "maximum": 100,
+            "minimum": 0
           },
           "progress": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "maximum": 100,
+            "minimum": 0
           },
           "sortOrder": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "minimum": 0
           },
           "remark": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 0
           }
         }
       },
@@ -11753,7 +13295,12 @@
             "type": "string"
           },
           "email": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^$|^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^$|^1[3-9]\\d{9}$"
           },
           "orgId": {
             "type": "integer",
@@ -11801,9 +13348,21 @@
           "realName": {
             "type": "string"
           },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
           "orgId": {
             "type": "integer",
             "format": "int64"
+          },
+          "orgName": {
+            "type": "string"
+          },
+          "orgType": {
+            "type": "string"
           },
           "isActive": {
             "type": "boolean"
@@ -11813,37 +13372,133 @@
             "items": {
               "type": "string"
             }
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UpdateContactRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^1[3-9]\\d{9}$"
+          }
+        }
+      },
+      "UpdateAnnouncementRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AnnouncementResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "publishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ApiResponseAnnouncementResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AnnouncementResponse"
+          },
+          "timestamp": {
+            "type": "string"
           }
         }
       },
       "UpdateReportRequest": {
-        "required": [
-          "format",
-          "name",
-          "type"
-        ],
         "type": "object",
+        "description": "更新报告请求",
         "properties": {
           "name": {
             "type": "string",
-            "description": "报告名称"
+            "description": "报告名称",
+            "minLength": 1
           },
           "type": {
             "type": "string",
             "description": "报告类型",
-            "example": "STRATEGIC"
+            "example": "STRATEGIC",
+            "minLength": 1
           },
           "format": {
             "type": "string",
             "description": "报告格式",
-            "example": "PDF"
+            "example": "PDF",
+            "minLength": 1
           },
           "description": {
             "type": "string",
             "description": "报告描述"
           }
         },
-        "description": "更新报告请求"
+        "required": [
+          "format",
+          "name",
+          "type"
+        ]
       },
       "ApiResponseReportDTO": {
         "type": "object",
@@ -11920,14 +13575,13 @@
         }
       },
       "UpdateDashboardRequest": {
-        "required": [
-          "name"
-        ],
         "type": "object",
+        "description": "更新仪表板请求",
         "properties": {
           "name": {
             "type": "string",
-            "description": "仪表板名称"
+            "description": "仪表板名称",
+            "minLength": 1
           },
           "description": {
             "type": "string",
@@ -11938,13 +13592,15 @@
             "description": "是否公开"
           },
           "config": {
-            "maxLength": 10000,
-            "minLength": 0,
             "type": "string",
-            "description": "仪表板配置(JSON格式)"
+            "description": "仪表板配置(JSON格式)",
+            "maxLength": 10000,
+            "minLength": 0
           }
         },
-        "description": "更新仪表板请求"
+        "required": [
+          "name"
+        ]
       },
       "ApiResponseDashboardDTO": {
         "type": "object",
@@ -11969,11 +13625,12 @@
       },
       "DashboardDTO": {
         "type": "object",
+        "description": "仪表板响应",
         "properties": {
           "id": {
             "type": "integer",
-            "description": "仪表板ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "仪表板ID"
           },
           "name": {
             "type": "string",
@@ -11985,8 +13642,8 @@
           },
           "userId": {
             "type": "integer",
-            "description": "用户ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "用户ID"
           },
           "isPublic": {
             "type": "boolean",
@@ -11998,16 +13655,99 @@
           },
           "createdAt": {
             "type": "string",
-            "description": "创建时间",
+            "format": "date-time",
+            "description": "创建时间"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新时间"
+          }
+        }
+      },
+      "ManualAlertLevelRequest": {
+        "type": "object",
+        "description": "手动预警等级设置请求",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "description": "进度等级。为空或 NONE 表示未评定；三档进度等级 AHEAD/NORMAL/DELAYED（超前/正常/延期）；旧档 INFO/WARNING/CRITICAL 兼容历史数据，分别表示一般/严重/重大滞后",
+            "example": "DELAYED",
+            "pattern": "^(?i)(NONE|INFO|WARNING|CRITICAL|MAJOR|MINOR|AHEAD|NORMAL|DELAYED)?$"
+          }
+        }
+      },
+      "AlertResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "indicatorId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ruleId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "windowId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "actualPercent": {
+            "type": "number"
+          },
+          "expectedPercent": {
+            "type": "number"
+          },
+          "gapPercent": {
+            "type": "number"
+          },
+          "handledBy": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "handledNote": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
             "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "更新时间",
             "format": "date-time"
           }
-        },
-        "description": "仪表板响应"
+        }
+      },
+      "ApiResponseAlertResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AlertResponse"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
       },
       "ApiResponseVoid": {
         "type": "object",
@@ -12022,18 +13762,13 @@
           "message": {
             "type": "string"
           },
-          "data": {
-            "type": "object"
-          },
+          "data": {},
           "timestamp": {
             "type": "string"
           }
         }
       },
       "StartInstanceRequest": {
-        "required": [
-          "businessEntityId"
-        ],
         "type": "object",
         "properties": {
           "businessEntityId": {
@@ -12042,11 +13777,12 @@
           },
           "variables": {
             "type": "object",
-            "additionalProperties": {
-              "type": "object"
-            }
+            "additionalProperties": {}
           }
-        }
+        },
+        "required": [
+          "businessEntityId"
+        ]
       },
       "ApiResponseWorkflowInstanceResponse": {
         "type": "object",
@@ -12144,6 +13880,10 @@
             "type": "integer",
             "format": "int64"
           },
+          "approverOrgId": {
+            "type": "integer",
+            "format": "int64"
+          },
           "currentApproverName": {
             "type": "string"
           },
@@ -12153,29 +13893,25 @@
         }
       },
       "RejectionRequest": {
-        "required": [
-          "reason"
-        ],
         "type": "object",
         "properties": {
           "reason": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "returnToStep": {
             "type": "string"
           },
           "variables": {
             "type": "object",
-            "additionalProperties": {
-              "type": "object"
-            }
+            "additionalProperties": {}
           }
-        }
+        },
+        "required": [
+          "reason"
+        ]
       },
       "ReassignRequest": {
-        "required": [
-          "targetUserId"
-        ],
         "type": "object",
         "properties": {
           "targetUserId": {
@@ -12185,12 +13921,12 @@
           "reason": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "targetUserId"
+        ]
       },
       "WorkflowTaskDecisionRequest": {
-        "required": [
-          "approved"
-        ],
         "type": "object",
         "properties": {
           "approved": {
@@ -12198,35 +13934,55 @@
           },
           "comment": {
             "type": "string"
+          },
+          "appraisalLevel": {
+            "type": "string"
+          },
+          "indicatorLevels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
-        }
+        },
+        "required": [
+          "approved"
+        ]
       },
       "ApprovalRequest": {
-        "required": [
-          "comment"
-        ],
         "type": "object",
         "properties": {
           "comment": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
+          },
+          "appraisalLevel": {
+            "type": "string",
+            "description": "审核进度：AHEAD=超前 / NORMAL=正常 / DELAYED=延期，可空",
+            "example": "NORMAL",
+            "pattern": "^(?i)(AHEAD|NORMAL|DELAYED)$"
+          },
+          "indicatorLevels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "variables": {
             "type": "object",
-            "additionalProperties": {
-              "type": "object"
-            }
+            "additionalProperties": {}
           }
-        }
+        },
+        "required": [
+          "comment"
+        ]
       },
       "StartWorkflowRequest": {
-        "required": [
-          "businessEntityId",
-          "workflowCode"
-        ],
         "type": "object",
         "properties": {
           "workflowCode": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "businessEntityId": {
             "type": "integer",
@@ -12237,32 +13993,31 @@
           },
           "variables": {
             "type": "object",
-            "additionalProperties": {
-              "type": "object"
-            }
+            "additionalProperties": {}
           }
-        }
+        },
+        "required": [
+          "businessEntityId",
+          "workflowCode"
+        ]
       },
       "CreateWorkflowDefinitionRequest": {
-        "required": [
-          "category",
-          "definitionCode",
-          "definitionName",
-          "steps"
-        ],
         "type": "object",
         "properties": {
           "definitionCode": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "definitionName": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "description": {
             "type": "string"
           },
           "category": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "version": {
             "type": "integer",
@@ -12272,36 +14027,45 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CreateWorkflowStepDefinitionRequest"
-            }
+            },
+            "minItems": 1
           },
           "active": {
             "type": "boolean"
           }
-        }
+        },
+        "required": [
+          "category",
+          "definitionCode",
+          "definitionName",
+          "steps"
+        ]
       },
       "CreateWorkflowStepDefinitionRequest": {
-        "required": [
-          "stepName",
-          "stepOrder",
-          "stepType"
-        ],
         "type": "object",
         "properties": {
           "stepName": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "stepOrder": {
             "type": "integer",
             "format": "int32"
           },
           "stepType": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "roleId": {
             "type": "integer",
             "format": "int64"
           }
-        }
+        },
+        "required": [
+          "stepName",
+          "stepOrder",
+          "stepType"
+        ]
       },
       "ApiResponseWorkflowDefinitionResponse": {
         "type": "object",
@@ -12355,18 +14119,11 @@
         }
       },
       "CreateTaskRequest": {
-        "required": [
-          "createdByOrgId",
-          "cycleId",
-          "name",
-          "orgId",
-          "planId",
-          "taskType"
-        ],
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "taskType": {
             "type": "string",
@@ -12401,26 +14158,42 @@
           "remark": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "createdByOrgId",
+          "cycleId",
+          "name",
+          "orgId",
+          "planId",
+          "taskType"
+        ]
       },
       "CreateRoleRequest": {
         "type": "object",
         "properties": {
           "roleCode": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0,
+            "pattern": "[A-Za-z0-9_:-]+"
           },
           "roleName": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 0
           }
-        }
+        },
+        "required": [
+          "roleCode",
+          "roleName"
+        ]
       },
       "AssignPermissionsRequest": {
-        "required": [
-          "permissionIds"
-        ],
         "type": "object",
         "properties": {
           "permissionIds": {
@@ -12428,21 +14201,20 @@
             "items": {
               "type": "integer",
               "format": "int64"
-            }
+            },
+            "minItems": 1
           }
-        }
+        },
+        "required": [
+          "permissionIds"
+        ]
       },
       "CreatePlanReportRequest": {
-        "required": [
-          "planId",
-          "reportMonth",
-          "reportOrgId",
-          "reportOrgType"
-        ],
         "type": "object",
         "properties": {
           "reportMonth": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "reportOrgId": {
             "type": "integer",
@@ -12463,66 +14235,208 @@
             "type": "integer",
             "format": "int64"
           }
-        }
+        },
+        "required": [
+          "planId",
+          "reportMonth",
+          "reportOrgId",
+          "reportOrgType"
+        ]
       },
       "RejectPlanReportRequest": {
-        "required": [
-          "reason"
-        ],
         "type": "object",
         "properties": {
           "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "IndicatorAttachmentQueryRequest": {
+        "type": "object",
+        "properties": {
+          "indicatorIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "maxItems": 2000,
+            "minItems": 0
+          }
+        },
+        "required": [
+          "indicatorIds"
+        ]
+      },
+      "ApiResponseListIndicatorLatestAttachmentResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IndicatorLatestAttachmentResponse"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "IndicatorLatestAttachmentResponse": {
+        "type": "object",
+        "properties": {
+          "indicatorId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reportId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reportMonth": {
+            "type": "string"
+          },
+          "fillDate": {
+            "type": "string"
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "status": {
+            "type": "string"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportAttachmentResponse"
+            }
+          }
+        }
+      },
+      "IndicatorAppraisalContextRequest": {
+        "type": "object",
+        "properties": {
+          "indicatorIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "maxItems": 2000,
+            "minItems": 0
+          }
+        },
+        "required": [
+          "indicatorIds"
+        ]
+      },
+      "ApiResponseListIndicatorAppraisalContextResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IndicatorAppraisalContextResponse"
+            }
+          },
+          "timestamp": {
             "type": "string"
           }
         }
       },
       "ChangePasswordRequest": {
+        "type": "object",
+        "properties": {
+          "oldPassword": {
+            "type": "string",
+            "minLength": 1
+          },
+          "newPassword": {
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 8,
+            "pattern": "^(?=.*[A-Za-z])(?=.*\\d).+$"
+          },
+          "confirmPassword": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "required": [
           "confirmPassword",
           "newPassword",
           "oldPassword"
-        ],
+        ]
+      },
+      "ApiResponseObject": {
         "type": "object",
         "properties": {
-          "oldPassword": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
             "type": "string"
           },
-          "newPassword": {
-            "maxLength": 2147483647,
-            "minLength": 8,
-            "type": "string"
-          },
-          "confirmPassword": {
+          "data": {},
+          "timestamp": {
             "type": "string"
           }
         }
       },
       "BindAccountRequest": {
-        "required": [
-          "accountId",
-          "platform"
-        ],
         "type": "object",
         "properties": {
           "platform": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "accountId": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
-        }
+        },
+        "required": [
+          "accountId",
+          "platform"
+        ]
       },
       "CreatePlanRequest": {
-        "required": [
-          "cycleId",
-          "planName",
-          "planType"
-        ],
         "type": "object",
+        "description": "创建计划请求",
         "properties": {
           "planName": {
             "type": "string",
-            "description": "计划名称"
+            "description": "计划名称",
+            "minLength": 1
           },
           "description": {
             "type": "string",
@@ -12530,23 +14444,24 @@
           },
           "cycleId": {
             "type": "integer",
-            "description": "周期ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "周期ID"
           },
           "planType": {
             "type": "string",
             "description": "计划类型",
-            "example": "STRATEGY"
+            "example": "STRATEGY",
+            "minLength": 1
           },
           "startDate": {
             "type": "string",
-            "description": "开始日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "开始日期"
           },
           "endDate": {
             "type": "string",
-            "description": "结束日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "结束日期"
           },
           "ownerDepartment": {
             "type": "string",
@@ -12554,80 +14469,88 @@
           },
           "targetOrgId": {
             "type": "integer",
-            "description": "目标组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "目标组织ID"
           },
           "createdByOrgId": {
             "type": "integer",
-            "description": "创建组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "创建组织ID"
           }
         },
-        "description": "创建计划请求"
+        "required": [
+          "cycleId",
+          "planName",
+          "planType"
+        ]
       },
       "SubmitPlanApprovalRequest": {
-        "required": [
-          "workflowCode"
-        ],
         "type": "object",
         "properties": {
           "workflowCode": {
+            "type": "string",
+            "minLength": 1
+          },
+          "comment": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "workflowCode"
+        ]
       },
       "OrgRequest": {
-        "required": [
-          "name",
-          "type"
-        ],
         "type": "object",
+        "description": "Organization request DTO",
         "properties": {
           "name": {
-            "maxLength": 100,
-            "minLength": 0,
             "type": "string",
             "description": "Organization name",
-            "example": "Computer Science Department"
+            "example": "Computer Science Department",
+            "maxLength": 100,
+            "minLength": 0
           },
           "type": {
             "type": "string",
             "description": "Organization type",
-            "example": "functional",
             "enum": [
               "admin",
               "functional",
               "academic"
-            ]
+            ],
+            "example": "functional"
           },
           "parentOrgId": {
             "type": "integer",
-            "description": "Parent organization ID",
             "format": "int64",
+            "description": "Parent organization ID",
             "example": 1
           },
           "sortOrder": {
-            "minimum": 0,
             "type": "integer",
-            "description": "Sort order",
             "format": "int32",
-            "example": 0
+            "description": "Sort order",
+            "example": 0,
+            "minimum": 0
           }
         },
-        "description": "Organization request DTO"
+        "required": [
+          "name",
+          "type"
+        ]
       },
       "DomainEvent": {
         "type": "object",
         "properties": {
-          "eventId": {
-            "type": "string"
-          },
           "eventType": {
             "type": "string"
           },
           "occurredOn": {
             "type": "string",
             "format": "date-time"
+          },
+          "eventId": {
+            "type": "string"
           }
         }
       },
@@ -12706,12 +14629,53 @@
           },
           "data": {
             "type": "object",
-            "additionalProperties": {
-              "type": "object"
-            }
+            "additionalProperties": {}
           },
           "timestamp": {
             "type": "string"
+          }
+        }
+      },
+      "ApiResponseReadResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ReadResult"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadResult": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "affectedCount": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -12719,25 +14683,39 @@
         "type": "object",
         "properties": {
           "indicatorName": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 0
           },
           "indicatorCode": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 0
           },
           "indicatorDesc": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 0
           },
           "type": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0
           },
           "indicatorType": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0
           },
           "type1": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0
           },
           "taskId": {
             "type": "integer",
@@ -12756,18 +14734,25 @@
             "format": "int64"
           },
           "weightPercent": {
-            "type": "number"
+            "type": "number",
+            "maximum": 100,
+            "minimum": 0
           },
           "sortOrder": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "minimum": 0
           },
           "remark": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 0
           },
           "progress": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "maximum": 100,
+            "minimum": 0
           },
           "cycleId": {
             "type": "integer",
@@ -12778,17 +14763,19 @@
             "format": "int64"
           },
           "targetValue": {
+            "type": "number",
             "maximum": 100,
-            "exclusiveMaximum": false,
-            "minimum": 0,
-            "exclusiveMinimum": false,
-            "type": "number"
+            "minimum": 0
           },
           "unit": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 0
           },
           "dimension": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0
           }
         }
       },
@@ -12804,7 +14791,9 @@
         "type": "object",
         "properties": {
           "reason": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 0
           }
         }
       },
@@ -12812,17 +14801,47 @@
         "type": "object",
         "properties": {
           "reason": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 0
           },
           "source": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 0
           }
-        }
+        },
+        "required": [
+          "source"
+        ]
       },
       "RejectRequest": {
         "type": "object",
         "properties": {
           "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 0
+          }
+        }
+      },
+      "ApiResponseString": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "string"
+          },
+          "timestamp": {
             "type": "string"
           }
         }
@@ -12864,9 +14883,13 @@
             "items": {
               "type": "integer",
               "format": "int64"
-            }
+            },
+            "minItems": 1
           }
-        }
+        },
+        "required": [
+          "indicatorIds"
+        ]
       },
       "ApiResponseListReminderStatusResponse": {
         "type": "object",
@@ -12913,6 +14936,55 @@
           "cooldownUntil": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ApiResponseListLong": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiResponseListString": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timestamp": {
+            "type": "string"
           }
         }
       },
@@ -12984,18 +15056,80 @@
         }
       },
       "BatchDistributeIndicatorsRequest": {
-        "required": [
-          "indicators"
-        ],
         "type": "object",
         "properties": {
           "indicators": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Item"
-            }
+            },
+            "minItems": 1
           }
-        }
+        },
+        "required": [
+          "indicators"
+        ]
+      },
+      "Item": {
+        "type": "object",
+        "properties": {
+          "clientRequestId": {
+            "type": "string"
+          },
+          "indicatorId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "indicatorDesc": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "indicatorType": {
+            "type": "string"
+          },
+          "type1": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "parentIndicatorId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ownerOrgId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "targetOrgId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "weightPercent": {
+            "type": "number",
+            "minimum": 0.0001
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "customDesc": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "targetOrgId"
+        ]
       },
       "ApiResponseBatchDistributeIndicatorsResponse": {
         "type": "object",
@@ -13045,41 +15179,345 @@
           }
         }
       },
+      "ImportCommitRequest": {
+        "type": "object",
+        "properties": {
+          "confirmToken": {
+            "type": "string"
+          },
+          "conflictMode": {
+            "type": "string",
+            "enum": [
+              "APPEND",
+              "UPDATE",
+              "REPLACE_SCOPE"
+            ]
+          },
+          "autoSubmitAndApprove": {
+            "type": "boolean"
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiResponseImportCommitResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ImportCommitResponse"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "ImportCommitResponse": {
+        "type": "object",
+        "properties": {
+          "batchId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "createdCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "updatedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "skippedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "deletedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/ImportWorkflowResult"
+          }
+        }
+      },
+      "ImportWorkflowResult": {
+        "type": "object",
+        "properties": {
+          "autoSubmitAndApprove": {
+            "type": "boolean"
+          },
+          "workflowCode": {
+            "type": "string"
+          },
+          "instanceId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
+          },
+          "approvedSteps": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "failedStep": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiResponseImportPreviewResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ImportPreviewResponse"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "FieldMapping": {
+        "type": "object",
+        "properties": {
+          "sourceColumn": {
+            "type": "string"
+          },
+          "targetField": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string"
+          }
+        }
+      },
+      "ImportPreviewResponse": {
+        "type": "object",
+        "properties": {
+          "batchId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "STRATEGIC_TASK",
+              "DISTRIBUTION"
+            ]
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "sheetName": {
+            "type": "string"
+          },
+          "targetOrgId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "targetOrgName": {
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ImportSummary"
+          },
+          "fieldMappings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldMapping"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportRowPreview"
+            }
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "confirmToken": {
+            "type": "string"
+          }
+        }
+      },
+      "ImportRowPreview": {
+        "type": "object",
+        "properties": {
+          "rowNo": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "CREATE",
+              "UPDATE",
+              "SKIP",
+              "ERROR"
+            ]
+          },
+          "businessKey": {
+            "type": "string"
+          },
+          "normalized": {
+            "$ref": "#/components/schemas/NormalizedImportRow"
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ImportSummary": {
+        "type": "object",
+        "properties": {
+          "totalRows": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "validRows": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "createRows": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "updateRows": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "skipRows": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "errorRows": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "warningRows": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "NormalizedImportRow": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "department": {
+            "type": "string"
+          },
+          "college": {
+            "type": "string"
+          },
+          "taskType": {
+            "type": "string"
+          },
+          "strategicTask": {
+            "type": "string"
+          },
+          "parentStrategicTask": {
+            "type": "string"
+          },
+          "parentIndicator": {
+            "type": "string"
+          },
+          "indicatorName": {
+            "type": "string"
+          },
+          "indicatorType": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "parentIndicatorId": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "CreateCycleRequest": {
+        "type": "object",
+        "description": "创建考核周期请求",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "考核周期名称",
+            "minLength": 1
+          },
+          "year": {
+            "type": "integer",
+            "format": "int32",
+            "description": "年份",
+            "example": 2026,
+            "maximum": 2100,
+            "minimum": 2000
+          },
+          "startDate": {
+            "type": "string",
+            "format": "date",
+            "description": "开始日期",
+            "example": "2026-01-01"
+          },
+          "endDate": {
+            "type": "string",
+            "format": "date",
+            "description": "结束日期",
+            "example": "2026-12-31"
+          }
+        },
         "required": [
           "endDate",
           "name",
           "startDate",
           "year"
-        ],
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "考核周期名称"
-          },
-          "year": {
-            "maximum": 2100,
-            "minimum": 2000,
-            "type": "integer",
-            "description": "年份",
-            "format": "int32",
-            "example": 2026
-          },
-          "startDate": {
-            "type": "string",
-            "description": "开始日期",
-            "format": "date",
-            "example": "2026-01-01"
-          },
-          "endDate": {
-            "type": "string",
-            "description": "结束日期",
-            "format": "date",
-            "example": "2026-12-31"
-          }
-        },
-        "description": "创建考核周期请求"
+        ]
       },
       "ApiResponseCycle": {
         "type": "object",
@@ -13154,7 +15592,10 @@
         "type": "object",
         "properties": {
           "username": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 3,
+            "pattern": "^[A-Za-z0-9_]{3,20}$"
           },
           "password": {
             "type": "string"
@@ -13163,7 +15604,12 @@
             "type": "string"
           },
           "email": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^$|^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^$|^1[3-9]\\d{9}$"
           },
           "orgId": {
             "type": "integer",
@@ -13175,40 +15621,124 @@
               "type": "string"
             }
           }
-        }
+        },
+        "required": [
+          "username"
+        ]
       },
       "RegisterRequest": {
         "type": "object",
         "properties": {
           "username": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 3,
+            "pattern": "^[A-Za-z0-9_]{3,20}$"
           },
           "password": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8
           },
           "realName": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 0
           }
-        }
+        },
+        "required": [
+          "password",
+          "realName",
+          "username"
+        ]
       },
       "RefreshTokenRequest": {
         "type": "object",
         "properties": {
           "refreshToken": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
-        }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "PasswordResetVerifyRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\d{6}$"
+          }
+        },
+        "required": [
+          "code",
+          "email"
+        ]
+      },
+      "PasswordResetRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "PasswordResetConfirmRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\d{6}$"
+          },
+          "newPassword": {
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 8
+          }
+        },
+        "required": [
+          "code",
+          "email",
+          "newPassword"
+        ]
       },
       "LoginRequest": {
         "type": "object",
         "properties": {
-          "username": {
-            "type": "string"
+          "account": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 0
           },
           "password": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8
           }
-        }
+        },
+        "required": [
+          "account",
+          "password"
+        ]
       },
       "ApiResponseLoginResponse": {
         "type": "object",
@@ -13281,17 +15811,47 @@
           "realName": {
             "type": "string"
           },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
           "orgId": {
             "type": "integer",
             "format": "int64"
+          },
+          "orgName": {
+            "type": "string"
+          },
+          "orgType": {
+            "type": "string"
           },
           "roles": {
             "type": "array",
             "items": {
               "type": "string"
             }
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
+      },
+      "DingTalkLoginRequest": {
+        "type": "object",
+        "properties": {
+          "authCode": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "authCode"
+        ]
       },
       "ApiResponseAttachmentResponse": {
         "type": "object",
@@ -13345,21 +15905,19 @@
         }
       },
       "WorkflowTaskStartRequest": {
-        "required": [
-          "taskName",
-          "workflowId",
-          "workflowType"
-        ],
         "type": "object",
         "properties": {
           "workflowId": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "workflowType": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "taskName": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "taskType": {
             "type": "string"
@@ -13382,7 +15940,12 @@
             "type": "string",
             "format": "date-time"
           }
-        }
+        },
+        "required": [
+          "taskName",
+          "workflowId",
+          "workflowType"
+        ]
       },
       "ApiResponseWorkflowTask": {
         "type": "object",
@@ -13490,47 +16053,46 @@
         }
       },
       "WorkflowTaskFailRequest": {
-        "required": [
-          "errorMessage"
-        ],
         "type": "object",
         "properties": {
           "errorMessage": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
-        }
+        },
+        "required": [
+          "errorMessage"
+        ]
       },
       "WorkflowTaskCompleteRequest": {
-        "required": [
-          "result"
-        ],
         "type": "object",
         "properties": {
           "result": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
-        }
+        },
+        "required": [
+          "result"
+        ]
       },
       "CreateLegacyFlowRequest": {
-        "required": [
-          "entityType",
-          "flowCode",
-          "flowName",
-          "steps"
-        ],
         "type": "object",
         "properties": {
           "flowCode": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "flowName": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "description": {
             "type": "string"
           },
           "entityType": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "isActive": {
             "type": "boolean"
@@ -13543,15 +16105,18 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CreateLegacyFlowStepRequest"
-            }
+            },
+            "minItems": 1
           }
-        }
+        },
+        "required": [
+          "entityType",
+          "flowCode",
+          "flowName",
+          "steps"
+        ]
       },
       "CreateLegacyFlowStepRequest": {
-        "required": [
-          "stepName",
-          "stepOrder"
-        ],
         "type": "object",
         "properties": {
           "stepOrder": {
@@ -13559,7 +16124,8 @@
             "format": "int32"
           },
           "stepName": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "stepType": {
             "type": "string"
@@ -13574,14 +16140,13 @@
           "isTerminal": {
             "type": "boolean"
           }
-        }
+        },
+        "required": [
+          "stepName",
+          "stepOrder"
+        ]
       },
       "StartLegacyInstanceRequest": {
-        "required": [
-          "entityId",
-          "entityType",
-          "flowDefId"
-        ],
         "type": "object",
         "properties": {
           "flowDefId": {
@@ -13589,13 +16154,19 @@
             "format": "int64"
           },
           "entityType": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "entityId": {
             "type": "integer",
             "format": "int64"
           }
-        }
+        },
+        "required": [
+          "entityId",
+          "entityType",
+          "flowDefId"
+        ]
       },
       "ApiResponseAuditInstance": {
         "type": "object",
@@ -13672,10 +16243,20 @@
           "isDeleted": {
             "type": "boolean"
           },
+          "batchId": {
+            "type": "string"
+          },
           "stepInstances": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AuditStepInstance"
+            }
+          },
+          "pendingApproverIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
             }
           }
         }
@@ -13712,6 +16293,9 @@
           "comment": {
             "type": "string"
           },
+          "appraisalLevel": {
+            "type": "string"
+          },
           "approvedAt": {
             "type": "string",
             "format": "date-time"
@@ -13722,27 +16306,41 @@
           }
         }
       },
-      "CreateReportRequest": {
-        "required": [
-          "format",
-          "name",
-          "type"
-        ],
+      "CreateAnnouncementRequest": {
         "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateReportRequest": {
+        "type": "object",
+        "description": "创建报告请求",
         "properties": {
           "name": {
             "type": "string",
-            "description": "报告名称"
+            "description": "报告名称",
+            "minLength": 1
           },
           "type": {
             "type": "string",
             "description": "报告类型",
-            "example": "STRATEGIC"
+            "example": "STRATEGIC",
+            "minLength": 1
           },
           "format": {
             "type": "string",
             "description": "报告格式",
-            "example": "PDF"
+            "example": "PDF",
+            "minLength": 1
           },
           "parameters": {
             "type": "string",
@@ -13753,50 +16351,57 @@
             "description": "报告描述"
           }
         },
-        "description": "创建报告请求"
-      },
-      "GenerateReportRequest": {
-        "required": [
-          "fileSize"
-        ],
-        "type": "object",
-        "properties": {
-          "fileSize": {
-            "type": "integer",
-            "description": "文件大小(字节)",
-            "format": "int64"
-          }
-        },
-        "description": "生成报告请求"
-      },
-      "CreateDataExportRequest": {
         "required": [
           "format",
           "name",
           "type"
-        ],
+        ]
+      },
+      "GenerateReportRequest": {
         "type": "object",
+        "description": "生成报告请求",
+        "properties": {
+          "fileSize": {
+            "type": "integer",
+            "format": "int64",
+            "description": "文件大小(字节)"
+          }
+        },
+        "required": [
+          "fileSize"
+        ]
+      },
+      "CreateDataExportRequest": {
+        "type": "object",
+        "description": "创建数据导出请求",
         "properties": {
           "name": {
             "type": "string",
-            "description": "导出任务名称"
+            "description": "导出任务名称",
+            "minLength": 1
           },
           "type": {
             "type": "string",
             "description": "导出类型",
-            "example": "INDICATORS"
+            "example": "INDICATORS",
+            "minLength": 1
           },
           "format": {
             "type": "string",
             "description": "导出格式",
-            "example": "EXCEL"
+            "example": "EXCEL",
+            "minLength": 1
           },
           "parameters": {
             "type": "string",
             "description": "导出参数(JSON格式)"
           }
         },
-        "description": "创建数据导出请求"
+        "required": [
+          "format",
+          "name",
+          "type"
+        ]
       },
       "ApiResponseDataExportDTO": {
         "type": "object",
@@ -13821,11 +16426,12 @@
       },
       "DataExportDTO": {
         "type": "object",
+        "description": "数据导出响应",
         "properties": {
           "id": {
             "type": "integer",
-            "description": "导出任务ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "导出任务ID"
           },
           "name": {
             "type": "string",
@@ -13849,28 +16455,28 @@
           },
           "fileSize": {
             "type": "integer",
-            "description": "文件大小(字节)",
-            "format": "int64"
+            "format": "int64",
+            "description": "文件大小(字节)"
           },
           "requestedBy": {
             "type": "integer",
-            "description": "请求者ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "请求者ID"
           },
           "requestedAt": {
             "type": "string",
-            "description": "请求时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "请求时间"
           },
           "startedAt": {
             "type": "string",
-            "description": "开始时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "开始时间"
           },
           "completedAt": {
             "type": "string",
-            "description": "完成时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "完成时间"
           },
           "errorMessage": {
             "type": "string",
@@ -13882,30 +16488,29 @@
           },
           "createdAt": {
             "type": "string",
-            "description": "创建时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "创建时间"
           },
           "updatedAt": {
             "type": "string",
-            "description": "更新时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "更新时间"
           }
-        },
-        "description": "数据导出响应"
+        }
       },
       "CompleteDataExportRequest": {
-        "required": [
-          "fileSize"
-        ],
         "type": "object",
+        "description": "完成数据导出请求",
         "properties": {
           "fileSize": {
             "type": "integer",
-            "description": "文件大小(字节)",
-            "format": "int64"
+            "format": "int64",
+            "description": "文件大小(字节)"
           }
         },
-        "description": "完成数据导出请求"
+        "required": [
+          "fileSize"
+        ]
       },
       "ApiResponseInteger": {
         "type": "object",
@@ -13930,15 +16535,13 @@
         }
       },
       "CreateDashboardRequest": {
-        "required": [
-          "name",
-          "userId"
-        ],
         "type": "object",
+        "description": "创建仪表板请求",
         "properties": {
           "name": {
             "type": "string",
-            "description": "仪表板名称"
+            "description": "仪表板名称",
+            "minLength": 1
           },
           "description": {
             "type": "string",
@@ -13946,71 +16549,67 @@
           },
           "userId": {
             "type": "integer",
-            "description": "用户ID（前端可传，但服务端会强制使用当前登录用户）",
-            "format": "int64"
+            "format": "int64",
+            "description": "用户ID（前端可传，但服务端会强制使用当前登录用户）"
           },
           "isPublic": {
             "type": "boolean",
             "description": "是否公开"
           },
           "config": {
-            "maxLength": 10000,
-            "minLength": 0,
             "type": "string",
-            "description": "仪表板配置(JSON格式)"
+            "description": "仪表板配置(JSON格式)",
+            "maxLength": 10000,
+            "minLength": 0
           }
         },
-        "description": "创建仪表板请求"
+        "required": [
+          "name",
+          "userId"
+        ]
       },
       "CopyDashboardRequest": {
-        "required": [
-          "targetUserId"
-        ],
         "type": "object",
+        "description": "复制仪表板请求",
         "properties": {
           "targetUserId": {
             "type": "integer",
-            "description": "目标用户ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "目标用户ID"
           }
         },
-        "description": "复制仪表板请求"
+        "required": [
+          "targetUserId"
+        ]
       },
       "AlertRequest": {
-        "required": [
-          "actualPercent",
-          "expectedPercent",
-          "gapPercent",
-          "indicatorId",
-          "ruleId",
-          "severity",
-          "windowId"
-        ],
         "type": "object",
+        "description": "创建预警请求",
         "properties": {
           "indicatorId": {
             "type": "integer",
-            "description": "关联指标ID",
             "format": "int64",
+            "description": "关联指标ID",
             "example": 1
           },
           "ruleId": {
             "type": "integer",
-            "description": "预警规则ID",
             "format": "int64",
+            "description": "预警规则ID",
             "example": 1
           },
           "windowId": {
             "type": "integer",
-            "description": "预警窗口ID",
             "format": "int64",
+            "description": "预警窗口ID",
             "example": 1
           },
           "severity": {
-            "pattern": "^(?i)(INFO|WARNING|CRITICAL|MAJOR|MINOR)$",
             "type": "string",
-            "description": "严重程度（CRITICAL, WARNING, INFO；兼容 MAJOR/MINOR 别名）",
-            "example": "WARNING"
+            "description": "严重程度（进度等级三档 AHEAD/NORMAL/DELAYED；旧档 CRITICAL/WARNING/INFO，兼容 MAJOR/MINOR 别名）",
+            "example": "WARNING",
+            "minLength": 1,
+            "pattern": "^(?i)(INFO|WARNING|CRITICAL|MAJOR|MINOR|AHEAD|NORMAL|DELAYED)$"
           },
           "actualPercent": {
             "type": "number",
@@ -14030,98 +16629,34 @@
           "detailJson": {
             "type": "string",
             "description": "详情JSON",
-            "example": "{}"
+            "example": {}
           }
         },
-        "description": "创建预警请求"
-      },
-      "AlertResponse": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "indicatorId": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "ruleId": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "windowId": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "actualPercent": {
-            "type": "number"
-          },
-          "expectedPercent": {
-            "type": "number"
-          },
-          "gapPercent": {
-            "type": "number"
-          },
-          "handledBy": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "handledNote": {
-            "type": "string"
-          },
-          "severity": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "ApiResponseAlertResponse": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "code": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "message": {
-            "type": "string"
-          },
-          "data": {
-            "$ref": "#/components/schemas/AlertResponse"
-          },
-          "timestamp": {
-            "type": "string"
-          }
-        }
+        "required": [
+          "actualPercent",
+          "expectedPercent",
+          "gapPercent",
+          "indicatorId",
+          "ruleId",
+          "severity",
+          "windowId"
+        ]
       },
       "ResolveAlertRequest": {
-        "required": [
-          "resolution"
-        ],
         "type": "object",
+        "description": "解决预警请求",
         "properties": {
           "resolution": {
-            "maxLength": 500,
-            "minLength": 0,
             "type": "string",
             "description": "解决方案",
-            "example": "已完成任务处理"
+            "example": "已完成任务处理",
+            "maxLength": 500,
+            "minLength": 0
           }
         },
-        "description": "解决预警请求"
+        "required": [
+          "resolution"
+        ]
       },
       "ApiResponsePageResultWorkflowInstanceResponse": {
         "type": "object",
@@ -14298,6 +16833,9 @@
           "comment": {
             "type": "string"
           },
+          "appraisalLevel": {
+            "type": "string"
+          },
           "approvedAt": {
             "type": "string",
             "format": "date-time"
@@ -14317,11 +16855,12 @@
           "claimUrl": {
             "type": "string"
           },
+          "batchId": {
+            "type": "string"
+          },
           "variables": {
             "type": "object",
-            "additionalProperties": {
-              "type": "object"
-            }
+            "additionalProperties": {}
           }
         }
       },
@@ -14369,6 +16908,9 @@
             "type": "string"
           },
           "comment": {
+            "type": "string"
+          },
+          "appraisalLevel": {
             "type": "string"
           },
           "operateTime": {
@@ -14449,6 +16991,10 @@
             "type": "string"
           },
           "currentApproverId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "approverOrgId": {
             "type": "integer",
             "format": "int64"
           },
@@ -14751,6 +17297,31 @@
           }
         }
       },
+      "ApiResponseListMapStringObject": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
       "ApiResponsePageResultTaskResponse": {
         "type": "object",
         "properties": {
@@ -14993,6 +17564,14 @@
           "status": {
             "type": "string"
           },
+          "submittedBy": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "submittedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -15069,15 +17648,15 @@
             "format": "int32"
           },
           "page": {
-            "minimum": 1,
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "minimum": 1
           },
           "size": {
-            "maximum": 100,
-            "minimum": 1,
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "maximum": 100,
+            "minimum": 1
           }
         }
       },
@@ -15313,8 +17892,8 @@
         "properties": {
           "id": {
             "type": "integer",
-            "description": "计划ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "计划ID"
           },
           "planName": {
             "type": "string",
@@ -15336,13 +17915,18 @@
           },
           "startDate": {
             "type": "string",
-            "description": "开始日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "开始日期"
           },
           "endDate": {
             "type": "string",
-            "description": "结束日期",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "结束日期"
+          },
+          "dispatchMonth": {
+            "type": "string",
+            "description": "下发月份（YYYYMM），月度填报的起算月",
+            "example": "202610"
           },
           "ownerDepartment": {
             "type": "string",
@@ -15350,18 +17934,18 @@
           },
           "completionPercentage": {
             "type": "integer",
-            "description": "完成百分比",
-            "format": "int32"
+            "format": "int32",
+            "description": "完成百分比"
           },
           "indicatorCount": {
             "type": "integer",
-            "description": "指标数量",
-            "format": "int32"
+            "format": "int32",
+            "description": "指标数量"
           },
           "createTime": {
             "type": "string",
-            "description": "创建时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "创建时间"
           },
           "year": {
             "type": "string",
@@ -15369,13 +17953,13 @@
           },
           "cycleId": {
             "type": "integer",
-            "description": "周期ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "周期ID"
           },
           "targetOrgId": {
             "type": "integer",
-            "description": "目标组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "目标组织ID"
           },
           "targetOrgName": {
             "type": "string",
@@ -15383,8 +17967,8 @@
           },
           "createdByOrgId": {
             "type": "integer",
-            "description": "创建组织ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "创建组织ID"
           },
           "createdByOrgName": {
             "type": "string",
@@ -15397,13 +17981,13 @@
           },
           "workflowInstanceId": {
             "type": "integer",
-            "description": "关联的工作流实例ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "关联的工作流实例ID"
           },
           "submittedBy": {
             "type": "integer",
-            "description": "提交人ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "提交人ID"
           },
           "submittedByName": {
             "type": "string",
@@ -15411,8 +17995,8 @@
           },
           "submittedAt": {
             "type": "string",
-            "description": "提交时间",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "提交时间"
           },
           "lastRejectReason": {
             "type": "string",
@@ -15436,8 +18020,8 @@
           },
           "currentApproverId": {
             "type": "integer",
-            "description": "当前审批人ID",
-            "format": "int64"
+            "format": "int64",
+            "description": "当前审批人ID"
           },
           "currentApproverName": {
             "type": "string",
@@ -15540,11 +18124,12 @@
       },
       "OrgUserResponse": {
         "type": "object",
+        "description": "Organization user response DTO",
         "properties": {
           "id": {
             "type": "integer",
-            "description": "User ID",
             "format": "int64",
+            "description": "User ID",
             "example": 1001
           },
           "username": {
@@ -15562,8 +18147,7 @@
             "description": "Whether the account is active",
             "example": true
           }
-        },
-        "description": "Organization user response DTO"
+        }
       },
       "ApiResponseListOrgResponse": {
         "type": "object",
@@ -15586,6 +18170,60 @@
           },
           "timestamp": {
             "type": "string"
+          }
+        }
+      },
+      "ApiResponsePageResultOrgResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/PageResultOrgResponse"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "PageResultOrgResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgResponse"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pageSize": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalPages": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "first": {
+            "type": "boolean"
+          },
+          "last": {
+            "type": "boolean"
           }
         }
       },
@@ -15638,6 +18276,12 @@
       "PageableObject": {
         "type": "object",
         "properties": {
+          "unpaged": {
+            "type": "boolean"
+          },
+          "paged": {
+            "type": "boolean"
+          },
           "pageNumber": {
             "type": "integer",
             "format": "int32"
@@ -15645,12 +18289,6 @@
           "pageSize": {
             "type": "integer",
             "format": "int32"
-          },
-          "paged": {
-            "type": "boolean"
-          },
-          "unpaged": {
-            "type": "boolean"
           },
           "offset": {
             "type": "integer",
@@ -15672,6 +18310,167 @@
           },
           "empty": {
             "type": "boolean"
+          }
+        }
+      },
+      "ApiResponseSummary": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Summary"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "Capabilities": {
+        "type": "object",
+        "properties": {
+          "riskEnabled": {
+            "type": "boolean"
+          },
+          "approvalAggregationEnabled": {
+            "type": "boolean"
+          },
+          "detailDrawerEnabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Summary": {
+        "type": "object",
+        "properties": {
+          "totalCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "todoCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "approvalCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reminderCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "systemCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "riskCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "lastRefreshTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "partialSuccess": {
+            "type": "boolean"
+          },
+          "unavailableSources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ApiResponseListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ListResponse"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "ListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pageNum": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pageSize": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalPages": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "partialSuccess": {
+            "type": "boolean"
+          },
+          "unavailableSources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          }
+        }
+      },
+      "ApiResponseItem": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Item"
+          },
+          "timestamp": {
+            "type": "string"
           }
         }
       },
@@ -15803,47 +18602,26 @@
           }
         }
       },
-      "ApiResponseBoolean": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "code": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "message": {
-            "type": "string"
-          },
-          "data": {
-            "type": "boolean"
-          },
-          "timestamp": {
-            "type": "string"
-          }
-        }
-      },
       "AlertIndicators": {
         "type": "object",
+        "description": "预警指标分布",
         "properties": {
           "severe": {
             "type": "integer",
-            "description": "严重预警数",
-            "format": "int64"
+            "format": "int64",
+            "description": "严重预警数"
           },
           "moderate": {
             "type": "integer",
-            "description": "中等预警数",
-            "format": "int64"
+            "format": "int64",
+            "description": "中等预警数"
           },
           "normal": {
             "type": "integer",
-            "description": "一般预警数",
-            "format": "int64"
+            "format": "int64",
+            "description": "一般预警数"
           }
-        },
-        "description": "预警指标分布"
+        }
       },
       "ApiResponseDashboardSummaryDTO": {
         "type": "object",
@@ -15868,72 +18646,46 @@
       },
       "DashboardSummaryDTO": {
         "type": "object",
+        "description": "仪表盘汇总数据",
         "properties": {
           "totalScore": {
             "type": "number",
-            "description": "总得分",
-            "format": "double"
+            "format": "double",
+            "description": "总得分"
           },
           "basicScore": {
             "type": "number",
-            "description": "基础指标得分",
-            "format": "double"
+            "format": "double",
+            "description": "基础指标得分"
           },
           "developmentScore": {
             "type": "number",
-            "description": "发展指标得分",
-            "format": "double"
+            "format": "double",
+            "description": "发展指标得分"
           },
           "completionRate": {
             "type": "number",
-            "description": "完成率",
-            "format": "double"
+            "format": "double",
+            "description": "完成率"
           },
           "warningCount": {
             "type": "integer",
-            "description": "预警数量",
-            "format": "int64"
+            "format": "int64",
+            "description": "预警数量"
           },
           "totalIndicators": {
             "type": "integer",
-            "description": "总指标数",
-            "format": "int64"
+            "format": "int64",
+            "description": "总指标数"
           },
           "completedIndicators": {
             "type": "integer",
-            "description": "已完成指标数",
-            "format": "int64"
+            "format": "int64",
+            "description": "已完成指标数"
           },
           "alertIndicators": {
-            "$ref": "#/components/schemas/AlertIndicators"
-          }
-        },
-        "description": "仪表盘汇总数据"
-      },
-      "ApiResponseListMapStringObject": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "code": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "message": {
-            "type": "string"
-          },
-          "data": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "object"
-              }
-            }
-          },
-          "timestamp": {
-            "type": "string"
+            "$ref": "#/components/schemas/AlertIndicators",
+            "description": "预警指标分布"
           }
         }
       },
@@ -15963,6 +18715,7 @@
       },
       "DepartmentProgressDTO": {
         "type": "object",
+        "description": "部门进度数据",
         "properties": {
           "dept": {
             "type": "string",
@@ -15970,13 +18723,13 @@
           },
           "progress": {
             "type": "number",
-            "description": "进度百分比",
-            "format": "double"
+            "format": "double",
+            "description": "进度百分比"
           },
           "score": {
             "type": "number",
-            "description": "得分",
-            "format": "double"
+            "format": "double",
+            "description": "得分"
           },
           "status": {
             "type": "string",
@@ -15984,21 +18737,20 @@
           },
           "totalIndicators": {
             "type": "integer",
-            "description": "总指标数",
-            "format": "int64"
+            "format": "int64",
+            "description": "总指标数"
           },
           "completedIndicators": {
             "type": "integer",
-            "description": "已完成指标数",
-            "format": "int64"
+            "format": "int64",
+            "description": "已完成指标数"
           },
           "alertCount": {
             "type": "integer",
-            "description": "预警数量",
-            "format": "int64"
+            "format": "int64",
+            "description": "预警数量"
           }
-        },
-        "description": "部门进度数据"
+        }
       },
       "ApiResponsePageCycle": {
         "type": "object",
@@ -16110,6 +18862,27 @@
             "items": {
               "$ref": "#/components/schemas/Cycle"
             }
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiResponseBoolean": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "boolean"
           },
           "timestamp": {
             "type": "string"
@@ -16245,7 +19018,7 @@
           }
         }
       },
-      "ApiResponseListString": {
+      "ApiResponseListEffectivePermission": {
         "type": "object",
         "properties": {
           "success": {
@@ -16261,7 +19034,7 @@
           "data": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/EffectivePermission"
             }
           },
           "timestamp": {
@@ -16269,24 +19042,24 @@
           }
         }
       },
-      "ApiResponseObject": {
+      "EffectivePermission": {
         "type": "object",
         "properties": {
-          "success": {
-            "type": "boolean"
+          "permCode": {
+            "type": "string"
           },
-          "code": {
+          "roleCode": {
+            "type": "string"
+          },
+          "dataAccessMode": {
+            "type": "string"
+          },
+          "scopeOrgId": {
             "type": "integer",
-            "format": "int32"
+            "format": "int64"
           },
-          "message": {
-            "type": "string"
-          },
-          "data": {
-            "type": "object"
-          },
-          "timestamp": {
-            "type": "string"
+          "scopeValid": {
+            "type": "boolean"
           }
         }
       },
@@ -16651,6 +19424,30 @@
           }
         }
       },
+      "ApiResponseListDashboardDTO": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardDTO"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
       "ApiResponseListAlertResponse": {
         "type": "object",
         "properties": {
@@ -16731,23 +19528,22 @@
       },
       "AlertStatsDTO": {
         "type": "object",
+        "description": "预警统计信息",
         "properties": {
           "totalOpen": {
             "type": "integer",
-            "description": "未解决的预警总数",
-            "format": "int64"
+            "format": "int64",
+            "description": "未解决的预警总数"
           },
           "countBySeverity": {
             "type": "object",
             "additionalProperties": {
               "type": "integer",
-              "description": "按严重程度分类的预警数量",
               "format": "int64"
             },
             "description": "按严重程度分类的预警数量"
           }
-        },
-        "description": "预警统计信息"
+        }
       },
       "ApiResponseAlertStatsDTO": {
         "type": "object",
@@ -16764,6 +19560,30 @@
           },
           "data": {
             "$ref": "#/components/schemas/AlertStatsDTO"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiResponseMapLongString": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "timestamp": {
             "type": "string"
@@ -16791,14 +19611,6 @@
             }
           },
           "timestamp": {
-            "type": "string"
-          }
-        }
-      },
-      "DingTalkLoginRequest": {
-        "type": "object",
-        "properties": {
-          "authCode": {
             "type": "string"
           }
         }
