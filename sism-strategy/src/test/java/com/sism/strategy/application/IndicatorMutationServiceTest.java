@@ -23,6 +23,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -62,6 +63,16 @@ class IndicatorMutationServiceTest {
     @Mock
     private com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
 
+    /** 2026-10-31（重发原地续链）：退回异动链原地复活依赖的 workflow 侧组件。 */
+    @Mock
+    private com.sism.workflow.domain.runtime.AuditInstanceRepository auditInstanceRepository;
+
+    @Mock
+    private com.sism.workflow.application.WorkflowBusinessStatusSyncService workflowBusinessStatusSyncService;
+
+    @Mock
+    private com.sism.workflow.application.support.WorkflowEventDispatcher workflowEventDispatcher;
+
     private IndicatorMutationService service;
 
     @BeforeEach
@@ -74,7 +85,11 @@ class IndicatorMutationServiceTest {
                 userProvider,
                 new StrategyOrgProperties(),
                 // 2026-10-21：任务改名异动留痕
-                taskMutationHistoryService
+                taskMutationHistoryService,
+                // 2026-10-31：重发原地续链（save → sync → publish）
+                auditInstanceRepository,
+                workflowBusinessStatusSyncService,
+                workflowEventDispatcher
         );
     }
 
@@ -627,6 +642,12 @@ class IndicatorMutationServiceTest {
         assertTrue(sqlCaptor.getValue().contains("ai.status = 'WITHDRAWN'"));
         assertTrue(sqlCaptor.getValue().contains("ai.completed_at IS NULL"));
         assertTrue(sqlCaptor.getValue().contains("PLAN_MUTATION_STRATEGY"));
+        // 2026-10-30 二次定案（撤回零新增行）：退回提交步骤双形态识别——
+        // 新形态：提交类步骤被原地置 WITHDRAWN（step_no=1 / 审批人=发起人）；
+        // 旧形态：存量追加的退回提交行（步骤名含「提交」）
+        assertTrue(sqlCaptor.getValue().contains("rsi.step_no = 1"));
+        assertTrue(sqlCaptor.getValue().contains("rsi.approver_id = ai.requester_id"));
+        assertTrue(sqlCaptor.getValue().contains("rsi.step_name LIKE '%提交%'"));
         // 不含审批中实例：IN_REVIEW 过滤（审批中心异动卡口径）不被本查询破坏
         assertFalse(sqlCaptor.getValue().contains("ai.status = 'IN_REVIEW'"));
     }
@@ -636,6 +657,310 @@ class IndicatorMutationServiceTest {
     void listReturnedMutationChains_shouldReturnEmptyForNullOrg() {
         assertTrue(service.listReturnedMutationChains(null).isEmpty());
         verifyNoInteractions(jdbcTemplate);
+    }
+
+    // ==================== 2026-10-31 用户定案：重发 = 原地续链（resubmitBatch） ====================
+    // 口径：一次异动的结束 = 取消异动或到达最终节点通过；期间重新发起（原样/改后）
+    // 不生成新实例、不生成新 report、数据库零新增行——只是把审批节点的状态改回来。
+
+    private static final Long RESUBMIT_INSTANCE_ID = 881L;
+    private static final String RESUBMIT_BATCH_ID = "batch-881";
+    private static final Long RESUBMIT_LOG_ID = 5001L;
+
+    /** audit_instance 行（带 flow_code），形态与 mutationInstanceRow 一致。 */
+    private Map<String, Object> mutationInstanceRow(Long instanceId, Long entityId, String entityType,
+                                                    Long requesterId, String status,
+                                                    Object completedAt) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", instanceId);
+        row.put("entity_id", entityId);
+        row.put("entity_type", entityType);
+        row.put("batch_id", RESUBMIT_BATCH_ID);
+        row.put("requester_id", requesterId);
+        row.put("status", status);
+        row.put("completed_at", completedAt);
+        row.put("created_at", java.sql.Timestamp.valueOf("2026-10-30 10:00:00"));
+        row.put("flow_code", "PLAN_MUTATION_STRATEGY");
+        return row;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubResubmitInstance(Map<String, Object> instanceRow) {
+        when(jdbcTemplate.query(
+                contains("FROM public.audit_instance ai"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Map<String, Object>>>any(),
+                eq(RESUBMIT_INSTANCE_ID)))
+                .thenReturn(instanceRow);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubResubmitBatchRows(List<Map<String, Object>> rows) {
+        when(jdbcTemplate.queryForList(contains("WHERE ai.batch_id = ?"), eq(RESUBMIT_BATCH_ID)))
+                .thenReturn(rows);
+    }
+
+    /** 本批快照行装载（latestRoundAuditLog）打桩：按 (entity_type, entity_id, batch_id) 精确匹配。 */
+    @SuppressWarnings("unchecked")
+    private void stubResubmitAuditLog(String entityType, Long entityId, Map<String, Object> logRow) {
+        when(jdbcTemplate.query(
+                contains("FROM public.audit_log"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Map<String, Object>>>any(),
+                eq(entityType), eq(entityId), eq(RESUBMIT_BATCH_ID)))
+                .thenReturn(logRow);
+    }
+
+    /** 本批快照行（首轮 initiateBatch 写入的 audit_log 行，含 log_id）。 */
+    private Map<String, Object> batchAuditLogRow() {
+        Map<String, Object> log = new HashMap<>();
+        log.put("log_id", RESUBMIT_LOG_ID);
+        log.put("changed_fields", Map.of(
+                "indicator_desc", Map.of("before", "旧描述", "after", "首轮拟描述"),
+                "weight_percent", Map.of("before", 10, "after", 20)));
+        log.put("after_json", Map.of("indicator_desc", "首轮拟描述", "weight_percent", 20));
+        log.put("before_json", Map.of("indicator_desc", "旧描述", "weight_percent", 10));
+        return log;
+    }
+
+    /**
+     * 构造「退回待重报」活链的领域实例（withdrawToRequester 新形态链形：
+     * step_no=1 提交步与 step_no=2 审批步均原地 WITHDRAWN，实例 WITHDRAWN、
+     * completedAt 为空），并打桩仓储 save 原样返回（领域方法原地修改聚合）。
+     */
+    private com.sism.workflow.domain.runtime.AuditInstance stubReturnedInstanceLoaded() {
+        var instance = new com.sism.workflow.domain.runtime.AuditInstance();
+        instance.setId(RESUBMIT_INSTANCE_ID);
+        instance.setEntityType("INDICATOR");
+        instance.setEntityId(INDICATOR_ID);
+        instance.setRequesterId(OPERATOR_ID);
+        instance.setBatchId(RESUBMIT_BATCH_ID);
+        instance.setStatus("WITHDRAWN");
+        instance.setCompletedAt(null);
+        var submitStep = new com.sism.workflow.domain.runtime.AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStepName("填报人提交");
+        submitStep.setStatus("WITHDRAWN");
+        instance.addStepInstance(submitStep);
+        var approvalStep = new com.sism.workflow.domain.runtime.AuditStepInstance();
+        approvalStep.setStepNo(2);
+        approvalStep.setStepName("战略部负责人审批");
+        approvalStep.setStatus("WITHDRAWN");
+        instance.addStepInstance(approvalStep);
+        when(auditInstanceRepository.findById(RESUBMIT_INSTANCE_ID))
+                .thenReturn(Optional.of(instance));
+        when(auditInstanceRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        return instance;
+    }
+
+    @Test
+    @DisplayName("重发仅限发起人：非发起人操作被拒（requester-only，与取消异动同口径）")
+    void resubmitBatch_shouldRejectNonRequester() {
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", 777L, "WITHDRAWN", null));
+
+        SecurityException error = assertThrows(SecurityException.class, () ->
+                service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID, null));
+
+        assertTrue(error.getMessage().contains("仅异动发起人可重新发起"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("重发仅限退回待重报活链：实例已终结（completed_at 非空）被拒")
+    void resubmitBatch_shouldRejectFinishedChain() {
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN",
+                java.sql.Timestamp.valueOf("2026-10-30 12:00:00")));
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID, null));
+
+        assertTrue(error.getMessage().contains("退回待重报"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("非异动链（如上报流程）实例不能走重发（与 assertMutationChainInstance 等价校验）")
+    void resubmitBatch_shouldRejectNonMutationChain() {
+        Map<String, Object> row = mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null);
+        row.put("flow_code", "PLAN_APPROVAL_FUNCDEPT");
+        stubResubmitInstance(row);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID, null));
+
+        assertTrue(error.getMessage().contains("仅异动审批链"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("原样重发原地续链：零新增 audit_log 行、batch_id 不变、异动锁重建、"
+            + "实例回 IN_REVIEW（提交步 APPROVED + 审批步 PENDING）")
+    void resubmitBatch_shouldResumeInPlaceWithoutAnyNewRows() {
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null));
+        stubResubmitBatchRows(List.of(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null)));
+        stubResubmitAuditLog("INDICATOR", INDICATOR_ID, batchAuditLogRow());
+        stubReturnedInstanceLoaded();
+
+        var result = service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID, null);
+
+        // 返回的实例 ID 就是原链 ID（原地续链，不产生新实例）
+        assertEquals(List.of(String.valueOf(RESUBMIT_INSTANCE_ID)), result.instanceIds());
+        assertEquals("异动已重新发起", result.message());
+        // 零新增：不写 audit_log INSERT、不走发起路径（不产生新 batchId/新实例/新快照行）
+        verify(jdbcTemplate, never()).update(
+                contains("INSERT INTO public.audit_log"), any(Object[].class));
+        verify(jdbcTemplate, never()).update(
+                contains("UPDATE public.audit_log"), any(Object[].class));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+        // batch_id 不改写（旧实现每次重发都 UPDATE audit_instance SET batch_id）
+        verify(jdbcTemplate, never()).update(contains("batch_id = ?"), any(Object[].class));
+        // 业务锁重建（不写日志，列写入口径与发起一致）
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+        // 实例原地复活：IN_REVIEW、completedAt 保持 NULL、提交步 APPROVED、审批步 PENDING
+        ArgumentCaptor<com.sism.workflow.domain.runtime.AuditInstance> saved =
+                ArgumentCaptor.forClass(com.sism.workflow.domain.runtime.AuditInstance.class);
+        verify(auditInstanceRepository).save(saved.capture());
+        assertEquals("IN_REVIEW", saved.getValue().getStatus());
+        assertNull(saved.getValue().getCompletedAt());
+        assertEquals(RESUBMIT_BATCH_ID, saved.getValue().getBatchId());
+        assertEquals("APPROVED", saved.getValue().getStepInstances().get(0).getStatus());
+        assertEquals("PENDING", saved.getValue().getStepInstances().get(1).getStatus());
+        // 保持现有通知行为：逐实例业务同步 + 事件广播
+        verify(workflowBusinessStatusSyncService).syncAfterWorkflowChanged(any());
+        verify(workflowEventDispatcher).publish(any());
+        // 内容未变：权重闭合校验不必重跑
+        verifyNoInteractions(basicTaskWeightValidationService);
+    }
+
+    @Test
+    @DisplayName("改后重发（带 items）原地 UPDATE 本批日志行：行数不变、after 更新、"
+            + "before 保留；合并后的 after 权重重跑闭合校验")
+    @SuppressWarnings("unchecked")
+    void resubmitBatch_shouldUpdateAuditLogInPlaceWhenItemsProvided() {
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null));
+        stubResubmitBatchRows(List.of(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null)));
+        stubResubmitAuditLog("INDICATOR", INDICATOR_ID, batchAuditLogRow());
+        stubReturnedInstanceLoaded();
+        // 权重闭合校验的（计划、目标部门）反查
+        when(jdbcTemplate.query(
+                contains("SELECT t.plan_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(4040L);
+        when(jdbcTemplate.query(
+                contains("SELECT target_org_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(TARGET_ORG_ID);
+
+        var result = service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID,
+                List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "改后描述", "weight_percent", 25)));
+
+        assertEquals(List.of(String.valueOf(RESUBMIT_INSTANCE_ID)), result.instanceIds());
+        assertEquals("异动已按修改内容重新发起", result.message());
+        // 行数不变：绝不 INSERT，只原地 UPDATE 本批既有行；UPDATE 不触碰 before_json/action
+        verify(jdbcTemplate, never()).update(
+                contains("INSERT INTO public.audit_log"), any(Object[].class));
+        ArgumentCaptor<Object[]> logArgs = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).update(
+                org.mockito.ArgumentMatchers.argThat((String sql) ->
+                        sql.contains("UPDATE public.audit_log")
+                                && !sql.contains("before_json")
+                                && !sql.contains("action")),
+                logArgs.capture());
+        var objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        try {
+            Map<String, Object> changedFields =
+                    objectMapper.readValue(String.valueOf(logArgs.getValue()[0]), Map.class);
+            Map<String, Object> afterJson =
+                    objectMapper.readValue(String.valueOf(logArgs.getValue()[1]), Map.class);
+            // after 更新：desc 用条目新值；条目未涉及的既有变更字段（weight）也一并
+            // 保留首轮 after 值——重发是「同一异动的微调」，不静默丢弃已提交变更
+            Map<String, Object> descDelta = (Map<String, Object>) changedFields.get("indicator_desc");
+            assertEquals("改后描述", descDelta.get("after"));
+            assertEquals("旧描述", descDelta.get("before"));
+            Map<String, Object> weightDelta = (Map<String, Object>) changedFields.get("weight_percent");
+            assertEquals(25, weightDelta.get("after"));
+            assertEquals(10, weightDelta.get("before"));
+            assertEquals("改后描述", afterJson.get("indicator_desc"));
+            assertEquals(25, afterJson.get("weight_percent"));
+            // 按 log_id 定位本批既有行（绝不 INSERT 新行）
+            assertEquals(RESUBMIT_LOG_ID.longValue(),
+                    ((Number) logArgs.getValue()[2]).longValue());
+        } catch (Exception e) {
+            throw new IllegalStateException("解析原地改写后的快照 JSON 失败", e);
+        }
+        // 权重校验重跑：合并后的 after 权重（25）以 override 参与，口径与 initiateBatch 一致
+        ArgumentCaptor<java.util.Map<Long, java.math.BigDecimal>> overrideCaptor =
+                ArgumentCaptor.forClass(java.util.Map.class);
+        verify(basicTaskWeightValidationService).validatePlanBasicWeight(
+                eq(4040L), eq(TARGET_ORG_ID), any(), overrideCaptor.capture());
+        assertEquals(java.math.BigDecimal.valueOf(25), overrideCaptor.getValue().get(INDICATOR_ID));
+        // 照常重建业务锁并原地续链（save → sync → publish）
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+        verify(auditInstanceRepository).save(any(com.sism.workflow.domain.runtime.AuditInstance.class));
+        verify(workflowBusinessStatusSyncService).syncAfterWorkflowChanged(any());
+        verify(workflowEventDispatcher).publish(any());
+    }
+
+    @Test
+    @DisplayName("改后重发条目必须指向批内既有对象：批外实体被拒（重发不新增异动对象）")
+    void resubmitBatch_shouldRejectItemsNotInBatch() {
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null));
+        stubResubmitBatchRows(List.of(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null)));
+        stubResubmitAuditLog("INDICATOR", INDICATOR_ID, batchAuditLogRow());
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID,
+                        List.of(Map.of("id", 9999L, "indicator_desc", "批外对象"))));
+
+        assertTrue(error.getMessage().contains("重发条目与原批次不匹配"));
+        // 不产生任何日志行写入与链操作
+        verify(jdbcTemplate, never()).update(
+                contains("UPDATE public.audit_log"), any(Object[].class));
+        verify(auditInstanceRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("快照缺失：新模型下发起必写快照，缺失视为数据异常直接报错不再静默跳过")
+    void resubmitBatch_shouldRejectWhenSnapshotMissing() {
+        Long missingSnapshotInstanceId = 882L;
+        Long missingSnapshotEntityId = 2002L;
+        stubResubmitInstance(mutationInstanceRow(
+                RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR", OPERATOR_ID, "WITHDRAWN", null));
+        stubResubmitBatchRows(List.of(
+                mutationInstanceRow(RESUBMIT_INSTANCE_ID, INDICATOR_ID, "INDICATOR",
+                        OPERATOR_ID, "WITHDRAWN", null),
+                mutationInstanceRow(missingSnapshotInstanceId, missingSnapshotEntityId, "INDICATOR",
+                        OPERATOR_ID, "WITHDRAWN", null)));
+        // 第一条实例有本批快照；第二条实例快照缺失（未打桩 → 查询返回 null）
+        stubResubmitAuditLog("INDICATOR", INDICATOR_ID, batchAuditLogRow());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.resubmitBatch(RESUBMIT_INSTANCE_ID, OPERATOR_ID, null));
+
+        assertTrue(error.getMessage().contains("缺少本批异动快照"));
+        assertTrue(error.getMessage().contains("指标#" + missingSnapshotEntityId));
+        // 整批拒绝：不重建锁、不续链、不走发起路径
+        verify(jdbcTemplate, never()).update(
+                contains("SET mutation_status"), any(Object[].class));
+        verify(auditInstanceRepository, never()).save(any());
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
     }
 
     private Map<String, Object> indicatorRow(String indicatorStatus, String planStatus) {
