@@ -43,7 +43,9 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -85,7 +87,6 @@ public class BusinessImportApplicationService {
                                                        Long cycleId,
                                                        Long targetOrgId,
                                                        String sheetName,
-                                                       Map<Integer, Long> sequenceMap,
                                                        CurrentUser currentUser) {
         requireCycleAndUser(cycleId, currentUser);
         SysOrg targetOrg = requireOrg(targetOrgId, "目标职能部门不存在");
@@ -94,8 +95,8 @@ public class BusinessImportApplicationService {
         }
 
         ParsedWorkbook parsed = parser.parse(file, ImportType.STRATEGIC_TASK, sheetName);
-        List<ImportRowPreview> rows = enrichStrategicRows(parsed.rows(), cycleId, targetOrg, sequenceMap, currentUser);
-        return storePreview(file, parsed, rows, ImportType.STRATEGIC_TASK, cycleId, currentUser.getOrgId(), targetOrg, sequenceMap, currentUser);
+        List<ImportRowPreview> rows = enrichStrategicRows(parsed.rows(), cycleId, targetOrg, currentUser);
+        return storePreview(file, parsed, rows, ImportType.STRATEGIC_TASK, cycleId, currentUser.getOrgId(), targetOrg, currentUser);
     }
 
     public ImportPreviewResponse previewDistribution(MultipartFile file,
@@ -103,7 +104,6 @@ public class BusinessImportApplicationService {
                                                      Long targetCollegeOrgId,
                                                      Long sourceOrgId,
                                                      String sheetName,
-                                                     Map<Integer, Long> sequenceMap,
                                                      CurrentUser currentUser) {
         requireCycleAndUser(cycleId, currentUser);
         Long effectiveSourceOrgId = sourceOrgId == null ? currentUser.getOrgId() : sourceOrgId;
@@ -120,8 +120,8 @@ public class BusinessImportApplicationService {
         }
 
         ParsedWorkbook parsed = parser.parse(file, ImportType.DISTRIBUTION, sheetName);
-        List<ImportRowPreview> rows = enrichDistributionRows(parsed.rows(), cycleId, sourceOrg, targetOrg, sequenceMap);
-        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, sourceOrg.getId(), targetOrg, sequenceMap, currentUser);
+        List<ImportRowPreview> rows = enrichDistributionRows(parsed.rows(), cycleId, sourceOrg, targetOrg);
+        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, sourceOrg.getId(), targetOrg, currentUser);
     }
 
     public ImportCommitResponse commit(String batchId,
@@ -313,7 +313,6 @@ public class BusinessImportApplicationService {
                                                Long cycleId,
                                                Long sourceOrgId,
                                                SysOrg targetOrg,
-                                               Map<Integer, Long> sequenceMap,
                                                CurrentUser currentUser) {
         ImportSummary summary = summarize(rows);
         boolean blocking = summary.errorRows() > 0;
@@ -339,7 +338,6 @@ public class BusinessImportApplicationService {
                 targetOrg.getId(),
                 currentUser.getId(),
                 parsed.confirmToken(),
-                sequenceMap == null ? Map.of() : Map.copyOf(sequenceMap),
                 response
         ));
         return response;
@@ -348,20 +346,12 @@ public class BusinessImportApplicationService {
     private List<ImportRowPreview> enrichStrategicRows(List<ImportRowPreview> rows,
                                                        Long cycleId,
                                                        SysOrg targetOrg,
-                                                       Map<Integer, Long> sequenceMap,
                                                        CurrentUser currentUser) {
         Plan plan = findPlan(cycleId, PlanLevel.STRAT_TO_FUNC, currentUser.getOrgId(), targetOrg.getId())
                 .orElse(null);
+        // 2026-10-31 层级化定案：按名称匹配更新/新增——同任务组内核心指标同名=更新、新名称=新增；
+        // 旧「序号→内部ID 行身份精确更新」逻辑移除，序号仅作为任务组号参与分组与排序。
         Map<String, Indicator> existing = existingStrategicIndicators(plan);
-        // 2026-10-19：序号映射的合法性校验必须用「计划范围内全部指标ID」——
-        // existing 是按业务键去重的 Map（同名指标会被合并），不能作为ID集合来源，
-        // 否则同名指标中未入 Map 的那条会被误判为"已变化"。
-        Set<Long> relatedIndicatorIds = plan == null
-                ? Set.of()
-                : indicatorsInPlanScope(plan, null).stream()
-                        .map(Indicator::getId)
-                        .filter(Objects::nonNull)
-                        .collect(Collectors.toSet());
 
         return rows.stream().map(row -> {
             List<String> errors = new ArrayList<>(row.errors());
@@ -372,29 +362,8 @@ public class BusinessImportApplicationService {
                 errors.add("文件中的职能部门与当前选择不一致");
             }
 
-            ImportAction action;
-            String businessKey;
-            // 2026-10-19 用户定案：序号 → 内部ID 映射匹配（同名指标各按各的序号归属，不做名称合并）。
-            // 映射非空（前端按导出同款排序生成）时严格按序号：命中的更新、超出范围的作为新行创建；
-            // 映射为空（老客户端兜底）时退回名称匹配。
-            Integer seq = normalized.seq();
-            Long mappedId = (seq == null || sequenceMap == null) ? null : sequenceMap.get(seq);
-            if (sequenceMap != null && !sequenceMap.isEmpty()) {
-                if (mappedId != null && relatedIndicatorIds.contains(mappedId)) {
-                    businessKey = "seq:" + seq + ":" + mappedId;
-                    action = ImportAction.UPDATE;
-                } else if (mappedId != null) {
-                    businessKey = "seq:" + seq;
-                    errors.add("序号 " + seq + " 对应的指标已变化（可能已被删除），请重新导出表格后再导入");
-                    action = ImportAction.ERROR;
-                } else {
-                    businessKey = "seq:" + seq;
-                    action = ImportAction.CREATE;
-                }
-            } else {
-                businessKey = strategicBusinessKey(cycleId, targetOrg.getId(), normalized);
-                action = existing.containsKey(businessKey) ? ImportAction.UPDATE : ImportAction.CREATE;
-            }
+            String businessKey = strategicBusinessKey(cycleId, targetOrg.getId(), normalized);
+            ImportAction action = existing.containsKey(businessKey) ? ImportAction.UPDATE : ImportAction.CREATE;
             if (!errors.isEmpty()) {
                 action = ImportAction.ERROR;
             }
@@ -414,75 +383,198 @@ public class BusinessImportApplicationService {
     private List<ImportRowPreview> enrichDistributionRows(List<ImportRowPreview> rows,
                                                           Long cycleId,
                                                           SysOrg sourceOrg,
-                                                          SysOrg targetCollege,
-                                                          Map<Integer, Long> sequenceMap) {
-        Map<String, List<Indicator>> parentByName = indicatorRepository.findByTargetOrgId(sourceOrg.getId()).stream()
+                                                          SysOrg targetCollege) {
+        // 2026-10-31 层级化定案：父级核心指标按名称反查（父指标是已下发系统数据，文件不再携带父级战略任务列）；
+        // 子指标按（父级核心指标 + 名称）匹配——同名=更新、新名称=新增。
+        // 2026-10-31 用户拍板（父级行=上级定死锚点）：系统父级锚点按 ID 升序作为「下发顺序」基准
+        // （与模板预填顺序一致），用于锚点一致性硬校验、相对顺序校验与未使用预填行识别。
+        List<Indicator> systemParentAnchors = indicatorRepository.findByTargetOrgId(sourceOrg.getId()).stream()
                 .filter(indicator -> Boolean.FALSE.equals(indicator.getIsDeleted()))
+                .filter(indicator -> indicator.getId() != null)
+                .sorted(Comparator.comparing(Indicator::getId))
+                .toList();
+        Map<String, List<Indicator>> parentByName = systemParentAnchors.stream()
                 .collect(Collectors.groupingBy(indicator -> normalizeKey(indicator.getIndicatorDesc())));
 
         Plan plan = findPlan(cycleId, PlanLevel.FUNC_TO_COLLEGE, sourceOrg.getId(), targetCollege.getId()).orElse(null);
         Map<String, Indicator> existingChildren = existingDistributionIndicators(plan, targetCollege);
-        // 同上：用计划+学院范围内全部子指标ID，避免同名去重导致误判
-        Set<Long> relatedChildrenIds = plan == null
-                ? Set.of()
-                : indicatorsInPlanScope(plan, targetCollege.getId()).stream()
-                        .map(Indicator::getId)
-                        .filter(Objects::nonNull)
-                        .collect(Collectors.toSet());
 
-        return rows.stream().map(row -> {
-            List<String> errors = new ArrayList<>(row.errors());
-            List<String> warnings = new ArrayList<>(row.warnings());
-            NormalizedImportRow normalized = row.normalized();
+        // 第一遍：逐行做学院一致性、父级锚点匹配与锚点一致性硬校验（名称/类型被改=阻断）
+        List<DistributionRowAnchor> anchored = new ArrayList<>();
+        for (ImportRowPreview row : rows) {
+            anchored.add(applyDistributionAnchor(row, targetCollege, parentByName));
+        }
+        // 第二遍：相对顺序校验——文件中出现的父级组序列必须是系统下发顺序的子序列
+        // （允许删掉不填的组，不允许调换/乱序；违反=阻断）
+        applyParentOrderValidation(anchored, systemParentAnchors);
 
-            if (!isBlank(normalized.college()) && !sameName(normalized.college(), targetCollege.getName())) {
-                errors.add("文件中的学院与当前选择不一致");
-            }
-
-            List<Indicator> parentCandidates = parentByName.getOrDefault(normalizeKey(normalized.parentIndicator()), List.of());
-            if (parentCandidates.isEmpty()) {
-                errors.add("父级核心指标无法匹配");
-            } else if (parentCandidates.size() > 1) {
-                errors.add("父级核心指标匹配到多条记录，请补充更明确的父级指标信息");
-            } else {
-                normalized = withParentIndicatorId(normalized, parentCandidates.get(0).getId());
-            }
-
+        // 第三遍：组装预览行（错误优先阻断；未使用预填行置 SKIP；其余按名称匹配更新/新增）
+        return anchored.stream().map(anchor -> {
+            NormalizedImportRow normalized = anchor.normalized();
+            String businessKey = distributionBusinessKey(cycleId, sourceOrg.getId(), targetCollege.getId(), normalized);
             ImportAction action;
-            String businessKey;
-            // 2026-10-19：与战略任务导入同口径——序号 → 内部ID 映射优先，映射为空退回名称匹配
-            Integer seq = normalized.seq();
-            Long mappedId = (seq == null || sequenceMap == null) ? null : sequenceMap.get(seq);
-            if (sequenceMap != null && !sequenceMap.isEmpty()) {
-                if (mappedId != null && relatedChildrenIds.contains(mappedId)) {
-                    businessKey = "seq:" + seq + ":" + mappedId;
-                    action = ImportAction.UPDATE;
-                } else if (mappedId != null) {
-                    businessKey = "seq:" + seq;
-                    errors.add("序号 " + seq + " 对应的子指标已变化（可能已被删除），请重新导出表格后再导入");
-                    action = ImportAction.ERROR;
-                } else {
-                    businessKey = "seq:" + seq;
-                    action = ImportAction.CREATE;
-                }
+            if (!anchor.errors().isEmpty()) {
+                action = ImportAction.ERROR;
+            } else if (anchor.unusedParentRow()) {
+                // 2026-10-31 用户拍板：父级行未填任何子指标且父级内容未被改动 → 跳过不报错
+                action = ImportAction.SKIP;
             } else {
-                businessKey = distributionBusinessKey(cycleId, sourceOrg.getId(), targetCollege.getId(), normalized);
                 action = existingChildren.containsKey(businessKey) ? ImportAction.UPDATE : ImportAction.CREATE;
             }
-            if (!errors.isEmpty()) {
-                action = ImportAction.ERROR;
-            }
-
             return new ImportRowPreview(
-                    row.rowNo(),
+                    anchor.row().rowNo(),
                     action,
                     businessKey,
                     normalized,
-                    row.source(),
-                    errors,
-                    warnings
+                    anchor.row().source(),
+                    anchor.errors(),
+                    anchor.warnings()
             );
         }).toList();
+    }
+
+    /**
+     * 学院导入 enrich 第一遍的逐行中间结果：锚点校验完成、顺序校验与动作判定之前。
+     */
+    private record DistributionRowAnchor(
+            ImportRowPreview row,
+            List<String> errors,
+            List<String> warnings,
+            NormalizedImportRow normalized,
+            Indicator matchedParent,
+            boolean unusedParentRow
+    ) {
+    }
+
+    /** 学院导入逐行锚点校验：学院一致性 + 父级匹配 + 名称/类型锚点硬校验（2026-10-31 用户拍板）。 */
+    private DistributionRowAnchor applyDistributionAnchor(ImportRowPreview row,
+                                                          SysOrg targetCollege,
+                                                          Map<String, List<Indicator>> parentByName) {
+        List<String> errors = new ArrayList<>(row.errors());
+        List<String> warnings = new ArrayList<>(row.warnings());
+        NormalizedImportRow normalized = row.normalized();
+
+        if (!isBlank(normalized.college()) && !sameName(normalized.college(), targetCollege.getName())) {
+            errors.add("文件中的学院与当前选择不一致");
+        }
+
+        List<Indicator> parentCandidates = parentByName.getOrDefault(normalizeKey(normalized.parentIndicator()), List.of());
+        Indicator matchedParent = null;
+        boolean unusedParentRow = isUnusedParentRow(normalized);
+        if (parentCandidates.isEmpty()) {
+            if (isBlank(normalized.parentIndicator())) {
+                errors.add("父级核心指标无法匹配");
+            } else {
+                // 2026-10-31 用户拍板：父级核心指标名称被改 = 锚点不一致，阻断错误并点名行序与内容
+                errors.add("第 " + row.rowNo() + " 行父级核心指标与上级下发内容不一致（不可修改）：文件中填写为“"
+                        + normalized.parentIndicator().trim() + "”，在上级下发的父级核心指标中不存在");
+            }
+        } else if (parentCandidates.size() > 1) {
+            errors.add("父级核心指标匹配到多条记录，请补充更明确的父级指标信息");
+        } else {
+            matchedParent = parentCandidates.get(0);
+            normalized = withParentIndicatorId(normalized, matchedParent.getId());
+            // 2026-10-31 终版表头加列（学院模板「任务类型」）：锚点级只读校验——文件填写值与系统
+            // 父级核心指标所属任务类型不一致 → 阻断点名（与下方「核心指标类型」不一致=阻断同款
+            // 处理与文案风格）。该列为系统预填信息，不新增落库字段：子指标任务类别仍由父级继承链
+            // 决定（commitDistribution 落库链同口径）；旧文件无该列时取空串，校验自动跳过（回导兼容）。
+            TaskType parentTaskCategory = resolveParentTaskCategory(matchedParent);
+            if (!isBlank(normalized.taskType()) && parentTaskCategory == null) {
+                errors.add("第 " + row.rowNo() + " 行任务类型与上级下发内容不一致（不可修改）：父级核心指标“"
+                        + matchedParent.getIndicatorDesc() + "”所属任务类型在系统中缺失，请重新下载模板预填");
+            } else if (!isBlank(normalized.taskType())
+                    && !sameName(normalized.taskType(), taskTypeLabel(parentTaskCategory))) {
+                errors.add("第 " + row.rowNo() + " 行任务类型与上级下发内容不一致（不可修改）：父级核心指标“"
+                        + matchedParent.getIndicatorDesc() + "”所属任务类型应为“"
+                        + taskTypeLabel(parentTaskCategory) + "”");
+            }
+            // 2026-10-31 终版表头：「核心指标类型」=父指标自身类型，模板已按系统数据预填。
+            // 2026-10-31 用户拍板（父级行=上级定死锚点）：类型被改从警告升级为阻断错误——
+            // 预填父级行的名称/类型必须与系统下发完全一致（不可修改）
+            if (!isBlank(normalized.parentIndicatorType())
+                    && !sameName(normalized.parentIndicatorType(), matchedParent.getType())) {
+                errors.add("第 " + row.rowNo() + " 行父级核心指标与上级下发内容不一致（不可修改）：应为“"
+                        + matchedParent.getIndicatorDesc() + "（" + matchedParent.getType() + "）”");
+            } else if (unusedParentRow) {
+                // 未使用的父级预填行（父级内容未改动且未填子指标）：由组装阶段置 SKIP，不再报「子指标名称不能为空」
+            } else if (parentTaskCategory == null) {
+                // 2026-11-01（E2E 缺陷修复）：学院模板没有「任务类别」列，子指标落库的任务类别
+                // 完全由父级核心指标所属任务继承（commitDistribution 落库链同口径）。父级任务类别
+                // 取不到（父指标未关联任务/任务不存在/类别缺失，数据异常）时按系统默认「发展性」
+                // 落库——预览行先打警告，不静默。
+                warnings.add("父级核心指标「" + matchedParent.getIndicatorDesc()
+                        + "」所属任务不存在或任务类别缺失，导入后任务类别将按系统默认「发展性」落库");
+            }
+        }
+        return new DistributionRowAnchor(row, errors, warnings, normalized, matchedParent, unusedParentRow);
+    }
+
+    /**
+     * 2026-10-31 用户拍板（父级行=上级定死锚点）：未使用的父级预填行识别口径——
+     * 子指标名称、指标类型、权重三列全空 = 未填任何子指标（与解析链 isParentOnlyDistributionRow 同口径）。
+     */
+    private boolean isUnusedParentRow(NormalizedImportRow row) {
+        return isBlank(row.indicatorName()) && isBlank(row.indicatorType()) && row.weight() == null;
+    }
+
+    /**
+     * 2026-10-31 用户拍板（父级行=上级定死锚点）：相对顺序校验——文件中出现的父级组，
+     * 其相对顺序必须与系统下发顺序一致（子序列关系；允许删掉不填的组，不允许调换/乱序）。
+     * 判定口径：文件父级组序列相对系统顺序存在逆序对即乱序，参与逆序的组全部点名阻断
+     * （点名行序与父级指标内容）。
+     */
+    private void applyParentOrderValidation(List<DistributionRowAnchor> anchors,
+                                            List<Indicator> systemParentAnchors) {
+        // 文件中父级组出现顺序：按父级 ID 去重（同组多行取首次出现），沿用文件行序
+        Map<Long, List<Integer>> rowIndexesByParentId = new LinkedHashMap<>();
+        for (int index = 0; index < anchors.size(); index++) {
+            Indicator matched = anchors.get(index).matchedParent();
+            if (matched == null || matched.getId() == null) {
+                // 未匹配/多匹配的行已有各自的阻断错误，不参与顺序校验
+                continue;
+            }
+            rowIndexesByParentId.computeIfAbsent(matched.getId(), key -> new ArrayList<>()).add(index);
+        }
+        if (rowIndexesByParentId.isEmpty() || systemParentAnchors.isEmpty()) {
+            return;
+        }
+        Map<Long, Integer> systemPositionById = new HashMap<>();
+        for (int position = 0; position < systemParentAnchors.size(); position++) {
+            systemPositionById.putIfAbsent(systemParentAnchors.get(position).getId(), position);
+        }
+        List<Long> fileGroupOrder = new ArrayList<>(rowIndexesByParentId.keySet());
+        Set<Long> violatingParents = new HashSet<>();
+        for (int left = 0; left < fileGroupOrder.size(); left++) {
+            Integer leftPosition = systemPositionById.get(fileGroupOrder.get(left));
+            if (leftPosition == null) {
+                continue;
+            }
+            for (int right = left + 1; right < fileGroupOrder.size(); right++) {
+                Integer rightPosition = systemPositionById.get(fileGroupOrder.get(right));
+                if (rightPosition == null) {
+                    continue;
+                }
+                if (leftPosition > rightPosition) {
+                    // 逆序对：两个组的相对顺序与系统下发顺序矛盾，双双点名
+                    violatingParents.add(fileGroupOrder.get(left));
+                    violatingParents.add(fileGroupOrder.get(right));
+                }
+            }
+        }
+        if (violatingParents.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<Long, List<Integer>> entry : rowIndexesByParentId.entrySet()) {
+            if (!violatingParents.contains(entry.getKey())) {
+                continue;
+            }
+            Indicator parent = anchors.get(entry.getValue().get(0)).matchedParent();
+            for (Integer rowIndex : entry.getValue()) {
+                DistributionRowAnchor anchor = anchors.get(rowIndex);
+                anchor.errors().add("第 " + anchor.row().rowNo() + " 行父级核心指标“"
+                        + parent.getIndicatorDesc() + "”的顺序与上级下发顺序不一致（不可调换父级指标顺序，允许删除不填的组）");
+            }
+        }
     }
 
     private CommitCounters commitStrategic(PreviewContext context,
@@ -494,7 +586,9 @@ public class BusinessImportApplicationService {
         CommitCounter counter = new CommitCounter(plan);
 
         Set<Long> coveredIds = new HashSet<>();
-        for (ImportRowPreview row : context.response().rows()) {
+        List<ImportRowPreview> importRows = context.response().rows();
+        for (int rowIndex = 0; rowIndex < importRows.size(); rowIndex++) {
+            ImportRowPreview row = importRows.get(rowIndex);
             if (row.action() == ImportAction.ERROR) {
                 counter.skipped++;
                 continue;
@@ -509,11 +603,11 @@ public class BusinessImportApplicationService {
                     targetOrg,
                     currentOrg);
 
-            // 2026-10-19 用户定案：序号 → 内部ID 映射决定更新目标（同名指标各按各的序号归属）。
-            // 映射为空（老客户端兜底）时退回「任务+名称」匹配。
+            // 2026-10-31 层级化定案：按名称匹配更新目标——同任务组内核心指标同名=更新、新名称=新增；
+            // 匹配键 =（任务, 核心指标名）。改名不支持（请在界面修改）。
             Indicator target = null;
             if (row.action() == ImportAction.UPDATE) {
-                target = resolveUpdateTarget(context, normalized, task.getId(), null);
+                target = resolveUpdateTarget(normalized, task.getId(), null);
                 if (target == null) {
                     // 预览后目标已变化（被删/改归属）：安全跳过，避免误建或误改
                     counter.skipped++;
@@ -543,8 +637,9 @@ public class BusinessImportApplicationService {
                         null,
                         normalized.indicatorType(),
                         defaultWeight(normalized.weight()),
-                        // 2026-10-28 迭代计划 M4：导入时按表格序号写 sortOrder，作为稳定排序依据
-                        normalized.seq() != null ? normalized.seq() : 0,
+                        // 2026-10-31 层级化定案：序号升级为任务组号（组内共享），sortOrder 改按
+                        // 文件行序（1-based）写入，保持与用户表格一致的稳定排序
+                        rowIndex + 1,
                         normalized.remark(),
                         0);
                 counter.created++;
@@ -599,24 +694,12 @@ public class BusinessImportApplicationService {
     }
 
     /**
-     * 解析 UPDATE 行的更新目标：
-     * ① 序号映射（上下文缓存的 序号→内部ID）命中且指标仍在 → 命中目标；
-     * ② 映射为空（老客户端兜底）→ 退回「任务+名称（+父指标）」匹配。
+     * 解析 UPDATE 行的更新目标（2026-10-31 层级化定案）：
+     * 按「任务 + 名称（+父指标）」匹配——同名=更新、新名称=新增（新增不进此方法）。
      */
-    private Indicator resolveUpdateTarget(PreviewContext context,
-                                          NormalizedImportRow normalized,
+    private Indicator resolveUpdateTarget(NormalizedImportRow normalized,
                                           Long taskId,
                                           Long parentIndicatorId) {
-        Map<Integer, Long> sequenceMap = context.sequenceMap();
-        if (sequenceMap != null && !sequenceMap.isEmpty()) {
-            Long mappedId = normalized.seq() == null ? null : sequenceMap.get(normalized.seq());
-            if (mappedId == null) {
-                return null;
-            }
-            return indicatorRepository.findById(mappedId)
-                    .filter(indicator -> Boolean.FALSE.equals(indicator.getIsDeleted()))
-                    .orElse(null);
-        }
         return findIndicatorByTaskAndName(taskId, normalized.indicatorName(), parentIndicatorId).orElse(null);
     }
 
@@ -627,9 +710,13 @@ public class BusinessImportApplicationService {
         Plan plan = findOrCreatePlan(context.cycleId(), PlanLevel.FUNC_TO_COLLEGE, currentOrg.getId(), targetCollege.getId());
         CommitCounter counter = new CommitCounter(plan);
         Set<Long> coveredIds = new HashSet<>();
+        List<ImportRowPreview> importRows = context.response().rows();
 
-        for (ImportRowPreview row : context.response().rows()) {
-            if (row.action() == ImportAction.ERROR || row.normalized().parentIndicatorId() == null) {
+        for (int rowIndex = 0; rowIndex < importRows.size(); rowIndex++) {
+            ImportRowPreview row = importRows.get(rowIndex);
+            // 2026-10-31 用户拍板（父级行=上级定死锚点）：未使用的父级预填行（SKIP）不落库
+            if (row.action() == ImportAction.ERROR || row.action() == ImportAction.SKIP
+                    || row.normalized().parentIndicatorId() == null) {
                 counter.skipped++;
                 continue;
             }
@@ -651,13 +738,23 @@ public class BusinessImportApplicationService {
                         "父级指标 ID " + normalized.parentIndicatorId() + " 属于其他考核年度，不能跨年度关联，请重新导出最新模板");
             }
             String taskName = firstNonBlank(normalized.parentStrategicTask(), parentTask == null ? null : parentTask.getName(), "学院子指标");
-            TaskType taskType = parentTask == null ? TaskType.DEVELOPMENT : parentTask.getTaskType();
+            // 2026-11-01（E2E 缺陷修复）：学院模板没有「任务类别」列，子指标落库的 taskCategory
+            // 必须继承父级核心指标所属任务的类别（父指标 → 其任务 → task_type，与预览
+            // enrichDistributionRows 的警告口径一致）；父级任务类别取不到（数据异常）时
+            // 沿用系统默认值 DEVELOPMENT 并打警告日志，不静默。
+            TaskType taskType = parentTask == null ? null : parentTask.getTaskType();
+            if (taskType == null) {
+                log.warn("[Import] 批次 {} 学院子指标落库：父级核心指标 {} 未关联任务或任务类别缺失，任务类别按系统默认 DEVELOPMENT 处理",
+                        context.batchId(), normalized.parentIndicatorId());
+                taskType = TaskType.DEVELOPMENT;
+            }
             StrategicTask task = findOrCreateTask(plan, context.cycleId(), taskName, taskType, targetCollege, currentOrg);
 
-            // 2026-10-19 用户定案：与战略任务导入同口径——序号映射决定更新目标，映射为空退回名称匹配
+            // 2026-10-31 层级化定案：按名称匹配更新目标——同父级组内子指标同名=更新、新名称=新增；
+            // 匹配键 =（父级核心指标, 子指标名）。改名不支持（请在界面修改）。
             Indicator target = null;
             if (row.action() == ImportAction.UPDATE) {
-                target = resolveUpdateTarget(context, normalized, task.getId(), normalized.parentIndicatorId());
+                target = resolveUpdateTarget(normalized, task.getId(), normalized.parentIndicatorId());
                 if (target == null) {
                     counter.skipped++;
                     continue;
@@ -686,8 +783,9 @@ public class BusinessImportApplicationService {
                         normalized.parentIndicatorId(),
                         normalized.indicatorType(),
                         defaultWeight(normalized.weight()),
-                        // 2026-10-28 迭代计划 M4：导入时按表格序号写 sortOrder，作为稳定排序依据
-                        normalized.seq() != null ? normalized.seq() : 0,
+                        // 2026-10-31 层级化定案：序号升级为父级核心指标组号（组内共享），sortOrder 改按
+                        // 文件行序（1-based）写入，保持与用户表格一致的稳定排序
+                        rowIndex + 1,
                         normalized.remark(),
                         0);
                 counter.created++;
@@ -935,6 +1033,7 @@ public class BusinessImportApplicationService {
                                             task == null ? "" : task.getName(),
                                             null,
                                             null,
+                                            null,
                                             indicator.getIndicatorDesc(),
                                             indicator.getType(),
                                             indicator.getWeightPercent(),
@@ -965,6 +1064,7 @@ public class BusinessImportApplicationService {
                                 plan.getCreatedByOrgId(),
                                 targetCollege.getId(),
                                 new NormalizedImportRow(
+                                        null,
                                         null,
                                         null,
                                         null,
@@ -1054,11 +1154,25 @@ public class BusinessImportApplicationService {
                 row.strategicTask(),
                 row.parentStrategicTask(),
                 row.parentIndicator(),
+                row.parentIndicatorType(),
                 row.indicatorName(),
                 row.indicatorType(),
                 row.weight(),
                 row.remark(),
                 parentIndicatorId);
+    }
+
+    /**
+     * 解析父级核心指标所属任务的类别（学院子指标 taskCategory 的继承来源，2026-11-01 E2E 缺陷修复）。
+     * 父指标未关联任务、任务不存在或任务类别缺失（数据异常）时返回 null，
+     * 由调用方决定兜底方式：预览行加警告、落库按系统默认 DEVELOPMENT 并打 log.warn，不静默。
+     */
+    private TaskType resolveParentTaskCategory(Indicator parent) {
+        if (parent == null || parent.getTaskId() == null) {
+            return null;
+        }
+        StrategicTask parentTask = taskRepository.findById(parent.getTaskId()).orElse(null);
+        return parentTask == null ? null : parentTask.getTaskType();
     }
 
 
@@ -1104,8 +1218,6 @@ public class BusinessImportApplicationService {
             Long targetOrgId,
             Long currentUserId,
             String confirmToken,
-            // 2026-10-19：序号→内部ID 映射（前端按导出同款排序生成，预览时传入并缓存，确认导入时复用）
-            Map<Integer, Long> sequenceMap,
             ImportPreviewResponse response
     ) {
     }

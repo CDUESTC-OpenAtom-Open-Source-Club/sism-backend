@@ -88,12 +88,12 @@ class AttachmentApplicationServiceTest {
         MockMultipartFile file = new MockMultipartFile("file", "report.pdf", "application/pdf", "demo".getBytes()) {
             @Override
             public long getSize() {
-                return 21L * 1024 * 1024;
+                return 31L * 1024 * 1024;
             }
         };
 
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> service.upload(file, 12L));
-        assertEquals("上传文件大小不能超过20MB", exception.getMessage());
+        assertEquals("上传文件大小不能超过30MB", exception.getMessage());
     }
 
     @Test

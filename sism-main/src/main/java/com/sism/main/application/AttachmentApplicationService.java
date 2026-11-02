@@ -25,7 +25,9 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class AttachmentApplicationService {
-    private static final long MAX_UPLOAD_SIZE_BYTES = 20L * 1024 * 1024;
+    // P-24 修复（2026-10-31）：前端文案与 Spring multipart（application.yml max-file-size）均为 30MB，
+    // 服务端 20MB 上限与之不一致，21-30MB 的合法文件会被这里误拒
+    private static final long MAX_UPLOAD_SIZE_BYTES = 30L * 1024 * 1024;
     private static final List<String> ALLOWED_CONTENT_TYPES = List.of(
             "application/pdf",
             "image/png",
@@ -52,7 +54,7 @@ public class AttachmentApplicationService {
             throw new IllegalArgumentException("uploadedBy 必填");
         }
         if (file.getSize() > MAX_UPLOAD_SIZE_BYTES) {
-            throw new IllegalArgumentException("上传文件大小不能超过20MB");
+            throw new IllegalArgumentException("上传文件大小不能超过30MB");
         }
         if (file.getContentType() == null || ALLOWED_CONTENT_TYPES.stream().noneMatch(file.getContentType()::equalsIgnoreCase)) {
             throw new IllegalArgumentException("不支持的文件类型");

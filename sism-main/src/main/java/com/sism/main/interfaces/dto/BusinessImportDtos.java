@@ -47,9 +47,9 @@ public final class BusinessImportDtos {
     }
 
     public record NormalizedImportRow(
-            // 2026-10-19 用户定案：「序号」列必填（1、2、3…短编号），是导入时标定行身份的唯一用户可见编号；
-            // 系统在预览时把它还原为内部ID（数据库主键）做唯一性匹配——同名指标各按各的序号归属。
-            // 「内部ID」列从导入导出表移除，不再解析。
+            // 2026-10-31 层级化定案：「序号」升级为组号（职能部门=战略任务组、学院=父级核心指标组），
+            // 组首行必填、组内留空=同上（sticky 向下继承）；不再做行身份匹配，
+            // 落库匹配键按名称 =（任务, 核心指标名）/（父级核心指标, 子指标名）。
             Integer seq,
             String department,
             String college,
@@ -57,6 +57,9 @@ public final class BusinessImportDtos {
             String strategicTask,
             String parentStrategicTask,
             String parentIndicator,
+            // 2026-10-31 终版表头：「核心指标类型」=父指标自身类型（定量/定性），
+            // 系统预填、解析时只读校验（与系统父指标实际类型不一致→警告不阻断），不落库
+            String parentIndicatorType,
             String indicatorName,
             String indicatorType,
             BigDecimal weight,
@@ -72,6 +75,7 @@ public final class BusinessImportDtos {
                     Map.entry("strategicTask", strategicTask == null ? "" : strategicTask),
                     Map.entry("parentStrategicTask", parentStrategicTask == null ? "" : parentStrategicTask),
                     Map.entry("parentIndicator", parentIndicator == null ? "" : parentIndicator),
+                    Map.entry("parentIndicatorType", parentIndicatorType == null ? "" : parentIndicatorType),
                     Map.entry("indicatorName", indicatorName == null ? "" : indicatorName),
                     Map.entry("indicatorType", indicatorType == null ? "" : indicatorType),
                     Map.entry("weight", weight == null ? "" : weight),
