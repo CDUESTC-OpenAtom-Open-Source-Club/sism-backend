@@ -100,6 +100,34 @@ public class PlanReport extends AggregateRoot<Long> {
     private boolean isDeleted = false;
 
     /**
+     * 2026-10-31 修复（P-20，试点）：基类 Entity 的 createdAt/updatedAt 标了 @Transient，
+     * Hibernate 从不读写 created_at/updated_at 列 → 每次查询水合出的都是「请求时刻」的伪造时间戳，
+     * GET /reports/plan/{id} 等接口返回的时间与库值不符。
+     *
+     * <p>试点改法（不动 25 个聚合共用的基类）：以子类影子字段重新映射这两列（同 SysOrg 先例），
+     * 并显式覆写访问器，保证领域内存取与 JPA 水合走同一字段：
+     * <ul>
+     *   <li><b>读路径</b>：列被映射，水合回填库值 —— 本次修复的核心目标。</li>
+     *   <li><b>写路径（保守，与现状等价）</b>：insertable=false → INSERT 不含两列，由库默认值
+     *   CURRENT_TIMESTAMP 填充（V1 baseline :1241-1242）；updatable=false → UPDATE 不含两列。
+     *   现状基线：plan_report 上没有 trg_*_updated_at 触发器（触发器只挂在
+     *   cycle/indicator/indicator_milestone/sys_org 上），且 @Transient 从不落库，故现状就是
+     *   「updated_at 在插入后不再变化」，此处原样保留，不改变生产库数据语义。</li>
+     * </ul>
+     * 若日后业务要求 updated_at 反映最后修改时间，仅需给 plan_report 补
+     * trg_plan_report_updated_at 触发器（复用库里已有的 update_updated_at_column 函数），
+     * 本映射无需再改，读路径即自动回填真实值。columnDefinition 仅作用于 hbm2ddl
+     * 生成的测试库（H2 create-drop），生产库由 Flyway 管理、ddl-auto=none，不受影响。
+     */
+    @Column(name = "created_at", insertable = false, updatable = false,
+            columnDefinition = "timestamp with time zone DEFAULT CURRENT_TIMESTAMP not null")
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", insertable = false, updatable = false,
+            columnDefinition = "timestamp with time zone DEFAULT CURRENT_TIMESTAMP not null")
+    private LocalDateTime updatedAt;
+
+    /**
      * 创建月度报告（草稿状态）
      * @param reportMonth 报告月份 (格式: yyyy-MM)
      * @param reportOrgId 报告组织ID
@@ -263,6 +291,31 @@ public class PlanReport extends AggregateRoot<Long> {
 
     public PlanReportStatus getStatusEnum() {
         return status;
+    }
+
+    /**
+     * P-20：显式覆写时间戳访问器，让领域层与响应映射（PlanReportResponse 等）
+     * 读写的是上面被重新映射的影子字段（Hibernate 水合回填的库值），
+     * 而不是基类 Entity 里 @Transient 的同名字段（那永远只会是构造时刻的 now()）。
+     */
+    @Override
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    @Override
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
+    }
+
+    @Override
+    public LocalDateTime getUpdatedAt() {
+        return updatedAt;
+    }
+
+    @Override
+    public void setUpdatedAt(LocalDateTime updatedAt) {
+        this.updatedAt = updatedAt;
     }
 
     @Override

@@ -484,7 +484,10 @@ public class ReportApplicationService {
         syncWorkflowAuditState(reportId, auditInstanceId,
                 () -> workflowAuditSyncGateway.markApproved(auditInstanceId));
         syncApprovedIndicatorProgress(report.getId());
-        createNextMonthlyDraftAfterTerminalApproval(report);
+        // 2026-10-31 修复（P-19）：删除「审批通过后预建同月 DRAFT」。
+        // V57 多轮次模型下，填报入口 ensureCurrentMonthReport/createReport 已按需创建轮次；
+        // 预建的同月 DRAFT 会被跳月校验（assertEarliestUnfilledMonth）当作未结清欠账，
+        // 把「当月」算成最早未填报月，阻塞下个月的上报（409「存在更早的未填报月份」）。
         return enrichReportMetadata(report);
     }
 
@@ -537,32 +540,6 @@ public class ReportApplicationService {
         }
         report.setUpdatedAt(LocalDateTime.now());
         return enrichReportMetadata(planReportRepository.save(report));
-    }
-
-    private void createNextMonthlyDraftAfterTerminalApproval(PlanReport approvedReport) {
-        if (approvedReport == null || !PlanReport.STATUS_APPROVED.equals(approvedReport.getStatus())) {
-            return;
-        }
-
-        Optional<PlanReport> latestReport = planReportRepository.findLatestByMonthlyScope(
-                approvedReport.getPlanId(),
-                approvedReport.getReportMonth(),
-                approvedReport.getReportOrgType(),
-                approvedReport.getReportOrgId()
-        );
-
-        if (latestReport.isPresent()
-                && PlanReport.STATUS_DRAFT.equalsIgnoreCase(String.valueOf(latestReport.get().getStatus()))) {
-            return;
-        }
-
-        createReport(
-                approvedReport.getReportMonth(),
-                approvedReport.getReportOrgId(),
-                approvedReport.getReportOrgType(),
-                approvedReport.getPlanId(),
-                approvedReport.getCreatedBy()
-        );
     }
 
     /**

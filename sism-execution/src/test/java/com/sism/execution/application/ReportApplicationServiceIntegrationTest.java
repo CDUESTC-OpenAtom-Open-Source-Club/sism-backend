@@ -168,6 +168,22 @@ class ReportApplicationServiceIntegrationTest {
     }
 
     @Test
+    void markWorkflowApproved_shouldNotCreateGhostDraftRoundInDatabase() {
+        // 2026-10-31 修复（P-19）：审批通过不再预建同月 DRAFT（幽灵草稿）。
+        // 预建轮次会被跳月校验 assertEarliestUnfilledMonth 当作未结清欠账，
+        // 把当月算成「最早未填报月」、阻塞下月上报；填报入口按需建轮次即可。
+        TestFixture fixture = createSubmittedReportWithIndicator(88);
+
+        reportApplicationService.markWorkflowApproved(fixture.report().getId(), 9003L);
+        flushAndClear();
+
+        List<PlanReport> roundsForFixture = planReportRepository.findByPlanId(fixture.report().getPlanId());
+        assertThat(roundsForFixture).hasSize(1);
+        assertThat(roundsForFixture.get(0).getId()).isEqualTo(fixture.report().getId());
+        assertThat(roundsForFixture.get(0).getStatus()).isEqualTo(PlanReport.STATUS_APPROVED);
+    }
+
+    @Test
     void createReport_shouldPersistCreatedByAndHydrateWorkflowApprovalSnapshot() {
         long sequence = TEST_SEQUENCE.getAndIncrement();
         SysOrg targetOrg = persistOrg("target-created-by-" + sequence, OrgType.functional);

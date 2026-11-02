@@ -327,20 +327,26 @@ class ReportApplicationServiceTest {
     }
 
     @Test
-    void markWorkflowApproved_shouldCreateNextDraftRoundWhenLatestRoundWasApproved() {
+    void markWorkflowApproved_shouldNotCreateNextDraftRound() {
+        // 2026-10-31 修复（P-19）：审批通过不再预建同月 DRAFT。V57 多轮次模型下
+        // 填报入口 createReport/ensureCurrentMonthReport 按需建轮次；预建的 DRAFT
+        // 会被跳月校验（assertEarliestUnfilledMonth）当作未结清欠账，阻塞下月上报。
+        // 原测试 markWorkflowApproved_shouldCreateNextDraftRoundWhenLatestRoundWasApproved
+        // 断言旧行为（预建轮次），随修复同步改写为「不再产生新轮次」。
         PlanReport approvedReport = PlanReport.createDraft("202603", 39L, ReportOrgType.FUNC_DEPT, 111L, 8008L);
         approvedReport.setId(21L);
         approvedReport.setStatus(PlanReport.STATUS_SUBMITTED);
 
         when(planReportRepository.findById(21L)).thenReturn(Optional.of(approvedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
-                .thenReturn(Optional.of(approvedReport), Optional.of(approvedReport));
 
         PlanReport updated = reportApplicationService.markWorkflowApproved(21L, 33L);
 
         assertThat(updated.getStatus()).isEqualTo(PlanReport.STATUS_APPROVED);
-        verify(planReportRepository, times(2)).save(any(PlanReport.class));
+        // 只有状态回写这一次 save，不再预建第二个轮次；
+        // 预建逻辑删除后不应再查询同月范围（findLatestByMonthlyScope）来决定是否建轮次
+        verify(planReportRepository, times(1)).save(any(PlanReport.class));
+        verify(planReportRepository, never()).findLatestByMonthlyScope(any(), any(), any(), any());
     }
 
     @Test
@@ -356,8 +362,6 @@ class ReportApplicationServiceTest {
 
         when(planReportRepository.findById(41L)).thenReturn(Optional.of(approvedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
-                .thenReturn(Optional.of(approvedReport), Optional.of(approvedReport));
         when(planReportIndicatorRepository.findByReportId(41L)).thenReturn(List.of(
                 new PlanReportIndicatorSnapshot(1001L, 80, "content", null, null, null, List.of()),
                 new PlanReportIndicatorSnapshot(1002L, null, "content", null, null, null, List.of())
@@ -382,8 +386,6 @@ class ReportApplicationServiceTest {
 
         when(planReportRepository.findById(31L)).thenReturn(Optional.of(approvedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
-                .thenReturn(Optional.of(approvedReport), Optional.of(approvedReport));
 
         reportApplicationService.markWorkflowApproved(31L, 33L);
 
