@@ -278,6 +278,16 @@ class PlanWorkflowRuntimeService {
                             resolvedApprover.approverId(),
                             resolvedApprover.approverOrgId()
                     );
+                } else {
+                    // 2026-10-31 修复（P-06 复活边界加固）：既没有可复活的 WAITING 步骤、
+                    // 也没有下一节点定义时，不再无条件把实例置回 IN_REVIEW——那会产生
+                    // 「零 PENDING 步骤的在审实例」（审批中心有卡但没有任何人能审、链永远推不动）。
+                    // 改为抛异常让外层事务整体回滚，实例保持 WITHDRAWN 原状，
+                    // 提交人可走既有「重新发起/取消」出口。见 reactivateWithdrawnWorkflowCurrentStep。
+                    throw new IllegalStateException(
+                            "审批链无法复活：工作流实例 " + workflowInstanceId
+                                    + " 找不到可复活的等待步骤，也没有下一节点定义；"
+                                    + "请改用「重新发起」创建新的审批流程");
                 }
             }
         } else {

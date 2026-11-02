@@ -288,6 +288,12 @@ public class IndicatorController {
     public ResponseEntity<ApiResponse<IndicatorResponse>> updateIndicator(
             @PathVariable Long id,
             @Valid @RequestBody UpdateIndicatorRequest request) {
+        // 2026-10-31（P-02 后端兜底）用户面直改守卫：已下发/审批中计划的指标修改
+        // 必须走异动审批（在审异动时文案区分）。BusinessConflictException 由全局
+        // 处理器原文透传（HTTP 409），此处无需捕获。守卫只挂在用户面入口——
+        // service.updateIndicator 同是 Excel 导入覆盖更新与内部落库的共用通道，
+        // 不能在服务层拦（层级理由见守卫方法 Javadoc）。
+        strategyApplicationService.assertIndicatorEditableFromUserInterface(id);
         SysOrg ownerOrg = request.getOwnerOrgId() != null
                 ? organizationRepository.findById(request.getOwnerOrgId())
                     .orElseThrow(() -> new IllegalArgumentException("责任组织未找到: " + request.getOwnerOrgId()))

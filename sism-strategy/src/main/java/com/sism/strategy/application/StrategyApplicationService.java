@@ -497,6 +497,77 @@ public class StrategyApplicationService {
         return indicator;
     }
 
+    /**
+     * 2026-10-31（P-02 后端兜底）用户面直改守卫：已下发/审批中计划的指标不允许
+     * 经 PUT /indicators/{id} 直接修改，必须走异动审批链（2026-10-20 定案的
+     * 「界面修改走异动草稿」口径的后端兜底——前端不再提供直改入口，但接口本身此前不设防）。
+     *
+     * <p><b>层级选择</b>：本守卫只挂在用户面入口 IndicatorController#updateIndicator 上，
+     * 不放进 {@link #updateIndicator} 本体——后者同时是 Excel 导入覆盖更新
+     * （BusinessImportApplicationService）与内部落库的共用通道，2026-10-20 定案已明确
+     * 「已下发计划允许导入继续更新」，在服务层拦截会把内部路径一并打挂。
+     *
+     * <p>判定口径：
+     * <ul>
+     *   <li>指标所属计划链状态为 DISTRIBUTED（已下发）或 PENDING（下发审批中，
+     *       沿用 2026-10-24「审批中内容冻结」口径）→ 拦截；</li>
+     *   <li>存在在审异动（PLAN_MUTATION_STRATEGY 链、entity=本指标、IN_REVIEW，
+     *       与 IndicatorMutationService#assertNoActiveMutationFlow 完全同口径）
+     *       → 同样拦截，文案区分「异动审批进行中」。保守选择也拦：异动审批审的
+     *       是当前内容快照，审批期间直改会让在审快照失真、两条链互相踩；</li>
+     *   <li>计划未下发（DRAFT/RETURNED）或任务/计划链缺失 → 放行（草稿可自由编辑）。</li>
+     * </ul>
+     * 拦截统一抛 {@link com.sism.exception.BusinessConflictException}（全局处理器
+     * 原文透传、HTTP 409），由调用方 Controller 无需再捕获转换。
+     */
+    public void assertIndicatorEditableFromUserInterface(Long indicatorId) {
+        if (indicatorId == null) {
+            return;
+        }
+        Indicator indicator = indicatorRepository.findById(indicatorId)
+                .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + indicatorId));
+        Long planId = indicator.getTaskId() == null
+                ? null
+                : taskRepository.findById(indicator.getTaskId())
+                        .map(StrategicTask::getPlanId)
+                        .orElse(null);
+        if (planId == null) {
+            return;
+        }
+        PlanStatus planStatus = planRepository.findById(planId)
+                .map(plan -> PlanStatus.fromRaw(plan.getStatus()))
+                .orElse(null);
+        if (planStatus != PlanStatus.DISTRIBUTED && planStatus != PlanStatus.PENDING) {
+            return;
+        }
+        if (hasActiveIndicatorMutationFlow(indicatorId)) {
+            throw new com.sism.exception.BusinessConflictException(
+                    "该指标的异动审批正在进行中，暂不能直接修改；"
+                            + "请先在审批中心处理完当前异动流程（通过或退回）后再操作");
+        }
+        throw new com.sism.exception.BusinessConflictException("已下发指标的修改请通过异动审批进行");
+    }
+
+    /**
+     * P-02 在审异动判定：与 IndicatorMutationService#assertNoActiveMutationFlow
+     * 完全同口径——PLAN_MUTATION_STRATEGY 链、entity_type=INDICATOR、
+     * entity_id=本指标、实例状态 IN_REVIEW。
+     */
+    private boolean hasActiveIndicatorMutationFlow(Long indicatorId) {
+        Integer activeCount = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                WHERE ai.entity_type = 'INDICATOR'
+                  AND ai.entity_id = ?
+                  AND ai.status = 'IN_REVIEW'
+                """,
+                Integer.class, indicatorId);
+        return activeCount != null && activeCount > 0;
+    }
+
     @Transactional
     public void deleteIndicator(Long id) {
         Indicator indicator = indicatorRepository.findById(id)

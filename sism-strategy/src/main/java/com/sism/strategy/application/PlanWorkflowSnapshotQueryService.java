@@ -63,7 +63,13 @@ public class PlanWorkflowSnapshotQueryService {
                 FROM audit_instance ai
                 WHERE ai.entity_type = :entityType
                   AND ai.entity_id IN :entityIds
-                ORDER BY ai.entity_id, ai.started_at DESC NULLS LAST, ai.id DESC
+                ORDER BY ai.entity_id,
+                         -- 2026-10-31 修复（P-06）：非终态（IN_REVIEW/PENDING）实例优先，
+                         -- 撤回-重发循环下不再绑到 WITHDRAWN 旧实例；全是终态时排序退化
+                         -- 为原 started_at/id 口径，行为不变
+                         CASE WHEN ai.status IN ('IN_REVIEW', 'PENDING') THEN 0 ELSE 1 END,
+                         ai.started_at DESC NULLS LAST,
+                         ai.id DESC
                 """)
                 .setParameter("entityType", PLAN_ENTITY_TYPE)
                 .setParameter("entityIds", normalizedPlanIds)
@@ -406,7 +412,13 @@ public class PlanWorkflowSnapshotQueryService {
                 FROM audit_instance ai
                 WHERE ai.entity_type = :entityType
                   AND ai.entity_id = :entityId
-                ORDER BY ai.started_at DESC NULLS LAST, ai.id DESC
+                ORDER BY
+                    -- 2026-10-31 修复（P-06）：与 getWorkflowSnapshotsByPlanIds 同口径——
+                    -- 非终态（IN_REVIEW/PENDING）实例优先，撤回-重发循环下不再绑到
+                    -- WITHDRAWN 旧实例；全是终态时退化为原 started_at/id 口径
+                    CASE WHEN ai.status IN ('IN_REVIEW', 'PENDING') THEN 0 ELSE 1 END,
+                    ai.started_at DESC NULLS LAST,
+                    ai.id DESC
                 LIMIT 1
                 """)
                 .setParameter("entityType", entityType)

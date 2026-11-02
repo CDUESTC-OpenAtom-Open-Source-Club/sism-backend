@@ -3,6 +3,9 @@ package com.sism.strategy.infrastructure;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
 import com.sism.shared.domain.workflow.WorkflowBusinessContextPort.BusinessSummary;
+import com.sism.strategy.domain.cycle.Cycle;
+import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.repository.CycleRepository;
 import com.sism.strategy.domain.repository.PlanRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -49,13 +52,16 @@ class StrategyWorkflowBusinessContextAdapterTest {
     private OrganizationRepository organizationRepository;
 
     @Mock
+    private CycleRepository cycleRepository;
+
+    @Mock
     private JdbcTemplate jdbcTemplate;
 
     private StrategyWorkflowBusinessContextAdapter adapter;
 
     @BeforeEach
     void setUp() {
-        adapter = new StrategyWorkflowBusinessContextAdapter(planRepository, organizationRepository, jdbcTemplate);
+        adapter = new StrategyWorkflowBusinessContextAdapter(planRepository, organizationRepository, cycleRepository, jdbcTemplate);
     }
 
     @Test
@@ -136,5 +142,162 @@ class StrategyWorkflowBusinessContextAdapterTest {
         Optional<BusinessSummary> summary = adapter.getBusinessSummary("INDICATOR", INDICATOR_ID);
 
         assertFalse(summary.isPresent());
+    }
+
+    // 2026-10-31 用户定案（消灭 "Plan N" 占位名）：PLAN 分支业务名统一
+    // 「{年份}年度 计划（源部门 -> 目标部门）」，与前端 buildPlanReferenceLabel 逐字符一致
+    @Test
+    @DisplayName("PLAN 分支：业务名为「年份 + 流向」人话口径，绝不输出 Plan N 占位")
+    void planEntity_shouldBuildHumanReadableSummaryLabel() {
+        Plan plan = mock(Plan.class);
+        when(plan.getId()).thenReturn(4036L);
+        when(plan.getCycleId()).thenReturn(7L);
+        when(plan.getCreatedByOrgId()).thenReturn(88L);
+        when(plan.getTargetOrgId()).thenReturn(99L);
+        when(planRepository.findById(4036L)).thenReturn(Optional.of(plan));
+        Cycle cycle = mock(Cycle.class);
+        when(cycle.getYear()).thenReturn(2026);
+        when(cycleRepository.findById(7L)).thenReturn(Optional.of(cycle));
+        SysOrg source = mock(SysOrg.class);
+        when(source.getName()).thenReturn("战略发展部");
+        SysOrg target = mock(SysOrg.class);
+        when(target.getName()).thenReturn("科技处");
+        when(organizationRepository.findById(88L)).thenReturn(Optional.of(source));
+        when(organizationRepository.findById(99L)).thenReturn(Optional.of(target));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN", 4036L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("2026年度 计划（战略发展部 -> 科技处）", summary.get().planName());
+        assertEquals("2026年度 计划（战略发展部 -> 科技处）", summary.get().displayName());
+        assertFalse(summary.get().planName().contains("Plan "), "任何分支不得输出 Plan N 占位名");
+    }
+
+    @Test
+    @DisplayName("PLAN 分支：周期缺失降级为「计划（源部门 -> 目标部门）」，仍不输出 Plan N")
+    void planEntityWithoutCycle_shouldOmitYearSegmentWithoutPlaceholder() {
+        Plan plan = mock(Plan.class);
+        when(plan.getId()).thenReturn(4036L);
+        when(plan.getCycleId()).thenReturn(7L);
+        when(plan.getCreatedByOrgId()).thenReturn(88L);
+        when(plan.getTargetOrgId()).thenReturn(99L);
+        when(planRepository.findById(4036L)).thenReturn(Optional.of(plan));
+        when(cycleRepository.findById(7L)).thenReturn(Optional.empty());
+        SysOrg source = mock(SysOrg.class);
+        when(source.getName()).thenReturn("战略发展部");
+        SysOrg target = mock(SysOrg.class);
+        when(target.getName()).thenReturn("科技处");
+        when(organizationRepository.findById(88L)).thenReturn(Optional.of(source));
+        when(organizationRepository.findById(99L)).thenReturn(Optional.of(target));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN", 4036L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("计划（战略发展部 -> 科技处）", summary.get().displayName());
+        assertFalse(summary.get().displayName().contains("Plan "));
+    }
+
+    // 2026-10-31 P-18：PLAN_REPORT 分支——上报审批卡此前在本适配器返回 empty，
+    // planName 只能回退消息标题；摘要口径「{年份}年度 {月份}月上报（上报组织 -> 接收部门）」
+    @Test
+    @DisplayName("PLAN_REPORT 分支：按报告轮次与流向拼「{年}年度 {月}月上报（上报组织 -> 接收部门）」")
+    void planReport_shouldSummarizeRoundAndRoute() {
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            // 软删除不过滤：被取消/归档的上报在审批历史里仍要能显示当时轮次
+            assertFalse(sql.contains("is_deleted"), "上报摘要查询不能带 is_deleted 过滤: " + sql);
+            ResultSetExtractor<Optional<BusinessSummary>> extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            when(rs.next()).thenReturn(true);
+            when(rs.getLong("plan_id")).thenReturn(4036L);
+            when(rs.getString("report_month")).thenReturn("202610");
+            when(rs.getLong("report_org_id")).thenReturn(77L);
+            Optional<BusinessSummary> extracted = extractor.extractData(rs);
+            assertTrue(extracted.isPresent());
+            return extracted;
+        }).when(jdbcTemplate).query(
+                contains("public.plan_report"), any(ResultSetExtractor.class), eq(910L));
+        Plan plan = mock(Plan.class);
+        when(plan.getCreatedByOrgId()).thenReturn(88L);
+        when(planRepository.findById(4036L)).thenReturn(Optional.of(plan));
+        SysOrg reporter = mock(SysOrg.class);
+        when(reporter.getName()).thenReturn("XX学院");
+        SysOrg receiver = mock(SysOrg.class);
+        when(receiver.getName()).thenReturn("战略发展部");
+        when(organizationRepository.findById(77L)).thenReturn(Optional.of(reporter));
+        when(organizationRepository.findById(88L)).thenReturn(Optional.of(receiver));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN_REPORT", 910L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("2026年度 10月上报（XX学院 -> 战略发展部）", summary.get().displayName());
+        assertEquals(4036L, summary.get().planId());
+        // 上报方向自下而上：source=上报组织（填报方），target=接收部门（计划创建方/下发方）
+        assertEquals(77L, summary.get().sourceOrgId());
+        assertEquals("XX学院", summary.get().sourceOrgName());
+        assertEquals(88L, summary.get().targetOrgId());
+        assertEquals("战略发展部", summary.get().targetOrgName());
+    }
+
+    @Test
+    @DisplayName("PLAN_REPORT 分支降级：轮次缺失省年度月段、计划缺失只写上报组织、月份前导零去掉")
+    void planReport_shouldDegradeWhenRoundOrPlanMissing() {
+        doAnswer(invocation -> {
+            ResultSetExtractor<Optional<BusinessSummary>> extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            when(rs.next()).thenReturn(true);
+            // plan_id 显式置 0 → 不查计划；report_month 缺失 → 省年度月段
+            when(rs.getLong("plan_id")).thenReturn(0L);
+            when(rs.getString("report_month")).thenReturn(null);
+            when(rs.getLong("report_org_id")).thenReturn(77L);
+            Optional<BusinessSummary> extracted = extractor.extractData(rs);
+            assertTrue(extracted.isPresent());
+            return extracted;
+        }).when(jdbcTemplate).query(
+                contains("public.plan_report"), any(ResultSetExtractor.class), eq(911L));
+        SysOrg reporter = mock(SysOrg.class);
+        when(reporter.getName()).thenReturn("XX学院");
+        when(organizationRepository.findById(77L)).thenReturn(Optional.of(reporter));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN_REPORT", 911L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("上报（XX学院）", summary.get().displayName());
+        assertEquals(null, summary.get().planId());
+        assertEquals(77L, summary.get().sourceOrgId());
+        assertEquals(null, summary.get().targetOrgId());
+    }
+
+    @Test
+    @DisplayName("PLAN_REPORT 分支：月份前导零去掉（06月→6月）且行不存在返回 empty")
+    void planReport_shouldStripLeadingZeroMonthAndReturnEmptyWhenRowMissing() {
+        doAnswer(invocation -> {
+            ResultSetExtractor<Optional<BusinessSummary>> extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            when(rs.next()).thenReturn(true);
+            when(rs.getLong("plan_id")).thenReturn(4036L);
+            when(rs.getString("report_month")).thenReturn("202606");
+            when(rs.getLong("report_org_id")).thenReturn(77L);
+            Optional<BusinessSummary> extracted = extractor.extractData(rs);
+            assertTrue(extracted.isPresent());
+            return extracted;
+        }).when(jdbcTemplate).query(
+                contains("public.plan_report"), any(ResultSetExtractor.class), eq(912L));
+        when(planRepository.findById(4036L)).thenReturn(Optional.empty());
+        SysOrg reporter = mock(SysOrg.class);
+        when(reporter.getName()).thenReturn("XX学院");
+        when(organizationRepository.findById(77L)).thenReturn(Optional.of(reporter));
+
+        Optional<BusinessSummary> withRow = adapter.getBusinessSummary("PLAN_REPORT", 912L);
+        assertTrue(withRow.isPresent());
+        assertEquals("2026年度 6月上报（XX学院）", withRow.get().displayName());
+
+        doAnswer(invocation -> ((ResultSetExtractor<Optional<BusinessSummary>>) invocation.getArgument(1))
+                .extractData(mock(ResultSet.class)))
+                .when(jdbcTemplate).query(
+                        contains("public.plan_report"), any(ResultSetExtractor.class), eq(913L));
+
+        Optional<BusinessSummary> withoutRow = adapter.getBusinessSummary("PLAN_REPORT", 913L);
+        assertFalse(withoutRow.isPresent());
     }
 }
