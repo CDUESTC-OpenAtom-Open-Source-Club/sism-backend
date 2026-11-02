@@ -205,6 +205,42 @@ class IndicatorControllerTest {
         verify(strategyApplicationService).deleteIndicator(2007L);
     }
 
+    // ==================== 2026-10-31（P-02 后端兜底）用户面直改守卫 ====================
+
+    @Test
+    @DisplayName("P-02：updateIndicator（PUT 用户面入口）必须先过「已下发指标直改守卫」，拦截时不再进入更新链路")
+    void shouldRunUserSurfaceEditGuardBeforeUpdatingIndicator() {
+        doThrow(new com.sism.exception.BusinessConflictException("已下发指标的修改请通过异动审批进行"))
+                .when(strategyApplicationService)
+                .assertIndicatorEditableFromUserInterface(2008L);
+
+        assertThrows(
+                com.sism.exception.BusinessConflictException.class,
+                () -> controller.updateIndicator(2008L, new IndicatorController.UpdateIndicatorRequest())
+        );
+
+        verify(strategyApplicationService).assertIndicatorEditableFromUserInterface(2008L);
+        // 守卫拦下后不进入更新链路；BusinessConflictException（409）由全局处理器原文透传
+        verify(strategyApplicationService, never()).updateIndicator(
+                any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("P-02：守卫放行（计划未下发）时 PUT 更新链路照常执行")
+    void shouldContinueUpdateWhenGuardAllowsEdit() {
+        doThrow(new DistributedPlanMutationBlockedException("当前任务已下发，不能重复导入或下发"))
+                .when(strategyApplicationService)
+                .updateIndicator(eq(2008L), any(), any(), any(), any(), any(), any(), any(), any());
+
+        ResponseEntity<ApiResponse<IndicatorController.IndicatorResponse>> response =
+                controller.updateIndicator(2008L, new IndicatorController.UpdateIndicatorRequest());
+
+        verify(strategyApplicationService).assertIndicatorEditableFromUserInterface(2008L);
+        // 守卫（mock 缺省放行）未抛异常，链路继续走到 service 更新；此处借既有
+        // DistributedPlanMutationBlockedException → 409 转换验证更新链路确实被走到
+        assertEquals(409, response.getStatusCode().value());
+    }
+
     @Test
     @DisplayName("listIndicators should use named parameters for task and report lookups")
     void shouldUseNamedParameterQueriesForIndicatorAggregation() {

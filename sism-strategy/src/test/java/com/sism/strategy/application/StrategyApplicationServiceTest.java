@@ -378,6 +378,95 @@ class StrategyApplicationServiceTest {
         verify(indicatorRepository).save(any(Indicator.class));
     }
 
+    // ==================== 2026-10-31（P-02 后端兜底）用户面直改守卫 ====================
+
+    @Test
+    @DisplayName("P-02 守卫：计划未下发（DRAFT）时放行，不做异动在途查询")
+    void guardShouldAllowEditWhenPlanIsDraft() {
+        StrategyApplicationService service = createService();
+        stubIndicatorOnPlan(401L, 904L, 7003L, PlanStatus.DRAFT);
+
+        service.assertIndicatorEditableFromUserInterface(401L);
+
+        verify(jdbcTemplate, never()).queryForObject(contains("PLAN_MUTATION_STRATEGY"), eq(Integer.class), eq(401L));
+    }
+
+    @Test
+    @DisplayName("P-02 守卫：计划退回（RETURNED）时放行")
+    void guardShouldAllowEditWhenPlanIsReturned() {
+        StrategyApplicationService service = createService();
+        stubIndicatorOnPlan(401L, 904L, 7003L, PlanStatus.RETURNED);
+
+        service.assertIndicatorEditableFromUserInterface(401L);
+    }
+
+    @Test
+    @DisplayName("P-02 守卫：已下发计划且无异动在途 → 409「已下发指标的修改请通过异动审批进行」")
+    void guardShouldBlockEditOnDistributedPlanWithoutMutation() {
+        StrategyApplicationService service = createService();
+        stubIndicatorOnPlan(401L, 904L, 7003L, PlanStatus.DISTRIBUTED);
+        stubNoActiveMutationFlow(401L);
+
+        com.sism.exception.BusinessConflictException exception = assertThrows(
+                com.sism.exception.BusinessConflictException.class,
+                () -> service.assertIndicatorEditableFromUserInterface(401L)
+        );
+
+        assertEquals("已下发指标的修改请通过异动审批进行", exception.getMessage());
+    }
+
+    @Test
+    @DisplayName("P-02 守卫：下发审批中（PENDING）计划同样拦截（审批中内容冻结口径）")
+    void guardShouldBlockEditOnPendingPlan() {
+        StrategyApplicationService service = createService();
+        stubIndicatorOnPlan(401L, 904L, 7003L, PlanStatus.PENDING);
+        stubNoActiveMutationFlow(401L);
+
+        com.sism.exception.BusinessConflictException exception = assertThrows(
+                com.sism.exception.BusinessConflictException.class,
+                () -> service.assertIndicatorEditableFromUserInterface(401L)
+        );
+
+        assertEquals("已下发指标的修改请通过异动审批进行", exception.getMessage());
+    }
+
+    @Test
+    @DisplayName("P-02 守卫：已下发计划且有在审异动 → 也拦，文案区分「异动审批进行中」")
+    void guardShouldBlockEditOnDistributedPlanWithMutationInFlight() {
+        // 保守选择：有在审异动时也拦截——异动审批审的是当前内容快照，直改会让快照失真；
+        // 文案与「无异动在途」的拦截区分开，指引用户先去审批中心处理。
+        StrategyApplicationService service = createService();
+        stubIndicatorOnPlan(401L, 904L, 7003L, PlanStatus.DISTRIBUTED);
+        when(jdbcTemplate.queryForObject(contains("PLAN_MUTATION_STRATEGY"), eq(Integer.class), eq(401L)))
+                .thenReturn(1);
+
+        com.sism.exception.BusinessConflictException exception = assertThrows(
+                com.sism.exception.BusinessConflictException.class,
+                () -> service.assertIndicatorEditableFromUserInterface(401L)
+        );
+
+        assertEquals("该指标的异动审批正在进行中，暂不能直接修改；"
+                + "请先在审批中心处理完当前异动流程（通过或退回）后再操作", exception.getMessage());
+    }
+
+    private void stubIndicatorOnPlan(Long indicatorId, Long taskId, Long planId, PlanStatus planStatus) {
+        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
+        ownerOrg.setId(41L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(61L);
+        Indicator indicator = Indicator.create("既有指标", ownerOrg, targetOrg, "定量");
+        indicator.setId(indicatorId);
+        indicator.setTaskId(taskId);
+        when(indicatorRepository.findById(indicatorId)).thenReturn(Optional.of(indicator));
+        when(taskRepository.findById(taskId)).thenReturn(Optional.of(createTask(taskId, planId, targetOrg, ownerOrg)));
+        when(planRepository.findById(planId)).thenReturn(Optional.of(createPlan(planId, planStatus)));
+    }
+
+    private void stubNoActiveMutationFlow(Long indicatorId) {
+        when(jdbcTemplate.queryForObject(contains("PLAN_MUTATION_STRATEGY"), eq(Integer.class), eq(indicatorId)))
+                .thenReturn(0);
+    }
+
     @Test
     @DisplayName("Should block deleting indicator when task plan is already distributed")
     void shouldBlockDeletingIndicatorWhenTaskPlanDistributed() {

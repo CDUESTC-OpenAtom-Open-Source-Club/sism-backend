@@ -2,7 +2,10 @@ package com.sism.strategy.infrastructure;
 
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.shared.domain.workflow.WorkflowBusinessContextPort;
+import com.sism.strategy.domain.cycle.Cycle;
 import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.plan.PlanDisplayName;
+import com.sism.strategy.domain.repository.CycleRepository;
 import com.sism.strategy.domain.repository.PlanRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -14,9 +17,11 @@ import java.util.Optional;
 public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessContextPort {
 
     private static final String PLAN_ENTITY_TYPE = "PLAN";
+    private static final String PLAN_REPORT_ENTITY_TYPE = "PLAN_REPORT";
 
     private final PlanRepository planRepository;
     private final OrganizationRepository organizationRepository;
+    private final CycleRepository cycleRepository;
     private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
     @Override
@@ -68,6 +73,15 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
                     """,
                     indicatorSummaryExtractor(),
                     entityId);
+        }
+        // 2026-10-31 P-18 修复：上报审批（entityType=PLAN_REPORT）此前在本适配器返回 empty，
+        // 审批中心卡片拿不到 planName 只能回退消息标题。参照 TASK 分支的跨域原生 SQL 取数
+        // （public.plan_report 有 report_month / report_org_id / plan_id，无需新建跨模块接口），
+        // 摘要口径（用户定案）「{年份}年度 {月份}月上报（{上报组织} -> {接收部门}）」：
+        // 上报方向自下而上——上报组织=report_org_id，接收部门=计划创建方（下发方）；
+        // 拿不到的字段逐级降级（轮次缺→省年度月段；单侧部门名缺→只写另一侧；全缺→仅「上报」）。
+        if (PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType) && entityId != null) {
+            return resolvePlanReportSummary(entityId);
         }
         if (!PLAN_ENTITY_TYPE.equalsIgnoreCase(entityType) || entityId == null) {
             return Optional.empty();
@@ -136,18 +150,114 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
                 taskId);
     }
 
+    /**
+     * 2026-10-31 P-18：上报审批的业务摘要——public.plan_report 行 + 所属计划。
+     * 不过滤 is_deleted：被取消/归档的上报在「审批历史」里仍要能显示当时的轮次与流向
+     * （与 INDICATOR 分支的 audit_log 兜底同一诉求，软删只翻标记不改业务值）。
+     */
+    private Optional<BusinessSummary> resolvePlanReportSummary(Long reportId) {
+        return jdbcTemplate.query(
+                "SELECT plan_id, report_month, report_org_id FROM public.plan_report WHERE id = ?",
+                rs -> {
+                    if (!rs.next()) {
+                        return Optional.<BusinessSummary>empty();
+                    }
+                    long planId = rs.getLong("plan_id");
+                    String reportMonth = rs.getString("report_month");
+                    long reportOrgId = rs.getLong("report_org_id");
+                    Long sourceId = reportOrgId > 0 ? reportOrgId : null;
+                    String sourceOrgName = resolveOrgName(sourceId);
+                    Long targetId = null;
+                    String targetOrgName = null;
+                    if (planId > 0) {
+                        // 接收部门=计划创建方（下发方）；计划缺失时降级为只写上报组织
+                        targetId = planRepository.findById(planId)
+                                .map(Plan::getCreatedByOrgId)
+                                .orElse(null);
+                        targetOrgName = resolveOrgName(targetId);
+                    }
+                    String route;
+                    if (sourceOrgName != null && targetOrgName != null) {
+                        route = "（" + sourceOrgName + " -> " + targetOrgName + "）";
+                    } else if (sourceOrgName != null) {
+                        route = "（" + sourceOrgName + "）";
+                    } else if (targetOrgName != null) {
+                        route = "（" + targetOrgName + "）";
+                    } else {
+                        route = "";
+                    }
+                    Integer year = parseReportYear(reportMonth);
+                    Integer month = parseReportMonthOfYear(reportMonth);
+                    String displayName = (year != null && month != null
+                            ? year + "年度 " + month + "月上报"
+                            : "上报") + route;
+                    return Optional.of(new BusinessSummary(
+                            planId > 0 ? planId : null,
+                            displayName,
+                            sourceId,
+                            sourceOrgName,
+                            targetId,
+                            targetOrgName,
+                            displayName
+                    ));
+                },
+                reportId);
+    }
+
+    /** report_month 为 yyyyMM 串（PlanReport.normalizeReportMonth 归一口径）；不可解析返回 null。 */
+    private Integer parseReportYear(String reportMonth) {
+        if (reportMonth == null || !reportMonth.trim().matches("\\d{6}")) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(reportMonth.trim().substring(0, 4));
+        } catch (NumberFormatException error) {
+            return null;
+        }
+    }
+
+    private Integer parseReportMonthOfYear(String reportMonth) {
+        if (reportMonth == null || !reportMonth.trim().matches("\\d{6}")) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(reportMonth.trim().substring(4, 6));
+        } catch (NumberFormatException error) {
+            return null;
+        }
+    }
+
     private BusinessSummary toSummary(Plan plan) {
         Long sourceOrgId = plan.getCreatedByOrgId();
         Long targetOrgId = plan.getTargetOrgId();
+        String sourceOrgName = resolveOrgName(sourceOrgId);
+        String targetOrgName = resolveOrgName(targetOrgId);
+        // 2026-10-31 用户定案：业务名统一「{年份}年度 计划（源部门 -> 目标部门）」，
+        // 不再输出 "Plan N" 占位（口径与前端 buildPlanReferenceLabel 逐字符一致；
+        // 源部门=创建方，年份来自计划所属考核周期 cycle）
+        String displayName = PlanDisplayName.planReferenceLabel(
+                resolveCycleYear(plan.getCycleId()), sourceOrgName, targetOrgName);
         return new BusinessSummary(
                 plan.getId(),
-                "Plan " + plan.getId(),
+                displayName,
                 sourceOrgId,
-                resolveOrgName(sourceOrgId),
+                sourceOrgName,
                 targetOrgId,
-                resolveOrgName(targetOrgId),
-                "Plan " + plan.getId()
+                targetOrgName,
+                displayName
         );
+    }
+
+    /** 计划年份取自所属考核周期；周期缺失/异常时不写年度段，绝不回退 "Plan N"。 */
+    private Integer resolveCycleYear(Long cycleId) {
+        if (cycleId == null) {
+            return null;
+        }
+        try {
+            return cycleRepository.findById(cycleId).map(Cycle::getYear).orElse(null);
+        } catch (RuntimeException error) {
+            return null;
+        }
     }
 
     private String resolveOrgName(Long orgId) {

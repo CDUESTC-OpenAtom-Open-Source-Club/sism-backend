@@ -1,7 +1,12 @@
 package com.sism.strategy.infrastructure.event;
 
 import com.sism.iam.application.service.UserNotificationService;
+import com.sism.organization.domain.OrganizationRepository;
 import com.sism.shared.domain.integration.DingTalkTodoProvider;
+import com.sism.strategy.domain.cycle.Cycle;
+import com.sism.strategy.domain.plan.PlanDisplayName;
+import com.sism.strategy.domain.repository.CycleRepository;
+import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.workflow.application.definition.WorkflowDefinitionQueryService;
 import com.sism.workflow.application.query.WorkflowReadModelService;
 import com.sism.workflow.application.support.ApproverResolver;
@@ -39,6 +44,9 @@ public class PlanWorkflowEventListener {
     private final ApproverResolver approverResolver;
     private final UserNotificationService userNotificationService;
     private final DingTalkTodoProvider dingTalkTodoProvider;
+    private final PlanRepository planRepository;
+    private final CycleRepository cycleRepository;
+    private final OrganizationRepository organizationRepository;
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async
@@ -135,10 +143,12 @@ public class PlanWorkflowEventListener {
             }
 
             String submitterName = approverResolver.resolveApproverName(event.getSubmitterId());
+            // 2026-10-31 用户定案：读模型摘要缺失时兜底业务名不再输出 "Plan N" 占位，
+            // 就近加载计划实体按「{年份}年度 计划（源部门 -> 目标部门）」拼装
             String businessName =
                     detail != null && detail.getPlanName() != null && !detail.getPlanName().isBlank()
                             ? detail.getPlanName().trim()
-                            : "Plan " + event.getPlanId();
+                            : resolveFallbackBusinessName(event.getPlanId());
 
             Long stepInstanceId = parseStepInstanceId(detail == null ? null : detail.getCurrentTaskId());
             approverResolver.resolveCandidates(nextApprovalStep, event.getSubmitterOrgId()).forEach(candidate -> {
@@ -169,6 +179,46 @@ public class PlanWorkflowEventListener {
             log.warn("Failed to notify plan approvers for planId={}, workflowCode={}: {}",
                     event.getPlanId(), workflowCode, ex.getMessage(), ex);
         }
+    }
+
+    /**
+     * 兜底业务名（2026-10-31 用户定案）：读模型摘要（detail.planName）缺失时，
+     * 就近加载计划实体按「{年份}年度 计划（源部门 -> 目标部门）」拼装——
+     * 源部门=创建方 createdByOrgId，目标部门=targetOrgId，年份取自考核周期。
+     * 任何分支（含计划查不到/加载异常）都不得输出 "Plan N" 占位。
+     */
+    private String resolveFallbackBusinessName(Long planId) {
+        try {
+            return planRepository.findById(planId)
+                    .map(plan -> PlanDisplayName.planReferenceLabel(
+                            resolveCycleYear(plan.getCycleId()),
+                            resolveOrgName(plan.getCreatedByOrgId()),
+                            resolveOrgName(plan.getTargetOrgId())))
+                    .orElse(PlanDisplayName.planReferenceLabel(null, null, null));
+        } catch (Exception ex) {
+            log.warn("Failed to resolve plan business name for planId={}: {}", planId, ex.getMessage());
+            return PlanDisplayName.planReferenceLabel(null, null, null);
+        }
+    }
+
+    private Integer resolveCycleYear(Long cycleId) {
+        if (cycleId == null) {
+            return null;
+        }
+        try {
+            return cycleRepository.findById(cycleId).map(Cycle::getYear).orElse(null);
+        } catch (RuntimeException error) {
+            return null;
+        }
+    }
+
+    private String resolveOrgName(Long orgId) {
+        if (orgId == null) {
+            return null;
+        }
+        return organizationRepository.findById(orgId)
+                .map(org -> org.getName() != null && !org.getName().isBlank() ? org.getName() : "Org#" + orgId)
+                .orElse("Org#" + orgId);
     }
 
     private Long parseStepInstanceId(String currentTaskId) {

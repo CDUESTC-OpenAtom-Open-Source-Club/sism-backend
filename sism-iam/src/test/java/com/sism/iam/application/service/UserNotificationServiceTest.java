@@ -39,6 +39,12 @@ class UserNotificationServiceTest {
     @Mock
     private ApplicationEventPublisher applicationEventPublisher;
 
+    @Mock
+    private com.sism.shared.domain.notification.RealtimeNotificationProvider realtimeNotificationProvider;
+
+    @Mock
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
     @InjectMocks
     private UserNotificationService service;
 
@@ -107,5 +113,30 @@ class UserNotificationServiceTest {
         ArgumentCaptor<UserNotification> captor = ArgumentCaptor.forClass(UserNotification.class);
         org.mockito.Mockito.verify(userNotificationRepository).save(captor.capture());
         assertEquals("指标告警通知（提示）", captor.getValue().getTitle());
+    }
+
+    // P-08（2026-10-31）：流转通知标题此前硬编码「计划审批待处理」，上报/异动/下发
+    // 的流转通知一律被冠以「计划」头衔；改按实体类型解析，与提交通知
+    // resolveApprovalSubmissionTitle 同口径（大小写归一，空/未知兜底「审批待处理」）
+    @Test
+    void flowAdvancedNotificationTitleShouldFollowEntityType() {
+        stubSave();
+
+        service.createFlowAdvancedNotification(401L, 9001L, 35L, 71L, "plan_report", 910L,
+                "XX学院2026年10月上报", "部门审核", "张三");
+        service.createFlowAdvancedNotification(401L, 9001L, 35L, 72L, "PLAN", 4036L,
+                "2026年度 计划", "分管领导审核", "李四");
+        service.createFlowAdvancedNotification(401L, 9001L, 35L, 73L, null, 911L,
+                "某事项", "审核", "王五");
+        service.createFlowAdvancedNotification(401L, 9001L, 35L, 74L, "SOMETHING_ELSE", 912L,
+                "某事项", "审核", "王五");
+
+        ArgumentCaptor<UserNotification> captor = ArgumentCaptor.forClass(UserNotification.class);
+        org.mockito.Mockito.verify(userNotificationRepository, org.mockito.Mockito.times(4))
+                .save(captor.capture());
+        assertEquals("上报审批待处理", captor.getAllValues().get(0).getTitle());
+        assertEquals("计划审批待处理", captor.getAllValues().get(1).getTitle());
+        assertEquals("审批待处理", captor.getAllValues().get(2).getTitle());
+        assertEquals("审批待处理", captor.getAllValues().get(3).getTitle());
     }
 }

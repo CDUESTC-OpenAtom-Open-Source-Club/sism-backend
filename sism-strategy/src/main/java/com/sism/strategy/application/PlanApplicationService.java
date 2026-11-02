@@ -10,6 +10,7 @@ import com.sism.strategy.domain.indicator.event.IndicatorCreatedEvent;
 import com.sism.strategy.domain.plan.event.PlanCreatedEvent;
 import com.sism.strategy.domain.plan.event.PlanSubmittedForApprovalEvent;
 import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.plan.PlanDisplayName;
 import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.plan.PlanStatus;
 import com.sism.strategy.domain.repository.CycleRepository;
@@ -851,7 +852,11 @@ public class PlanApplicationService {
 
         return PlanResponse.builder()
                 .id(plan.getId())
-                .planName("Plan " + plan.getId()) // 计划名称需要从Plan实体获取或单独存储
+                // 2026-10-31 用户定案：计划显示名统一「{年份}年度 计划（源部门 -> 目标部门）」，
+                // 不再输出 "Plan N" 占位（口径与前端 buildPlanReferenceLabel 逐字符一致；
+                // 源部门=创建方 createdByOrgName，目标部门=targetOrgName，年份来自 cycle）
+                .planName(PlanDisplayName.planReferenceLabel(
+                        PlanDisplayName.toYear(year), createdByOrgName, targetOrgName))
                 .description(null) // 需要从Plan实体获取或单独存储
                 .planType(plan.getPlanLevel() != null ? plan.getPlanLevel().name() : "STRATEGY")
                 .status(PlanStatus.fromRaw(plan.getStatus()).value())

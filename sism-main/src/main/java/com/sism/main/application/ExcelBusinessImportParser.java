@@ -44,6 +44,8 @@ public class ExcelBusinessImportParser {
 
     private static final Map<String, List<String>> STRATEGIC_ALIASES = Map.ofEntries(
             Map.entry("department", List.of("职能部门", "责任部门", "部门")),
+            // 2026-10-31 终版表头：「任务类型」=战略任务整体类型（基础性/发展性，落库 taskCategory），
+            // 任务级字段随组合并、组内继承；「任务类别」别名保留（页面与旧文件口径）
             Map.entry("taskType", List.of("任务类型", "类型", "任务类别")),
             Map.entry("strategicTask", List.of("战略任务", "任务名称", "任务内容")),
             Map.entry("indicatorName", List.of("核心指标", "指标名称", "指标内容")),
@@ -51,18 +53,31 @@ public class ExcelBusinessImportParser {
             // 2026-10-20：导出/模板表头带格式提示「权重（可填 10 / 10% / 0.1）」，需兼容识别
             Map.entry("weight", List.of("权重", "指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
             Map.entry("remark", List.of("下发备注", "备注", "说明")),
-            // 2026-10-19 用户定案：「序号」列必填（1、2、3…短编号），导入时还原为内部ID做唯一性匹配
+            // 2026-10-31 层级化定案：序号=组号（组首行必填，组内留空=同上），不再做行身份匹配；
+            // 列别名保留（向后兼容旧导出表）
             Map.entry("seq", List.of("序号", "序 号"))
     );
 
     private static final Map<String, List<String>> DISTRIBUTION_ALIASES = Map.ofEntries(
             Map.entry("college", List.of("学院", "下级部门", "责任学院")),
+            // 2026-10-31 终版表头加列（学院模板）：「任务类型」=父级核心指标所属任务的类型
+            // （基础性/发展性），系统预填、随组合并、组内继承；锚点级只读校验——与系统父级所属
+            // 任务类型不一致→阻断点名（BusinessImportApplicationService.applyDistributionAnchor）。
+            // 该列为系统预填信息，不新增落库字段：子指标任务类别仍由父级继承链决定；
+            // 「任务类别」别名兼容。旧导出表无该列时取空串，锚点校验自动跳过（回导兼容）。
+            Map.entry("taskType", List.of("任务类型", "任务类别")),
+            // 2026-10-31 层级化定案：新模板已删除「父级战略任务」列（父级指标所属任务由系统按名称反查），
+            // 别名保留用于兼容读取旧导出表；新模板文件不含该列时此字段为空，落库取父级指标自身任务
             Map.entry("parentStrategicTask", List.of("父级战略任务", "战略任务", "任务名称")),
-            Map.entry("parentIndicator", List.of("父级核心指标", "上级指标", "来源指标")),
+            // 2026-10-31 终版表头：「父级核心指标」列改名「核心指标」（别名保留兼容旧文件）
+            Map.entry("parentIndicator", List.of("核心指标", "父级核心指标", "上级指标", "来源指标")),
+            // 2026-10-31 终版表头：「核心指标类型」=父指标自身类型（定量/定性），系统预填、只读校验、不落库
+            Map.entry("parentIndicatorType", List.of("核心指标类型", "父级指标类型")),
             Map.entry("indicatorName", List.of("子指标名称", "指标名称", "学院指标")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
-            Map.entry("weight", List.of("权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
+            Map.entry("weight", List.of("权重", "指标权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
             Map.entry("remark", List.of("备注", "说明")),
+            // 2026-10-31 层级化定案：序号=父级核心指标组号（组首行必填，组内留空=同上）；别名向后兼容
             Map.entry("seq", List.of("序号", "序 号"))
     );
 
@@ -114,6 +129,17 @@ public class ExcelBusinessImportParser {
                 .toList();
 
         List<ImportRowPreview> rows = new ArrayList<>();
+        // 2026-10-31 层级化模板定案：序号=组号（职能部门=战略任务组、学院=父级核心指标组），
+        // 组内后续行组列（序号/战略任务+任务类型；序号/任务类型+核心指标+核心指标类型）留空
+        // = 延续上一组（sticky 向下继承）。合并单元格的非锚点格读取为空，与纯留空同等走 sticky 继承。
+        Integer currentGroupSeq = null;
+        String currentGroupKey = null;
+        String currentGroupValue = null;
+        // 2026-10-31 终版表头（学院模板加「任务类型」列）：组级只读列从单个扩展为按字段跟踪——
+        // 职能部门=任务类型；学院=任务类型+核心指标类型。键=NormalizedImportRow 字段名，值=组首行归一值。
+        Map<String, String> currentGroupTypes = new LinkedHashMap<>();
+        Map<Integer, String> usedGroupNumbers = new LinkedHashMap<>();
+
         for (int rowIndex = header.rowIndex() + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
             Row row = sheet.getRow(rowIndex);
             if (row == null || isRowBlank(row)) {
@@ -121,9 +147,58 @@ public class ExcelBusinessImportParser {
             }
             Map<String, String> source = readSource(sheet, row, header.sourceHeaders());
             NormalizedImportRow normalized = normalize(source, header.fieldColumns(), type);
-            List<String> errors = validate(normalized, type);
-            List<String> warnings = validateWarnings(normalized);
-            // 2026-10-19：预览行的行号展示为用户填写的「序号」（1、2、3…）；序号非法时退回物理行号便于定位
+            List<String> errors = new ArrayList<>();
+            List<String> warnings = new ArrayList<>();
+
+            // —— sticky 组归属解析（先于逐行校验）——
+            String groupValue = type == ImportType.STRATEGIC_TASK
+                    ? normalized.strategicTask()
+                    : normalized.parentIndicator();
+            String groupKey = groupKey(groupValue);
+            Integer declaredSeq = normalized.seq();
+            // 组级类型（任务类型/核心指标类型）冲突检查：延续行显式填写且与组首行不同 → 警告并归一
+            boolean inherited = false;
+            if (groupKey.isEmpty()) {
+                // 留空=同上：继承上一组的组号、任务/父级名称与组级类型；
+                // 首行无组可继承时由 validate 给出组首行必填错误
+                if (currentGroupKey != null) {
+                    inherited = true;
+                }
+            } else if (currentGroupKey == null || !groupKey.equals(currentGroupKey)) {
+                // 新组开启：组首行必须带组号，且组号不能与其他任务/父级重复
+                if (declaredSeq != null) {
+                    String previousOwner = usedGroupNumbers.get(declaredSeq);
+                    if (previousOwner != null && !groupKey(previousOwner).equals(groupKey)) {
+                        errors.add("序号 " + declaredSeq + " 已被「" + previousOwner + "」使用，同一文件内组号（序号）不能重复");
+                    }
+                    usedGroupNumbers.putIfAbsent(declaredSeq, groupValue);
+                }
+                currentGroupSeq = declaredSeq;
+                currentGroupKey = groupKey;
+                currentGroupValue = groupValue;
+                currentGroupTypes = new LinkedHashMap<>();
+                for (Map.Entry<String, String> typeField : groupTypeFields(type)) {
+                    currentGroupTypes.put(typeField.getKey(), groupTypeValue(normalized, typeField.getKey()));
+                }
+            } else {
+                // 同组延续：序号与组级类型以组首行为准
+                inherited = true;
+            }
+            if (inherited) {
+                for (Map.Entry<String, String> typeField : groupTypeFields(type)) {
+                    String rowTypeValue = groupTypeValue(normalized, typeField.getKey());
+                    String headTypeValue = currentGroupTypes.get(typeField.getKey());
+                    if (!rowTypeValue.isEmpty() && headTypeValue != null && !rowTypeValue.equals(headTypeValue)) {
+                        warnings.add("组内" + typeField.getValue() + "填写为 " + rowTypeValue
+                                + "，与组首行（" + headTypeValue + "）不一致，已按组首行为准");
+                    }
+                }
+                normalized = withInheritedGroup(normalized, currentGroupSeq, currentGroupValue, currentGroupTypes, type);
+            }
+
+            errors.addAll(validate(normalized, type));
+            warnings.addAll(validateWarnings(normalized, type));
+            // 2026-10-31：预览行的行号展示为「序号」（组号）；组号缺失时退回物理行号便于定位
             Integer seqValue = normalized.seq();
             int displayNo = (seqValue != null && seqValue > 0) ? seqValue : rowIndex + 1;
             rows.add(new ImportRowPreview(
@@ -137,7 +212,139 @@ public class ExcelBusinessImportParser {
             ));
         }
 
+        // 2026-10-31 层级化定案：权重按组校验——职能部门模板组内基础性合计=100、
+        // 学院模板组内子指标合计=100；合计不符在预览中给出警告（下发时仍会按最终权重校验拦截）
+        appendGroupWeightWarnings(rows, type);
+
         return new ParsedWorkbook(sheet.getSheetName(), mappings, rows, digest(rows));
+    }
+
+    /** 组名比较键：去空白、转小写（用于判断两行是否属于同一任务/父级组） */
+    private String groupKey(String value) {
+        return clean(value).replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 留空延续（sticky）：把组号、任务/父级名称与组级类型（任务类型/核心指标类型）
+     * 回填到延续行，其余内容列保持本行填写值。
+     * 2026-10-31 终版表头（学院模板加列）：组级类型改为按字段映射传入——
+     * 职能部门继承「任务类型」；学院同时继承「任务类型」与「核心指标类型」。
+     */
+    private NormalizedImportRow withInheritedGroup(NormalizedImportRow row,
+                                                   Integer groupSeq,
+                                                   String groupValue,
+                                                   Map<String, String> groupTypes,
+                                                   ImportType type) {
+        if (type == ImportType.STRATEGIC_TASK) {
+            return new NormalizedImportRow(
+                    groupSeq,
+                    row.department(),
+                    row.college(),
+                    groupTypes.getOrDefault("taskType", ""),
+                    groupValue,
+                    row.parentStrategicTask(),
+                    row.parentIndicator(),
+                    row.parentIndicatorType(),
+                    row.indicatorName(),
+                    row.indicatorType(),
+                    row.weight(),
+                    row.remark(),
+                    row.parentIndicatorId()
+            );
+        }
+        return new NormalizedImportRow(
+                groupSeq,
+                row.department(),
+                row.college(),
+                groupTypes.getOrDefault("taskType", ""),
+                row.strategicTask(),
+                row.parentStrategicTask(),
+                groupValue,
+                groupTypes.getOrDefault("parentIndicatorType", ""),
+                row.indicatorName(),
+                row.indicatorType(),
+                row.weight(),
+                row.remark(),
+                row.parentIndicatorId()
+        );
+    }
+
+    /**
+     * 组级只读列清单（随组合并、组内继承、延续行与组首行冲突时警告归一）：
+     * 键=NormalizedImportRow 字段名，值=表头文案（用于警告点名）。List 保序，警告顺序确定。
+     * 2026-10-31 终版表头（学院模板加「任务类型」列）：学院模板为 任务类型+核心指标类型 两列。
+     */
+    private List<Map.Entry<String, String>> groupTypeFields(ImportType type) {
+        if (type == ImportType.STRATEGIC_TASK) {
+            return List.of(Map.entry("taskType", "任务类型"));
+        }
+        return List.of(
+                Map.entry("taskType", "任务类型"),
+                Map.entry("parentIndicatorType", "核心指标类型"));
+    }
+
+    /** 读取行内组级只读列的归一值（normalizeTaskType/normalizeIndicatorType 产出的空串或标准值） */
+    private String groupTypeValue(NormalizedImportRow row, String field) {
+        return "taskType".equals(field) ? row.taskType() : row.parentIndicatorType();
+    }
+
+    /**
+     * 2026-10-31 层级化定案：按组校验权重合计。
+     * 职能部门模板：组内「基础性」行合计=100（沿用现行口径，只换分组）；
+     * 学院模板：组内子指标合计=100。空权重按默认值 100 参与合计。
+     * 合计不符 → 组内每行追加警告（不阻断预览；自动下发时仍有最终权重校验兜底）。
+     */
+    private void appendGroupWeightWarnings(List<ImportRowPreview> rows, ImportType type) {
+        Map<Integer, List<Integer>> groups = new LinkedHashMap<>();
+        for (int i = 0; i < rows.size(); i++) {
+            Integer seq = rows.get(i).normalized().seq();
+            if (seq != null) {
+                groups.computeIfAbsent(seq, key -> new ArrayList<>()).add(i);
+            }
+        }
+        BigDecimal required = BigDecimal.valueOf(100);
+        for (Map.Entry<Integer, List<Integer>> entry : groups.entrySet()) {
+            List<Integer> indexes = entry.getValue();
+            List<Integer> weighted = indexes.stream()
+                    .filter(index -> type != ImportType.STRATEGIC_TASK
+                            || "基础性".equals(rows.get(index).normalized().taskType()))
+                    // 2026-10-31 用户拍板（父级行=上级定死锚点）：未使用的父级预填行（子指标三列全空）
+                    // 不参与组权重合计（其空权重不再按默认 100 计入，避免「未用行」制造假性权重警告）
+                    .filter(index -> !isParentOnlyDistributionRow(rows.get(index).normalized(), type))
+                    .toList();
+            if (weighted.isEmpty()) {
+                continue;
+            }
+            BigDecimal total = weighted.stream()
+                    .map(index -> {
+                        BigDecimal weight = rows.get(index).normalized().weight();
+                        return weight == null ? BigDecimal.valueOf(100) : weight;
+                    })
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            if (total.compareTo(required) == 0) {
+                continue;
+            }
+            NormalizedImportRow head = rows.get(indexes.get(0)).normalized();
+            String scope = type == ImportType.STRATEGIC_TASK
+                    ? "战略任务「" + head.strategicTask() + "」内基础性指标"
+                    : "核心指标「" + head.parentIndicator() + "」内子指标";
+            String message = "第 " + entry.getKey() + " 组（" + scope + "）权重合计为 "
+                    + total.stripTrailingZeros().toPlainString() + "，应为 100，请核对组内权重";
+            for (Integer index : indexes) {
+                ImportRowPreview row = rows.get(index);
+                List<String> warnings = new ArrayList<>(row.warnings());
+                warnings.add(message);
+                rows.set(index, new ImportRowPreview(
+                        row.rowNo(),
+                        row.action(),
+                        row.businessKey(),
+                        row.normalized(),
+                        row.source(),
+                        row.errors(),
+                        warnings
+                ));
+            }
+        }
     }
 
     private Optional<Sheet> resolveSheet(Workbook workbook, String sheetName) {
@@ -241,6 +448,8 @@ public class ExcelBusinessImportParser {
         String strategicTask = clean(value(source, aliases, "strategicTask"));
         String parentStrategicTask = clean(value(source, aliases, "parentStrategicTask"));
         String parentIndicator = clean(value(source, aliases, "parentIndicator"));
+        // 2026-10-31 终版表头：「核心指标类型」=父指标自身类型，只读校验用（不落库）
+        String parentIndicatorType = normalizeIndicatorType(value(source, aliases, "parentIndicatorType"));
         String indicatorName = clean(value(source, aliases, "indicatorName"));
         String indicatorType = normalizeIndicatorType(value(source, aliases, "indicatorType"));
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
@@ -254,6 +463,7 @@ public class ExcelBusinessImportParser {
                 strategicTask,
                 parentStrategicTask,
                 parentIndicator,
+                parentIndicatorType,
                 indicatorName,
                 indicatorType,
                 weight,
@@ -277,27 +487,33 @@ public class ExcelBusinessImportParser {
 
     private List<String> validate(NormalizedImportRow row, ImportType type) {
         List<String> errors = new ArrayList<>();
-        // 2026-10-19 用户定案：序号必填且为正整数（1、2、3…），用于唯一性匹配
+        // 2026-10-31 层级化定案：序号=组号，组首行必填（延续行由 sticky 继承补齐，不在此报错）
         if (row.seq() == null) {
-            errors.add("序号不能为空或不合法（应为 1、2、3… 的正整数），请使用最新导出的表格或模板");
+            errors.add("组首行「序号」（组号）不能为空或不合法（应为 1、2、3… 的正整数）");
         }
         if (type == ImportType.STRATEGIC_TASK) {
             if (isBlank(row.taskType())) {
-                errors.add("任务类型不能为空或无法识别");
+                // 2026-10-31 终版表头：任务类型为任务级字段（组首行必填，组内继承）
+                errors.add("任务类型（组首行）不能为空或无法识别（基础性/发展性）");
             }
             if (isBlank(row.strategicTask())) {
-                errors.add("战略任务不能为空");
+                errors.add("战略任务（组首行）不能为空；组内延续行请留空组列（留空=同上）");
             }
         } else {
             if (isBlank(row.parentIndicator())) {
-                errors.add("父级核心指标不能为空");
+                errors.add("核心指标（组首行）不能为空；组内延续行请留空组列（留空=同上）");
             }
         }
-        if (isBlank(row.indicatorName())) {
-            errors.add(type == ImportType.STRATEGIC_TASK ? "核心指标不能为空" : "子指标名称不能为空");
-        }
-        if (isBlank(row.indicatorType())) {
-            errors.add("指标类型不能为空或无法识别");
+        // 2026-10-31 用户拍板（父级行=上级定死锚点）：学院模板中「子指标名称/指标类型/权重」
+        // 全空的行是未使用的父级预填行——不再因缺子指标内容报阻断错误；是否跳过由
+        // BusinessImportApplicationService.enrichDistributionRows 按锚点一致性判定（父级被改=阻断）
+        if (!isParentOnlyDistributionRow(row, type)) {
+            if (isBlank(row.indicatorName())) {
+                errors.add(type == ImportType.STRATEGIC_TASK ? "核心指标不能为空" : "子指标名称不能为空");
+            }
+            if (isBlank(row.indicatorType())) {
+                errors.add("指标类型不能为空或无法识别");
+            }
         }
         if (row.weight() != null
                 && (row.weight().compareTo(BigDecimal.ZERO) < 0
@@ -307,10 +523,25 @@ public class ExcelBusinessImportParser {
         return errors;
     }
 
-    private List<String> validateWarnings(NormalizedImportRow row) {
+    /**
+     * 2026-10-31 用户拍板（父级行=上级定死锚点）：学院模板的「父级预填行」识别口径——
+     * 子指标名称、指标类型、权重三列全空即视为未填任何子指标（仅父级组列有值）。
+     * 此类行不再按缺子指标内容阻断，改由 enrich 阶段按「父级行是否被改动」决定跳过或按锚点不一致阻断。
+     */
+    private boolean isParentOnlyDistributionRow(NormalizedImportRow row, ImportType type) {
+        return type == ImportType.DISTRIBUTION
+                && isBlank(row.indicatorName())
+                && isBlank(row.indicatorType())
+                && row.weight() == null;
+    }
+
+    private List<String> validateWarnings(NormalizedImportRow row, ImportType type) {
         List<String> warnings = new ArrayList<>();
-        if (row.weight() == null) {
-            warnings.add("权重为空，将按系统默认值处理");
+        // 未使用的父级预填行不落库，不提示默认权重（避免对将跳过的行产生误导性警告）
+        if (row.weight() == null && !isParentOnlyDistributionRow(row, type)) {
+            // P-16 修复（2026-10-31）：默认值就是 100（BusinessImportApplicationService.defaultWeight），
+            // 文案直说，不再让用户猜「系统默认值」是多少
+            warnings.add("权重为空，将按默认值 100 处理");
         }
         return warnings;
     }

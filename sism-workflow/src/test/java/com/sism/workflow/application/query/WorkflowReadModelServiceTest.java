@@ -744,6 +744,68 @@ class WorkflowReadModelServiceTest {
         assertTrue(newService().getMyPendingTasksByBatchId(101L, " ").isEmpty());
     }
 
+    // ==================== 2026-10-31 修复（P-06）：「当前实例」非终态优先 ====================
+
+    @Test
+    void getInstanceDetailByBusiness_shouldPreferInReviewInstanceOverNewerWithdrawn() {
+        // 撤回-重发循环（原地续链）下，「最新」实例可能是 WITHDRAWN 旧实例（撤回后未重发前）。
+        // 修复前 findLatestCurrentInstance 只按 startedAt/id 取最新 → 详情绑到 WITHDRAWN 旧链；
+        // 修复后 IN_REVIEW（非终态）实例优先。
+        LocalDateTime now = LocalDateTime.now();
+        AuditInstance withdrawnLatest = new AuditInstance();
+        withdrawnLatest.setId(12L);
+        withdrawnLatest.setFlowDefId(3L);
+        withdrawnLatest.setEntityType("PLAN");
+        withdrawnLatest.setEntityId(99L);
+        withdrawnLatest.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        withdrawnLatest.setStartedAt(now);
+
+        AuditInstance inReviewEarlier = new AuditInstance();
+        inReviewEarlier.setId(11L);
+        inReviewEarlier.setFlowDefId(3L);
+        inReviewEarlier.setEntityType("PLAN");
+        inReviewEarlier.setEntityId(99L);
+        inReviewEarlier.setStatus(AuditInstance.STATUS_PENDING);
+        inReviewEarlier.setStartedAt(now.minusHours(1));
+
+        when(auditInstanceRepository.findByBusinessTypeAndBusinessId("PLAN", 99L))
+                .thenReturn(List.of(withdrawnLatest, inReviewEarlier));
+
+        WorkflowInstanceDetailResponse response = newService().getInstanceDetailByBusiness("PLAN", 99L);
+
+        assertEquals("11", response.getInstanceId());
+        assertEquals(AuditInstance.STATUS_PENDING, response.getStatus());
+    }
+
+    @Test
+    void getInstanceDetailByBusiness_shouldKeepLatestTerminalInstanceWhenNoActiveInstance() {
+        // 全是终态（WITHDRAWN/APPROVED）时维持旧行为：仍按 startedAt/id 取最新
+        LocalDateTime now = LocalDateTime.now();
+        AuditInstance withdrawnNewer = new AuditInstance();
+        withdrawnNewer.setId(21L);
+        withdrawnNewer.setFlowDefId(3L);
+        withdrawnNewer.setEntityType("PLAN");
+        withdrawnNewer.setEntityId(99L);
+        withdrawnNewer.setStatus(AuditInstance.STATUS_WITHDRAWN);
+        withdrawnNewer.setStartedAt(now);
+
+        AuditInstance approvedOlder = new AuditInstance();
+        approvedOlder.setId(20L);
+        approvedOlder.setFlowDefId(3L);
+        approvedOlder.setEntityType("PLAN");
+        approvedOlder.setEntityId(99L);
+        approvedOlder.setStatus(AuditInstance.STATUS_APPROVED);
+        approvedOlder.setStartedAt(now.minusHours(1));
+
+        when(auditInstanceRepository.findByBusinessTypeAndBusinessId("PLAN", 99L))
+                .thenReturn(List.of(withdrawnNewer, approvedOlder));
+
+        WorkflowInstanceDetailResponse response = newService().getInstanceDetailByBusiness("PLAN", 99L);
+
+        assertEquals("21", response.getInstanceId());
+        assertEquals(AuditInstance.STATUS_WITHDRAWN, response.getStatus());
+    }
+
     private WorkflowQueryRepository.PendingTaskIdentity identity(
             Long stepInstanceId, Long instanceId, String entityType, Long entityId, String batchId) {
         return new WorkflowQueryRepository.PendingTaskIdentity(stepInstanceId, instanceId, entityType, entityId, batchId);

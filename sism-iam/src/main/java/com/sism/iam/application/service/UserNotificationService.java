@@ -406,10 +406,14 @@ public class UserNotificationService implements NotificationProvider {
                 nextStepName == null || nextStepName.isBlank() ? "下一审批环节" : nextStepName.trim();
         String resolvedApproverName =
                 approverName == null || approverName.isBlank() ? "上一环节审批人" : approverName.trim();
+        // P-08 修复（2026-10-31）：标题此前硬编码「计划审批待处理」，导致上报/异动/下发的
+        // 流转通知被一律冠以「计划」头衔；改按实体类型解析标题，归一化与提交通知（:260）
+        // 同口径——空/未知类型兜底「审批待处理」。
+        String normalizedEntityType = entityType == null ? null : entityType.trim().toUpperCase();
         return saveAndPushApprovalNotification(
                 recipientUserId, senderUserId, senderOrgId, approvalInstanceId,
                 entityType, entityId, TYPE_APPROVAL_SUBMITTED,
-                "计划审批待处理",
+                resolveApprovalSubmissionTitle(normalizedEntityType),
                 resolvedApproverName + "已审批通过“" + resolvedBusinessName + "”，当前待处理环节为“"
                         + resolvedStepName + "”，请尽快审批。",
                 buildApprovalSubmissionMetadataJson(
