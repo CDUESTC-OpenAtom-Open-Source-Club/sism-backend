@@ -439,11 +439,33 @@ public class WorkflowReadModelService {
                 .build();
     }
 
+    /**
+     * 2026-10-31 修复（P-06）：取「当前实例」时非终态优先。
+     * 旧口径只按 startedAt/id 取最新——撤回-重发循环（原地续链）下，撤回后未重发前
+     * 「最新」实例是 WITHDRAWN 旧实例，详情接口会把在审实例绑丢、展示已撤回的旧链。
+     * 新口径：IN_REVIEW（AuditInstance.STATUS_PENDING 常量，值即 "IN_REVIEW"）等
+     * 非终态实例优先；全是终态（WITHDRAWN/APPROVED/CANCELLED/REJECTED）时维持
+     * 旧行为——仍按 startedAt/id 取最新。
+     */
     private Optional<AuditInstance> findLatestCurrentInstance(String entityType, Long entityId) {
-        return findInstancesByBusiness(entityType, entityId).stream()
-                .max(Comparator
-                        .comparing(AuditInstance::getStartedAt, Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(AuditInstance::getId, Comparator.nullsLast(Comparator.naturalOrder())));
+        List<AuditInstance> instances = findInstancesByBusiness(entityType, entityId);
+        Comparator<AuditInstance> latestFirst = Comparator
+                .comparing(AuditInstance::getStartedAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(AuditInstance::getId, Comparator.nullsLast(Comparator.naturalOrder()));
+        return instances.stream()
+                .filter(this::isNonTerminalInstance)
+                .max(latestFirst)
+                .or(() -> instances.stream().max(latestFirst));
+    }
+
+    /**
+     * P-06 非终态判定：实例状态 IN_REVIEW（含别名 PENDING）视为在审/非终态；
+     * 终态为 APPROVED / REJECTED / WITHDRAWN / CANCELLED。
+     */
+    private boolean isNonTerminalInstance(AuditInstance instance) {
+        String status = instance == null ? null : instance.getStatus();
+        return AuditInstance.STATUS_PENDING.equalsIgnoreCase(status)
+                || "PENDING".equalsIgnoreCase(status);
     }
 
     private List<AuditInstance> findInstancesByBusiness(String entityType, Long entityId) {
