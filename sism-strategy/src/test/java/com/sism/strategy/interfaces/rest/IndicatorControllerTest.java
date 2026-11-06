@@ -275,7 +275,9 @@ class IndicatorControllerTest {
                     NamedParameterJdbcTemplate.class,
                     Class.forName("com.sism.iam.application.service.UserNotificationService"),
                     // 2026-10-24 跨窗口数据同步：新增广播端口依赖（本测试不触发，传 null）
-                    Class.forName("com.sism.shared.domain.notification.DataChangeBroadcaster")
+                    Class.forName("com.sism.shared.domain.notification.DataChangeBroadcaster"),
+                    // 2026-11-05（学院指标直发改造）：组织维度校验依赖
+                    com.sism.strategy.infrastructure.StrategyOrgProperties.class
             );
             Object userNotificationService = null;
             return constructor.newInstance(
@@ -285,6 +287,8 @@ class IndicatorControllerTest {
                             null,
                             null,
                             null,
+                            null,
+                            // 2026-11-05：下发/异动互斥守卫（本测试不触发异动，传 null）
                             null,
                             // 2026-10-21：任务改名异动留痕依赖（本测试不触发异动，传 null）
                             null,
@@ -306,7 +310,9 @@ class IndicatorControllerTest {
                     jdbcTemplate,
                     namedParameterJdbcTemplate,
                     userNotificationService,
-                    null
+                    null,
+                    // 2026-11-05：战略发展部 org id 配置
+                    new com.sism.strategy.infrastructure.StrategyOrgProperties()
             );
         } catch (ReflectiveOperationException ex) {
             throw new IllegalStateException("Failed to create IndicatorController for test", ex);

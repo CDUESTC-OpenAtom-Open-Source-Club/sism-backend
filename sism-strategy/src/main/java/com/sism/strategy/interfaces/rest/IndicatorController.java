@@ -63,6 +63,9 @@ public class IndicatorController {
     /** 2026-10-26 数据隔离（R13）：战略发展部保留全量指标视图 */
     private static final Long STRATEGY_ORG_ID = 35L;
 
+    /** 2026-11-05（学院指标直发改造）：写入「战略发展部名下」指标时的操作者归属校验文案 */
+    private static final String STRATEGY_ORG_WRITE_REQUIRED = "只有战略发展部成员可以维护战略发展部名下指标";
+
 
     private static final String INDICATOR_WRITE_ACCESS =
             "hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')";
@@ -87,6 +90,11 @@ public class IndicatorController {
     private final UserNotificationService userNotificationService;
     /** 2026-10-24 跨窗口数据同步：草稿态指标直接增删改不走审批流、无审批通知可搭车，成功后广播。 */
     private final com.sism.shared.domain.notification.DataChangeBroadcaster dataChangeBroadcaster;
+    /**
+     * 2026-11-05（学院指标直发改造）：战略发展部 org id。
+     * 指标写入接口补组织维度校验时使用（与 IndicatorMutationService.canInitiate 同一范式）。
+     */
+    private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
 
     @GetMapping
     @Operation(summary = "分页获取所有指标")
@@ -232,7 +240,8 @@ public class IndicatorController {
     @PreAuthorize(INDICATOR_WRITE_ACCESS)
     @Operation(summary = "创建新指标")
     public ResponseEntity<ApiResponse<IndicatorResponse>> createIndicator(
-            @Valid @RequestBody CreateIndicatorRequest request) {
+            @Valid @RequestBody CreateIndicatorRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
         // 兼容两种请求格式：
         // 1) 旧格式：indicatorName + departmentId
         // 2) 新格式：indicatorDesc + taskId + ownerOrgId + targetOrgId + parentIndicatorId
@@ -260,6 +269,9 @@ public class IndicatorController {
                 .orElseThrow(() -> new IllegalArgumentException("责任组织未找到: " + ownerOrgId));
         SysOrg targetOrg = organizationRepository.findById(targetOrgId)
                 .orElseThrow(() -> new IllegalArgumentException("目标组织未找到: " + targetOrgId));
+
+        // 2026-11-05（学院指标直发改造）：补组织维度校验（见 assertStrategyOwnedWrite 的说明）
+        assertStrategyOwnedWrite(currentUser, ownerOrgId);
 
         try {
             Indicator created = strategyApplicationService.createIndicator(
@@ -486,7 +498,10 @@ public class IndicatorController {
     @PreAuthorize(INDICATOR_WRITE_ACCESS)
     @Operation(summary = "批量分发指标(分发页面专用)")
     public ResponseEntity<ApiResponse<BatchDistributeIndicatorsResponse>> batchDistributeIndicators(
-            @RequestBody @Valid BatchDistributeIndicatorsRequest request) {
+            @RequestBody @Valid BatchDistributeIndicatorsRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        // 2026-11-05（学院指标直发改造）：补组织维度校验（见 assertStrategyOwnedWrite 的说明）
+        request.getIndicators().forEach(item -> assertStrategyOwnedWrite(currentUser, item.getOwnerOrgId()));
         List<BatchIndicatorDistributionApplicationService.ItemCommand> commands = request.getIndicators().stream()
                 .map(this::toBatchDistributionCommand)
                 .toList();
@@ -501,6 +516,27 @@ public class IndicatorController {
         return ResponseEntity.ok(ApiResponse.success(
                 new BatchDistributeIndicatorsResponse(items.size(), items)
         ));
+    }
+
+    /**
+     * 2026-11-05（学院指标直发改造）：指标写入补<b>组织维度</b>校验。
+     *
+     * <p>为什么不能只看角色码：仓库里存在 27 个 {@code *_demo} 账号持有
+     * {@code ROLE_STRATEGY_DEPT_HEAD} 但并不在战略发展部，只靠 {@code @PreAuthorize} 的角色码，
+     * 它们仍能以战略部的名义写指标、发起分发。战略部 org id 取自配置
+     * {@code sism.strategy.org.strategy-org-id}，与 {@code IndicatorMutationService.canInitiate} 同一范式。
+     *
+     * <p>口径：写入「战略发展部名下」的指标时，操作者必须也在战略发展部；
+     * 其它归属组织不受影响（职能部门维护本部门指标是正常业务，不在本次改造范围）。
+     */
+    private void assertStrategyOwnedWrite(CurrentUser currentUser, Long ownerOrgId) {
+        Long strategyOrgId = strategyOrgProperties.getStrategyOrgId();
+        if (strategyOrgId == null || ownerOrgId == null || !Objects.equals(ownerOrgId, strategyOrgId)) {
+            return;
+        }
+        if (currentUser == null || !Objects.equals(currentUser.getOrgId(), strategyOrgId)) {
+            throw new SecurityException(STRATEGY_ORG_WRITE_REQUIRED);
+        }
     }
 
     private BatchIndicatorDistributionApplicationService.ItemCommand toBatchDistributionCommand(

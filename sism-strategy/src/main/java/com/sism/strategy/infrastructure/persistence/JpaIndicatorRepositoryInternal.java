@@ -152,6 +152,30 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
 
     List<Indicator> findByIdInAndIsDeletedFalse(List<Long> ids);
 
+    /**
+     * 2026-11-05（学院指标直发改造）：学院下发导入的「父级核心指标」锚点。
+     *
+     * <p>口径：归属 = 战略发展部 + 目标组织是职能部门（sys_org.type='functional'）+ 自身无父级 +
+     * 未删除 + <b>同一考核周期</b>（经 sys_task → plan → cycle_id 关联）。
+     * 指标表本身不带 cycle，必须经任务与计划关联才能按周期收敛——否则历年同名核心指标会互相串号。
+     */
+    @Query(value = """
+            SELECT i.* FROM indicator i
+            INNER JOIN sys_task t ON i.task_id = t.task_id
+            INNER JOIN plan p ON t.plan_id = p.id
+            INNER JOIN sys_org o ON o.id = i.target_org_id
+            WHERE i.owner_org_id = :ownerOrgId
+              AND i.parent_indicator_id IS NULL
+              AND COALESCE(i.is_deleted, false) = false
+              AND COALESCE(t.is_deleted, false) = false
+              AND COALESCE(p.is_deleted, false) = false
+              AND p.cycle_id = :cycleId
+              AND o.type = 'functional'
+            ORDER BY i.id
+            """, nativeQuery = true)
+    List<Indicator> findCoreDispatchAnchors(@Param("ownerOrgId") Long ownerOrgId,
+                                             @Param("cycleId") Long cycleId);
+
     @EntityGraph(attributePaths = {"ownerOrg", "targetOrg"})
     @Query("""
             SELECT i FROM Indicator i

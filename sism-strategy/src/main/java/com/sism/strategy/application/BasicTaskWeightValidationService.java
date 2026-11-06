@@ -142,8 +142,11 @@ public class BasicTaskWeightValidationService {
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
                 .filter(indicator -> !excluded.contains(indicator.getId()))
                 .filter(indicator -> indicator.getParentIndicatorId() != null)
-                .filter(indicator -> indicator.getOwnerOrg() != null)
-                .filter(indicator -> plan.getCreatedByOrgId().equals(indicator.getOwnerOrg().getId()))
+                // 2026-11-05（B8）：不再用「归属组织 == 计划创建组织」圈定合计范围。
+                // 改造后 FUNC_TO_COLLEGE 计划的创建组织恒为战略部，子指标的归属组织也是战略部，
+                // 一旦该条件语义漂移（created_by 换成别的含义）就会恒不成立 →
+                // 合计恒为 0 → 守卫静默失效（既不报错也不拦截）。
+                // 范围改由「本计划的 BASIC 任务 + 是子指标 + 目标为该学院」显式限定（下面两行）。
                 .filter(indicator -> indicator.getTargetOrg() != null)
                 .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
                 .map(indicator -> resolveEffectiveWeight(indicator, weightOverrides))
@@ -201,9 +204,8 @@ public class BasicTaskWeightValidationService {
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
                 .filter(indicator -> !excluded.contains(indicator.getId()))
                 .filter(indicator -> indicator.getParentIndicatorId() != null)
-                .filter(indicator -> indicator.getOwnerOrg() != null
-                        && plan.getCreatedByOrgId() != null
-                        && plan.getCreatedByOrgId().equals(indicator.getOwnerOrg().getId()))
+                // 2026-11-05（B8）：同上——去掉依赖「归属组织 == 计划创建组织」的隐含前提，
+                // 范围由「本计划任务 + 是子指标 + 目标为该学院」显式限定。
                 .filter(indicator -> indicator.getTargetOrg() != null
                         && targetOrgId.equals(indicator.getTargetOrg().getId()))
                 .toList();

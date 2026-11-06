@@ -104,6 +104,13 @@ class PlanApplicationServiceTest {
 
     private StrategyOrgProperties strategyOrgProperties;
 
+    /**
+     * 2026-11-05（学院指标直发改造）：学院下发的「异动在途」守卫改为显式口径实现，
+     * 独立成服务后单测直接 mock 它，不再依赖内联 SQL 的字符串匹配。
+     */
+    @Mock
+    private CollegeDispatchGuardService collegeDispatchGuardService;
+
     private PlanApplicationService service;
 
     @BeforeEach
@@ -150,7 +157,8 @@ class PlanApplicationServiceTest {
                 namedParameterJdbcTemplate,
                 transactionManager,
                 planIntegrityService,
-                strategyOrgProperties
+                strategyOrgProperties,
+                collegeDispatchGuardService
         );
     }
 
@@ -326,51 +334,145 @@ class PlanApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("Should block functional-dept dispatch to college when strategy mutation is in review")
+    @DisplayName("Should block college dispatch when source functional-dept mutation is in review")
     void shouldBlockFunctionalDeptDispatchWhenStrategyMutationInReview() {
         Long cycleId = 2026L;
-        Long functionalDeptOrgId = 35L;
+        Long strategyOrgId = 35L;
         Long collegeOrgId = 36L;
-        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        // 2026-11-05（学院指标直发改造）：学院下发计划的创建组织是战略发展部（35）
+        Plan plan = Plan.create(cycleId, collegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(9101L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
 
         when(planRepository.findById(9101L)).thenReturn(Optional.of(plan));
-        when(jdbcTemplate.queryForObject(
-                contains("PLAN_MUTATION_STRATEGY"),
-                eq(Integer.class),
-                eq(functionalDeptOrgId),
-                eq(cycleId)
-        )).thenReturn(1);
+        // 下发所依赖的职能部门指标正在异动审批中
+        when(collegeDispatchGuardService.isSourceOrgMutationInFlight(9101L, cycleId)).thenReturn(true);
 
         assertThrows(IllegalStateException.class,
-                () -> service.submitPlanForApproval(9101L, request, 188L, functionalDeptOrgId));
+                () -> service.submitPlanForApproval(9101L, request, 188L, strategyOrgId));
 
         verify(planRepository, never()).save(any());
         verify(eventPublisher, never()).publish(any());
     }
 
     @Test
-    @DisplayName("Should allow functional-dept dispatch when no strategy mutation is in review")
-    void shouldAllowFunctionalDeptDispatchWhenNoStrategyMutationInReview() {
+    @DisplayName("2026-11-05（学院指标直发改造）：职能部门创建的 FUNC_TO_COLLEGE 计划不能提交下发审批")
+    void shouldRejectCollegeDispatchPlanCreatedByFunctionalDept() {
         Long cycleId = 2026L;
-        Long functionalDeptOrgId = 35L;
+        Long functionalDeptOrgId = 44L;
         Long collegeOrgId = 36L;
         Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9106L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+
+        when(planRepository.findById(9106L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.submitPlanForApproval(9106L, request, 188L, functionalDeptOrgId));
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（BL1）：职能部门创建的 FUNC_TO_COLLEGE 计划不能被 publish 直接下发")
+    void shouldRejectPublishingCollegeDispatchPlanCreatedByFunctionalDept() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9107L);
+
+        when(planRepository.findById(9107L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.publishPlan(9107L));
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（BL1）：职能部门创建的 FUNC_TO_COLLEGE 计划不能被 approve 审批通过后下发")
+    void shouldRejectApprovingCollegeDispatchPlanCreatedByFunctionalDept() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9108L);
+
+        when(planRepository.findById(9108L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.approvePlan(9108L));
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（MA1）：非战略部账号不能代战略部提交学院下发审批")
+    void shouldRejectCollegeDispatchSubmittedByNonStrategyOrg() {
+        Long cycleId = 2026L;
+        Long strategyOrgId = 35L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9109L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+
+        when(planRepository.findById(9109L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.submitPlanForApproval(9109L, request, 188L, functionalDeptOrgId));
+
+        assertTrue(error.getMessage().contains("只能由战略发展部账号提交"));
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（BL1 补充）：workflow 终审通过也不能把职能部门创建的 FUNC_TO_COLLEGE 计划下发")
+    void shouldRejectWorkflowApprovalForCollegeDispatchPlanCreatedByFunctionalDept() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9110L);
+
+        when(planRepository.findById(9110L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.markWorkflowApproved(9110L));
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("Should allow college dispatch when no source-dept mutation is in review")
+    void shouldAllowFunctionalDeptDispatchWhenNoStrategyMutationInReview() {
+        Long cycleId = 2026L;
+        Long strategyOrgId = 35L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(9102L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
 
         when(planRepository.findById(9102L)).thenReturn(Optional.of(plan));
-        when(jdbcTemplate.queryForObject(
-                contains("PLAN_MUTATION_STRATEGY"),
-                eq(Integer.class),
-                eq(functionalDeptOrgId),
-                eq(cycleId)
-        )).thenReturn(0);
+        when(collegeDispatchGuardService.isSourceOrgMutationInFlight(9102L, cycleId)).thenReturn(false);
         // 2026-10-31 学院级联分支：无「目标为学院」的在审异动，放行
         when(jdbcTemplate.queryForObject(
                 contains("sys_org"),
@@ -379,7 +481,7 @@ class PlanApplicationServiceTest {
         )).thenReturn(0);
         when(planRepository.save(same(plan))).thenReturn(plan);
 
-        PlanResponse response = service.submitPlanForApproval(9102L, request, 188L, functionalDeptOrgId);
+        PlanResponse response = service.submitPlanForApproval(9102L, request, 188L, strategyOrgId);
 
         assertEquals(PlanStatus.PENDING.value(), plan.getStatus());
         assertEquals(PlanStatus.PENDING.value(), response.getStatus());
@@ -398,22 +500,17 @@ class PlanApplicationServiceTest {
     @DisplayName("学院级联全锁：学院子计划异动在审时向另一学院下发被拒")
     void shouldBlockCollegeDispatchWhenCollegeSubPlanMutationInReview() {
         Long cycleId = 2026L;
-        Long functionalDeptOrgId = 35L;
+        Long strategyOrgId = 35L;
         Long businessCollegeOrgId = 36L;
-        Plan plan = Plan.create(cycleId, businessCollegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        Plan plan = Plan.create(cycleId, businessCollegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(9105L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
 
         when(planRepository.findById(9105L)).thenReturn(Optional.of(plan));
-        // 部门自身指标无在审异动（原分支不命中——线上缺陷正是漏了学院 target 的级联）
-        when(jdbcTemplate.queryForObject(
-                contains("PLAN_MUTATION_STRATEGY"),
-                eq(Integer.class),
-                eq(functionalDeptOrgId),
-                eq(cycleId)
-        )).thenReturn(0);
+        // 下发所依赖的职能部门自身指标无在审异动
+        when(collegeDispatchGuardService.isSourceOrgMutationInFlight(9105L, cycleId)).thenReturn(false);
         // 同周期存在目标组织为学院（sys_org.type='academic'）的异动审批在审
         when(jdbcTemplate.queryForObject(
                 contains("sys_org"),
@@ -422,7 +519,7 @@ class PlanApplicationServiceTest {
         )).thenReturn(1);
 
         IllegalStateException error = assertThrows(IllegalStateException.class,
-                () -> service.submitPlanForApproval(9105L, request, 188L, functionalDeptOrgId));
+                () -> service.submitPlanForApproval(9105L, request, 188L, strategyOrgId));
 
         assertTrue(error.getMessage().contains("暂不能向学院下发"));
         // 整体拒绝：不落库、不发事件（下发审批链不得启动）
@@ -431,29 +528,27 @@ class PlanApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("Should not check strategy mutation lock for functional-dept approval workflow")
-    void shouldNotCheckMutationLockForFunctionalDeptApprovalWorkflow() {
+    @DisplayName("2026-11-05（MA2）：FUNC_TO_COLLEGE 计划不接受 PLAN_APPROVAL_* 流程码（守卫不可被前端绕过）")
+    void shouldRejectApprovalWorkflowCodeForCollegeDispatchPlan() {
         Long cycleId = 2026L;
-        Long functionalDeptOrgId = 35L;
+        Long strategyOrgId = 35L;
         Long collegeOrgId = 36L;
-        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        Plan plan = Plan.create(cycleId, collegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(9103L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        // 前端传审批类流程码 → 原口径会整段跳过异动在途守卫（可绕过）
         request.setWorkflowCode("PLAN_APPROVAL_FUNCDEPT");
 
         when(planRepository.findById(9103L)).thenReturn(Optional.of(plan));
-        when(planRepository.save(same(plan))).thenReturn(plan);
 
-        PlanResponse response = service.submitPlanForApproval(9103L, request, 191L, functionalDeptOrgId);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.submitPlanForApproval(9103L, request, 191L, strategyOrgId));
 
-        assertEquals(PlanStatus.PENDING.value(), response.getStatus());
-        verify(planRepository).save(same(plan));
-        verify(jdbcTemplate, never()).queryForObject(
-                contains("PLAN_MUTATION_STRATEGY"),
-                eq(Integer.class),
-                any(),
-                any());
+        assertTrue(error.getMessage().contains("PLAN_DISPATCH_STRATEGY"),
+                "应明确告知学院下发只能用战略部下发流程: " + error.getMessage());
+        verify(planRepository, never()).save(any());
+        verify(collegeDispatchGuardService, never()).isSourceOrgMutationInFlight(any(), any());
     }
 
     @Test
@@ -464,7 +559,7 @@ class PlanApplicationServiceTest {
         plan.setId(9104L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
 
         when(planRepository.findById(9104L)).thenReturn(Optional.of(plan));
         when(planRepository.save(same(plan))).thenReturn(plan);
@@ -473,11 +568,7 @@ class PlanApplicationServiceTest {
 
         assertEquals(PlanStatus.PENDING.value(), response.getStatus());
         verify(planRepository).save(same(plan));
-        verify(jdbcTemplate, never()).queryForObject(
-                contains("PLAN_MUTATION_STRATEGY"),
-                eq(Integer.class),
-                any(),
-                any());
+        verify(collegeDispatchGuardService, never()).isSourceOrgMutationInFlight(any(), any());
     }
 
     @Test
@@ -589,7 +680,8 @@ class PlanApplicationServiceTest {
         plan.clearEvents();
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_FUNCDEPT");
+        // 2026-11-05（学院指标直发改造）：职能部门下发流程码已停用，战略部下发统一用 flow 1
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
 
         when(planRepository.findById(8080L)).thenReturn(Optional.of(plan));
         when(planRepository.save(same(plan))).thenReturn(plan);
