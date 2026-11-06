@@ -41,7 +41,8 @@ public class IndicatorMutationService {
     private static final String INDICATOR_ENTITY_TYPE = "INDICATOR";
     /** 2026-10-21：战略任务改名异动与指标异动同链，实体类型为 TASK。 */
     private static final String TASK_ENTITY_TYPE = "TASK";
-    private static final long STRATEGY_ORG_ID = 35L;
+    // 2026-11-05：原 STRATEGY_ORG_ID = 35L 常量已无引用点（战略部 org id 统一走
+    // StrategyOrgProperties#getStrategyOrgId），移除以免与配置项脱钩后成为「假口径」。
 
     // 2026-10-30：随单条异动入口 initiate 一并移除 A3 锁死主动通知的文案常量
     // （notifyLockedOrgUsers 本就无调用点，锁死提示改由审批中心整体流程承载）。
@@ -52,6 +53,11 @@ public class IndicatorMutationService {
     private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final com.sism.shared.domain.user.UserProvider userProvider;
     private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
+    /**
+     * 2026-11-05（学院指标直发改造）：下发/异动互斥守卫的显式口径实现。
+     * 原实现内联在本类里、且依赖 {@code plan.created_by_org_id} 的旧语义，改造后会静默失效。
+     */
+    private final CollegeDispatchGuardService collegeDispatchGuardService;
     /** 2026-10-21：任务改名异动复用任务变更留痕（audit_log entity_type=TASK）。 */
     private final com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
     /**
@@ -374,11 +380,14 @@ public class IndicatorMutationService {
      * 2026-10-30 定案（下发/异动互斥）：职能部门向学院下发（PLAN_DISPATCH_FUNCDEPT）审批在途时，
      * 战略部不得再异动该职能部门自己的指标。
      *
-     * 判定口径：异动指标的目标部门（target_org_id）即职能部门；若该职能部门在当前考核周期
-     * 内存在任一 FUNC_TO_COLLEGE 计划的 PLAN_DISPATCH_FUNCDEPT 实例 IN_REVIEW，则拒绝异动。
-     * 下发审批审的是「该职能部门指标拆给学院」的稳定快照；异动会改动源指标，使审批对象失效。
+     * <p>2026-11-05（学院指标直发改造）：判定口径改为显式的「该职能部门正在被下发到学院」——
+     * 即存在 FUNC_TO_COLLEGE 的下发审批在途，且该下发计划所拆分的父级核心指标的目标部门
+     * 就是本指标的目标部门。原口径用 {@code p.created_by_org_id = 本指标目标部门} 圈定：
+     * 改造后下发方变成战略部（35），该条件恒不成立 → 守卫静默失效（异动照常发起）。
      *
-     * 仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
+     * <p>下发审批审的是「该职能部门指标拆给学院」的稳定快照；异动会改动源指标，使审批对象失效。
+     *
+     * <p>仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
      */
     private void assertDispatchApprovalNotInFlightForIndicator(Long indicatorId) {
         java.util.List<Map<String, Object>> rows = jdbcTemplate.queryForList(
@@ -387,6 +396,11 @@ public class IndicatorMutationService {
                 FROM public.indicator i
                 JOIN public.sys_task t ON t.task_id = i.task_id
                 JOIN public.plan p ON p.id = t.plan_id
+                -- 2026-11-05（MA7）：显式限定目标组织必须是职能部门（sys_org.type='functional'）。
+                -- 本守卫的语义是「该职能部门正在被下发到学院」——只有目标为职能部门的指标才谈得上。
+                -- 原口径直接把指标的 target_org_id 当职能部门用，目标非职能部门时条件恒不成立 →
+                -- 守卫静默失效（既不报错也不拦截），口径必须写死在 SQL 里。
+                JOIN public.sys_org o ON o.id = i.target_org_id AND o.type = 'functional'
                 WHERE i.id = ?
                 """,
                 indicatorId);
@@ -399,24 +413,10 @@ public class IndicatorMutationService {
             return;
         }
 
-        Integer inFlight = jdbcTemplate.queryForObject(
-                """
-                SELECT COUNT(*)
-                FROM public.audit_instance ai
-                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
-                    AND f.flow_code = 'PLAN_DISPATCH_FUNCDEPT'
-                JOIN public.plan p ON p.id = ai.entity_id
-                WHERE ai.entity_type = 'PLAN'
-                  AND ai.status = 'IN_REVIEW'
-                  AND p.plan_level = 'FUNC_TO_COLLEGE'
-                  AND p.created_by_org_id = ?
-                  AND p.cycle_id = ?
-                  AND COALESCE(p.is_deleted, false) = false
-                """,
-                Integer.class,
+        boolean dispatchInFlight = collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(
                 ((Number) targetOrgId).longValue(),
                 ((Number) cycleId).longValue());
-        if (inFlight != null && inFlight > 0) {
+        if (dispatchInFlight) {
             throw new IllegalStateException(
                     "该职能部门的下发审批正在进行中，暂不能发起异动；请等下发审批结束或撤回后再操作");
         }

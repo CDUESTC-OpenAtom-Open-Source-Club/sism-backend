@@ -1,5 +1,6 @@
 package com.sism.strategy.application;
 
+import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.SysOrg;
 import com.sism.shared.domain.model.base.DomainEvent;
 import com.sism.shared.infrastructure.event.DomainEventPublisher;
@@ -50,6 +51,7 @@ public class StrategyApplicationService {
 
     @Transactional
     public Indicator createIndicator(String indicatorDesc, SysOrg ownerOrg, SysOrg targetOrg, String indicatorType) {
+        assertDispatchScopeAllowed(ownerOrg, targetOrg);
         Indicator indicator = Indicator.create(indicatorDesc, ownerOrg, targetOrg, indicatorType);
         indicator.validate();
         indicator = indicatorRepository.save(indicator);
@@ -97,6 +99,9 @@ public class StrategyApplicationService {
             String remark,
             Integer progress,
             Long cycleId) {
+        // 2026-11-05（学院指标直发改造）：「职能部门 → 学院」链路已取消，统一由战略部下发。
+        // 在最前面拦截，避免旧旁路（直接建指标 / 批量分发）把这条链路复活且前端不留痕迹。
+        assertDispatchScopeAllowed(ownerOrg, targetOrg);
         Indicator parent = null;
         Long resolvedTaskId = taskId;
 
@@ -146,6 +151,42 @@ public class StrategyApplicationService {
         validateBasicWeightForDistributedPlan(resolvedTaskId, targetOrg);
         publishAndSaveEvents(indicator);
         return indicator;
+    }
+
+    /**
+     * 2026-11-05（学院指标直发改造）：「职能部门 → 二级学院」的分发链路已整体取消，
+     * 学院子指标统一由战略发展部（org 35）直接下发。
+     *
+     * <p>判定特征就是<b>归属组织是职能部门 + 目标组织是二级学院</b>——这是旧链路的唯一指纹。
+     * 所有写入/下发入口都过这一道，避免旧旁路（手工建指标、批量分发、复用已有指标改投）
+     * 把链路复活；复活后前端没有任何入口能撤回，用户也无从察觉。
+     *
+     * <p>注意：战略部 → 职能部门、战略部 → 学院都<b>不</b>命中该判定，不受影响。
+     *
+     * <p>2026-11-05（minor 口径核对）：这里只按<b>组织类型</b>判定，不绑定具体 org id 是有意的——
+     * 本守卫要禁的是「职能部门 → 学院」这一<b>类关系</b>（所有职能部门都禁），而不是「只有 org 35
+     * 能下发」。「只有战略部能向学院下发」是另一条规则，由计划级闸门兜底
+     * （{@code PlanApplicationService.assertCollegeDispatchCreatedByStrategyOrg}：
+     * FUNC_TO_COLLEGE 计划的创建组织必须是战略发展部），不依赖这里的类型判定。
+     *
+     * <p>2026-11-05（MA4）：归属组织缺失一律拒绝。原口径是「ownerOrg 为 null 就放行」，
+     * 与批量分发侧既有口径（{@code BatchIndicatorDistributionApplicationService}：
+     * 查不到归属组织一律拒绝）相反；而且归属缺失时根本无法判断这是不是旧链路，
+     * 静默放行等于把守卫开了一个口子。目标组织缺失则无法判断是否指向学院，
+     * 保留放行（不是旧链路的指纹），真正的兜底由生效目标判定（distributeIndicator）承担。
+     */
+    public void assertDispatchScopeAllowed(SysOrg ownerOrg, SysOrg targetOrg) {
+        if (ownerOrg == null) {
+            throw new IllegalArgumentException(
+                    "指标归属组织缺失，无法判定下发范围；请检查指标归属组织后重试");
+        }
+        if (targetOrg == null) {
+            return;
+        }
+        if (ownerOrg.getType() == OrgType.functional && targetOrg.getType() == OrgType.academic) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标");
+        }
     }
 
     /**
@@ -206,6 +247,29 @@ public class StrategyApplicationService {
     public Indicator distributeIndicator(Long id, SysOrg targetOrg, String customDesc) {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
+
+        // 2026-11-05（学院指标直发改造）：把已有指标改投到学院，同样属于「向学院分发」。
+        // 归属组织是职能部门 + 目标组织是学院 = 旧链路特征，拒绝。
+        // 2026-11-05（BL2 修复）：判定必须用「生效目标」而不是入参——targetOrg 为 null 时
+        // （POST /indicators/{id}/distribute 的 targetOrgId 可选、distributeIndicator(id) 重载）
+        // 生效目标会回落到指标自身的 target_org_id；旧口径拿入参判定，null 直接放行 →
+        // 存量「职能部门 → 学院」指标仍能照旧下发给学院，守卫等于失效。
+        SysOrg effectiveTargetOrg = targetOrg != null ? targetOrg : indicator.getTargetOrg();
+        assertDispatchScopeAllowed(indicator.getOwnerOrg(), effectiveTargetOrg);
+
+        // 2026-11-05（R7）：禁止把「战略部下发的核心指标」本身改投到学院。
+        //
+        // 核心指标是「战略部下发给职能部门」的一级指标（owner=战略部、target=职能部门、
+        // 无父级）。把它直接搬到学院名下，会得到一条 parent 为空的学院指标，
+        // 破坏需求 2「学院子指标必须 parent=核心指标」的结构，也破坏权重合计口径
+        // （合计只统计有父级的子指标，搬走核心指标等于凭空少一条）。
+        // 正确做法是产生一条新子指标（owner=战略部、target=学院、parent=该核心指标）。
+        if (effectiveTargetOrg != null
+                && effectiveTargetOrg.getType() == com.sism.organization.domain.OrgType.academic
+                && indicator.getParentIndicatorId() == null) {
+            throw new IllegalArgumentException(
+                    "核心指标不能直接改投到二级学院，请基于该核心指标新增学院子指标");
+        }
 
         Long resolvedTargetOrgId = targetOrg != null
                 ? targetOrg.getId()
@@ -490,6 +554,10 @@ public class StrategyApplicationService {
             indicator.setTargetOrg(targetOrg);
         }
 
+        // 2026-11-05（学院指标直发改造）：本接口可改归属组织与目标组织，
+        // 也能把职能部门指标改投到学院——与新建指标同属旧链路的复活入口，必须拦。
+        assertDispatchScopeAllowed(indicator.getOwnerOrg(), indicator.getTargetOrg());
+
         indicator.setLevel(indicator.calculateLevel());
         indicator.setUpdatedAt(LocalDateTime.now());
         indicator = indicatorRepository.save(indicator);
@@ -623,6 +691,18 @@ public class StrategyApplicationService {
             Indicator parent,
             SysOrg ownerOrg,
             SysOrg targetOrg) {
+        // 2026-11-05（学院指标直发改造）：本方法会按「归属组织 + 目标组织」创建 FUNC_TO_COLLEGE
+        // 下游计划，是旧「职能部门向学院分发」链路的自动复活入口。归属组织是职能部门、
+        // 目标组织是学院时必须拒绝——否则计划会被建出来，指标也会落到学院名下。
+        // 2026-11-05（MA4）：归属/目标缺失的校验提前到守卫之前，保持既有报错文案
+        // （守卫现在对归属缺失直接拒绝，先报「责任组织不能为空」更贴近调用方预期）。
+        if (ownerOrg == null || ownerOrg.getId() == null) {
+            throw new IllegalArgumentException("责任组织不能为空");
+        }
+        if (targetOrg == null || targetOrg.getId() == null) {
+            throw new IllegalArgumentException("目标组织不能为空");
+        }
+        assertDispatchScopeAllowed(ownerOrg, targetOrg);
         StrategicTask requestedTask = null;
         Plan requestedPlan = null;
 
@@ -656,12 +736,7 @@ public class StrategyApplicationService {
         if (cycleId == null) {
             throw new IllegalArgumentException("周期ID不能为空");
         }
-        if (ownerOrg == null || ownerOrg.getId() == null) {
-            throw new IllegalArgumentException("责任组织不能为空");
-        }
-        if (targetOrg == null || targetOrg.getId() == null) {
-            throw new IllegalArgumentException("目标组织不能为空");
-        }
+        // 2026-11-05（MA4）：归属/目标组织的空值校验已前移到方法入口（守卫之前），此处不再重复。
 
         Plan downstreamPlan = findOrCreatePlan(
                 cycleId,

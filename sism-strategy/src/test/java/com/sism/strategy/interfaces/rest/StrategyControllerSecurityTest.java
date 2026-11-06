@@ -31,15 +31,18 @@ class StrategyControllerSecurityTest {
 
     @Test
     void indicatorControllerMutatingEndpointsShouldRequireRoleChecks() throws Exception {
-        assertPreAuthorize(IndicatorController.class, "updateIndicator", Long.class, IndicatorController.UpdateIndicatorRequest.class);
+        // 2026-11-05（R6-R9）：这些写入口新增了 @AuthenticationPrincipal CurrentUser 参数
+        // （组织维度授权判定需要操作者所属组织），反射签名同步更新。
+        assertPreAuthorize(IndicatorController.class, "updateIndicator", Long.class, IndicatorController.UpdateIndicatorRequest.class, com.sism.shared.application.dto.CurrentUser.class);
         assertPreAuthorize(IndicatorController.class, "submitForReview", Long.class);
         assertPreAuthorize(IndicatorController.class, "submitForReviewAlias", Long.class);
         assertPreAuthorize(IndicatorController.class, "approveIndicator", Long.class);
         assertPreAuthorize(IndicatorController.class, "approveIndicatorAlias", Long.class);
         assertPreAuthorize(IndicatorController.class, "rejectIndicator", Long.class, IndicatorController.RejectRequest.class);
         assertPreAuthorize(IndicatorController.class, "rejectIndicatorAlias", Long.class, IndicatorController.RejectRequest.class);
-        assertPreAuthorize(IndicatorController.class, "withdrawIndicator", Long.class, IndicatorController.WithdrawRequest.class);
-        assertPreAuthorize(IndicatorController.class, "batchWithdrawIndicators", IndicatorController.BatchWithdrawRequest.class);
+        assertPreAuthorize(IndicatorController.class, "withdrawIndicator", Long.class, IndicatorController.WithdrawRequest.class, com.sism.shared.application.dto.CurrentUser.class);
+        assertPreAuthorize(IndicatorController.class, "batchWithdrawIndicators", IndicatorController.BatchWithdrawRequest.class, com.sism.shared.application.dto.CurrentUser.class);
+        assertPreAuthorize(IndicatorController.class, "distributeIndicator", Long.class, Long.class, String.class, IndicatorController.DistributeIndicatorRequest.class, com.sism.shared.application.dto.CurrentUser.class);
         assertPreAuthorize(IndicatorController.class, "breakdownIndicator", Long.class);
         assertPreAuthorize(IndicatorController.class, "activateIndicator", Long.class);
         assertPreAuthorize(IndicatorController.class, "terminateIndicator", Long.class, IndicatorController.TerminateRequest.class);

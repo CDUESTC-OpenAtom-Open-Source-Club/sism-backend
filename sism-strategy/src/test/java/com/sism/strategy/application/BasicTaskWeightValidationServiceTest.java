@@ -218,6 +218,86 @@ class BasicTaskWeightValidationServiceTest {
         org.junit.jupiter.api.Assertions.assertEquals("当前计划不存在基础性任务，不能下发", error.getMessage());
     }
 
+    // ============ 2026-11-05（学院指标直发改造）：合计范围不再依赖「归属组织 == 计划创建组织」 ============
+    // 改造后 FUNC_TO_COLLEGE 计划的创建组织恒为战略部（35），子指标的归属组织也是战略部，
+    // 旧口径「owner == created_by」的筛选条件语义漂移后要么恒成立、要么恒不成立，
+    // 锁不住新语义——这里显式覆盖「owner = created_by」与「owner ≠ created_by」两种情形。
+
+    @Test
+    @DisplayName("2026-11-05：计划创建组织=35、子指标归属组织=35、合计 100 → 通过")
+    void shouldPassWhenStrategyOwnedCollegeChildrenSumToHundred() {
+        Plan plan = Plan.create(4L, 55L, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(403700L);
+
+        Indicator childA = buildChildIndicator(2101L, 41101L, 35L, 55L, BigDecimal.valueOf(60));
+        Indicator childB = buildChildIndicator(2102L, 41101L, 35L, 55L, BigDecimal.valueOf(40));
+
+        when(planRepository.findById(403700L)).thenReturn(java.util.Optional.of(plan));
+        when(jdbcTemplate.queryForList(
+                org.mockito.ArgumentMatchers.contains("t.task_type = 'BASIC'"),
+                org.mockito.ArgumentMatchers.eq(Long.class),
+                org.mockito.ArgumentMatchers.eq(403700L)))
+                .thenReturn(List.of(41101L));
+        when(indicatorRepository.findByTaskIds(List.of(41101L))).thenReturn(List.of(childA, childB));
+
+        assertDoesNotThrow(() -> service.validatePlanBasicWeight(403700L, 55L));
+        verify(indicatorRepository).findByTaskIds(List.of(41101L));
+    }
+
+    @Test
+    @DisplayName("2026-11-05：子指标归属组织 ≠ 计划创建组织时合计口径不变（owner 不再是筛选条件）")
+    void shouldNotFilterByOwnerOrgWhenOwnerDiffersFromPlanCreator() {
+        Plan plan = Plan.create(4L, 55L, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(403701L);
+
+        // 归属组织 = 36（≠ 计划创建组织 35），目标仍是学院 55，合计 100
+        Indicator childA = buildChildIndicator(2103L, 41102L, 36L, 55L, BigDecimal.valueOf(70));
+        Indicator childB = buildChildIndicator(2104L, 41102L, 36L, 55L, BigDecimal.valueOf(30));
+
+        when(planRepository.findById(403701L)).thenReturn(java.util.Optional.of(plan));
+        when(jdbcTemplate.queryForList(
+                org.mockito.ArgumentMatchers.contains("t.task_type = 'BASIC'"),
+                org.mockito.ArgumentMatchers.eq(Long.class),
+                org.mockito.ArgumentMatchers.eq(403701L)))
+                .thenReturn(List.of(41102L));
+        when(indicatorRepository.findByTaskIds(List.of(41102L))).thenReturn(List.of(childA, childB));
+
+        // 新口径：合计范围 = 本计划 BASIC 任务 + 子指标 + 目标为该学院，与归属组织无关 → 仍然通过
+        assertDoesNotThrow(() -> service.validatePlanBasicWeight(403701L, 55L));
+    }
+
+    @Test
+    @DisplayName("2026-11-05：子指标归属组织 ≠ 计划创建组织时，合计不足 100 仍要被拦（合计校验不因 owner 放宽）")
+    void shouldStillRejectWhenOwnerDiffersFromPlanCreatorAndSumIsNotHundred() {
+        Plan plan = Plan.create(4L, 55L, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(403702L);
+
+        Indicator childA = buildChildIndicator(2105L, 41103L, 36L, 55L, BigDecimal.valueOf(40));
+        Indicator childB = buildChildIndicator(2106L, 41103L, 36L, 55L, BigDecimal.valueOf(30));
+
+        when(planRepository.findById(403702L)).thenReturn(java.util.Optional.of(plan));
+        when(jdbcTemplate.queryForList(
+                org.mockito.ArgumentMatchers.contains("t.task_type = 'BASIC'"),
+                org.mockito.ArgumentMatchers.eq(Long.class),
+                org.mockito.ArgumentMatchers.eq(403702L)))
+                .thenReturn(List.of(41103L));
+        when(indicatorRepository.findByTaskIds(List.of(41103L))).thenReturn(List.of(childA, childB));
+        // 点名父级的补充查询（找不到可点名父级时回退原有文案）
+        when(jdbcTemplate.queryForList(
+                org.mockito.ArgumentMatchers.contains("SELECT t.task_id, t.task_type"),
+                org.mockito.ArgumentMatchers.eq(403702L)))
+                .thenReturn(List.of(java.util.Map.of("task_id", 41103L, "task_type", "BASIC")));
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> service.validatePlanBasicWeight(403702L, 55L)
+        );
+
+        org.junit.jupiter.api.Assertions.assertTrue(
+                error.getMessage().contains("学院指标权重合计必须为100"),
+                "合计不足 100 时应被拦: " + error.getMessage());
+    }
+
     private Indicator buildIndicator(Long id, Long taskId, Long targetOrgId, BigDecimal weight) {
         SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
         SysOrg targetOrg = SysOrg.create("实验室建设管理处", OrgType.admin);

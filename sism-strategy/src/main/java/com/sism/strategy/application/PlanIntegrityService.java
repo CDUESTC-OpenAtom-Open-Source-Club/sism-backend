@@ -70,7 +70,7 @@ public class PlanIntegrityService {
 
             for (Cycle cycle : cycles) {
                 ensureStrategyToFunctionalPlans(cycle, functionalOrgs);
-                ensureFunctionalToCollegePlans(cycle, functionalOrgs, academicOrgs);
+                ensureFunctionalToCollegePlans(cycle, academicOrgs);
             }
 
             markEnsureCompletedAfterCommit();
@@ -116,17 +116,24 @@ public class PlanIntegrityService {
         }
     }
 
-    private void ensureFunctionalToCollegePlans(Cycle cycle, List<SysOrg> functionalOrgs, List<SysOrg> academicOrgs) {
+    /**
+     * 2026-11-05（学院指标直发改造）：学院下发计划的创建组织改为战略发展部。
+     *
+     * <p>原口径是「职能部门 × 学院」的笛卡尔积——那正是旧链路（职能部门向学院分发）的计划容器。
+     * 链路取消后这批计划不再有内容，且会让「按创建组织找计划」的查询落到错误的计划上
+     * （例如学院下发查不到自己那条计划）。改为「战略部 × 学院」，与导入/下发口径一致。
+     *
+     * <p>存量 FUNC_TO_COLLEGE 计划不做数据迁移，保留为只读历史。
+     */
+    private void ensureFunctionalToCollegePlans(Cycle cycle, List<SysOrg> academicOrgs) {
         synchronized (FUNC_TO_COLLEGE_LOCK) {
-            for (SysOrg functionalOrg : functionalOrgs) {
-                for (SysOrg academicOrg : academicOrgs) {
-                    ensurePlanExists(
-                            cycle.getId(),
-                            PlanLevel.FUNC_TO_COLLEGE,
-                            functionalOrg.getId(),
-                            academicOrg.getId()
-                    );
-                }
+            for (SysOrg academicOrg : academicOrgs) {
+                ensurePlanExists(
+                        cycle.getId(),
+                        PlanLevel.FUNC_TO_COLLEGE,
+                        strategyOrgProperties.resolveStrategyOrgId(),
+                        academicOrg.getId()
+                );
             }
         }
     }

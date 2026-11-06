@@ -73,8 +73,10 @@ class StrategyApplicationServiceTest {
     void shouldKeepProvidedTaskIdWhenCreatingIndicator() {
         StrategyApplicationService service = createService();
 
-        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
-        ownerOrg.setId(41L);
+        // 2026-11-05（学院指标直发改造）：学院子指标的归属组织改为战略发展部（admin），
+        // 「职能部门 → 学院」已被拒绝，测试口径同步到新语义。
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(61L);
 
@@ -102,20 +104,57 @@ class StrategyApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("2026-11-05（学院指标直发改造）：职能部门 → 学院的指标创建必须被拒绝")
+    void shouldRejectFunctionalDeptIndicatorCreationToCollege() {
+        StrategyApplicationService service = createService();
+
+        SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
+        functionalOrg.setId(44L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(57L);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.createIndicator(
+                        "学院子指标",
+                        functionalOrg,
+                        collegeOrg,
+                        41022L,
+                        null,
+                        "定量",
+                        BigDecimal.valueOf(50),
+                        1,
+                        "备注",
+                        0
+                )
+        );
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("Should not remap task id or create plan task during distribution")
     void shouldNotRemapTaskIdOrCreatePlanTaskDuringDistribution() {
         StrategyApplicationService service = createService();
 
-        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
-        ownerOrg.setId(41L);
-        SysOrg sourceTargetOrg = SysOrg.create("发展规划处", OrgType.functional);
-        sourceTargetOrg.setId(41L);
+        // 2026-11-05（学院指标直发改造）：归属组织改为战略发展部（admin）
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
+        SysOrg sourceTargetOrg = SysOrg.create("教务处", OrgType.functional);
+        sourceTargetOrg.setId(44L);
         SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
         collegeOrg.setId(61L);
 
-        Indicator indicator = Indicator.create("待下发指标", ownerOrg, sourceTargetOrg, "定量");
+        // 2026-11-05（R7）：被分发的指标必须是**有父级**的学院子指标。
+        // 原用例用「无父级的核心指标」触发分发，而 R7 起核心指标不得直接改投到学院
+        // （否则会得到一条 parent 为空的学院指标，破坏「子指标必须 parent=核心指标」
+        // 与权重合计口径）。本用例的主题是「分发时不重映射 taskId」，
+        // 故把被分发对象换成结构合法的学院子指标，测试意图保持不变。
+        Indicator indicator = Indicator.create("待下发指标", ownerOrg, collegeOrg, "定量");
         indicator.setId(301L);
         indicator.setTaskId(902L);
+        indicator.setParentIndicatorId(201L);
 
         StrategicTask sourceTask = createTask(902L, 7001L, sourceTargetOrg, ownerOrg);
 
@@ -134,6 +173,112 @@ class StrategyApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("2026-11-05（R7）：战略部的核心指标不得直接改投到二级学院")
+    void shouldRejectCoreIndicatorRedistributionToCollege() {
+        StrategyApplicationService service = createService();
+
+        SysOrg strategyOrg = SysOrg.create("战略发展部", OrgType.admin);
+        strategyOrg.setId(35L);
+        SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
+        functionalOrg.setId(44L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(61L);
+
+        // 核心指标：无父级、目标是职能部门
+        Indicator coreIndicator = Indicator.create("核心指标", strategyOrg, functionalOrg, "定量");
+        coreIndicator.setId(303L);
+        coreIndicator.setTaskId(903L);
+
+        when(indicatorRepository.findById(303L)).thenReturn(Optional.of(coreIndicator));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.distributeIndicator(303L, collegeOrg, null)
+        );
+
+        assertTrue(error.getMessage().contains("核心指标不能直接改投到二级学院"));
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（学院指标直发改造）：把职能部门指标改投到学院必须被拒绝")
+    void shouldRejectFunctionalDeptIndicatorRedistributionToCollege() {
+        StrategyApplicationService service = createService();
+
+        SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
+        functionalOrg.setId(44L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(57L);
+
+        Indicator indicator = Indicator.create("待下发指标", functionalOrg, functionalOrg, "定量");
+        indicator.setId(302L);
+        indicator.setTaskId(902L);
+
+        when(indicatorRepository.findById(302L)).thenReturn(Optional.of(indicator));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.distributeIndicator(302L, collegeOrg, null)
+        );
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（BL2）：不传目标组织时按指标自身目标判定（存量职能部门→学院指标必须被拒）")
+    void shouldRejectDistributionToCollegeWhenTargetOrgNotProvided() {
+        StrategyApplicationService service = createService();
+
+        SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
+        functionalOrg.setId(44L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(57L);
+
+        // 存量「职能部门 → 学院」指标：归属职能部门、目标学院
+        Indicator indicator = Indicator.create("存量学院子指标", functionalOrg, collegeOrg, "定量");
+        indicator.setId(303L);
+        indicator.setTaskId(902L);
+
+        when(indicatorRepository.findById(303L)).thenReturn(Optional.of(indicator));
+
+        // distributeIndicator(id) 重载：入参 targetOrg = null，生效目标回落到 indicator.getTargetOrg()
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.distributeIndicator(303L)
+        );
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（MA4）：指标归属组织缺失时拒绝下发（缺失即拒绝，不静默放行）")
+    void shouldRejectDistributionWhenOwnerOrgMissing() {
+        StrategyApplicationService service = createService();
+
+        SysOrg strategyOrg = SysOrg.create("战略发展部", OrgType.admin);
+        strategyOrg.setId(35L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(58L);
+
+        Indicator indicator = Indicator.create("归属缺失指标", strategyOrg, collegeOrg, "定量");
+        indicator.setId(304L);
+        indicator.setTaskId(902L);
+        indicator.setOwnerOrg(null);
+
+        when(indicatorRepository.findById(304L)).thenReturn(Optional.of(indicator));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.distributeIndicator(304L, collegeOrg, null)
+        );
+
+        assertTrue(error.getMessage().contains("归属组织缺失"));
+        verify(indicatorRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("Should throw when indicator is missing instead of returning null")
     void shouldThrowWhenIndicatorMissing() {
         StrategyApplicationService service = createService();
@@ -148,8 +293,9 @@ class StrategyApplicationServiceTest {
     void shouldAllowCreatingIndicatorWhenTaskPlanDistributed() {
         StrategyApplicationService service = createService();
 
-        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
-        ownerOrg.setId(41L);
+        // 2026-11-05（学院指标直发改造）：归属组织改为战略发展部（admin）
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(61L);
         when(indicatorRepository.save(any(Indicator.class)))
@@ -178,8 +324,10 @@ class StrategyApplicationServiceTest {
     void shouldCreateChildIndicatorInDownstreamDraftPlanWhenParentTaskPlanDistributed() {
         StrategyApplicationService service = createService();
 
-        SysOrg ownerOrg = SysOrg.create("党委学工部", OrgType.functional);
-        ownerOrg.setId(41L);
+        // 2026-11-05（学院指标直发改造）：学院子指标的归属组织是战略发展部（admin），
+        // 父级核心指标 = 战略部下发给职能部门的核心指标（归属战略部、目标职能部门）。
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
         SysOrg functionalOrg = SysOrg.create("党委学工部", OrgType.functional);
         functionalOrg.setId(41L);
         SysOrg collegeOrg = SysOrg.create("马克思主义学院", OrgType.academic);
@@ -197,7 +345,7 @@ class StrategyApplicationServiceTest {
         when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
                 2026L,
                 PlanLevel.FUNC_TO_COLLEGE,
-                41L,
+                35L,
                 61L
         )).thenReturn(Optional.empty());
         when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
@@ -240,26 +388,30 @@ class StrategyApplicationServiceTest {
     void shouldCreateChildIndicatorInDownstreamPlanWhenParentTaskPlanIsUpstreamDraft() {
         StrategyApplicationService service = createService();
 
+        // 2026-11-05（学院指标直发改造）：归属组织是战略发展部（admin），
+        // 父级核心指标是战略部下发给职能部门（教务处）的那一批。
+        SysOrg strategyOrg = SysOrg.create("战略发展部", OrgType.admin);
+        strategyOrg.setId(35L);
         SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
         functionalOrg.setId(44L);
         SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
         collegeOrg.setId(57L);
 
         // 父任务属于上游"战略部→职能部门"计划，且该计划仍是草稿（未下发）
-        StrategicTask upstreamTask = createTask(41022L, 4044L, functionalOrg, functionalOrg);
+        StrategicTask upstreamTask = createTask(41022L, 4044L, functionalOrg, strategyOrg);
         Plan upstreamDraftPlan = createPlan(4044L, PlanStatus.DRAFT, PlanLevel.STRAT_TO_FUNC, 44L, 35L);
-        Indicator parentIndicator = Indicator.create("牵头组织全国大学生学科竞赛报名及指导", functionalOrg, functionalOrg, "定量");
+        Indicator parentIndicator = Indicator.create("牵头组织全国大学生学科竞赛报名及指导", strategyOrg, functionalOrg, "定量");
         parentIndicator.setId(2042L);
         parentIndicator.setTaskId(41022L);
 
         when(indicatorRepository.findById(2042L)).thenReturn(Optional.of(parentIndicator));
         when(taskRepository.findById(41022L)).thenReturn(Optional.of(upstreamTask));
         when(planRepository.findById(4044L)).thenReturn(Optional.of(upstreamDraftPlan));
-        // 下游"职能部门→学院"计划尚不存在，应被创建
+        // 下游"战略部→学院"计划尚不存在，应被创建
         when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
                 2026L,
                 PlanLevel.FUNC_TO_COLLEGE,
-                44L,
+                35L,
                 57L
         )).thenReturn(Optional.empty());
         when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
@@ -278,14 +430,14 @@ class StrategyApplicationServiceTest {
 
         service.createIndicator(
                 "组织计算机学院学生参加全国大学生学科竞赛报名及指导工作",
-                functionalOrg,
+                strategyOrg,
                 collegeOrg,
                 41022L,
                 2042L,
                 "定量",
                 BigDecimal.valueOf(100),
                 0,
-                "教务处下发复测",
+                "战略部下发至学院",
                 0
         );
 
@@ -302,15 +454,16 @@ class StrategyApplicationServiceTest {
     void shouldReuseTaskIdWhenTaskAlreadyBelongsToDownstreamPlan() {
         StrategyApplicationService service = createService();
 
-        SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
-        functionalOrg.setId(44L);
+        // 2026-11-05（学院指标直发改造）：下游计划的创建组织是战略发展部（35）
+        SysOrg strategyOrg = SysOrg.create("战略发展部", OrgType.admin);
+        strategyOrg.setId(35L);
         SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
         collegeOrg.setId(57L);
 
         // 请求的 task 已属于下游计划（同 FUNC_TO_COLLEGE 计划），且该计划未下发 -> 沿用
-        StrategicTask downstreamTask = createTask(41023L, 404457L, collegeOrg, functionalOrg);
-        Plan downstreamPlan = createPlan(404457L, PlanStatus.DRAFT, PlanLevel.FUNC_TO_COLLEGE, 57L, 44L);
-        Indicator parentIndicator = Indicator.create("父级核心指标", functionalOrg, functionalOrg, "定量");
+        StrategicTask downstreamTask = createTask(41023L, 404457L, collegeOrg, strategyOrg);
+        Plan downstreamPlan = createPlan(404457L, PlanStatus.DRAFT, PlanLevel.FUNC_TO_COLLEGE, 57L, 35L);
+        Indicator parentIndicator = Indicator.create("父级核心指标", strategyOrg, strategyOrg, "定量");
         parentIndicator.setId(2042L);
         parentIndicator.setTaskId(41023L);
 
@@ -322,7 +475,7 @@ class StrategyApplicationServiceTest {
 
         service.createIndicator(
                 "学院子指标",
-                functionalOrg,
+                strategyOrg,
                 collegeOrg,
                 41023L,
                 2042L,
@@ -346,8 +499,9 @@ class StrategyApplicationServiceTest {
     void shouldAllowUpdatingIndicatorWhenCurrentTaskPlanDistributed() {
         StrategyApplicationService service = createService();
 
-        SysOrg ownerOrg = SysOrg.create("发展规划处", OrgType.functional);
-        ownerOrg.setId(41L);
+        // 2026-11-05（学院指标直发改造）：归属组织改为战略发展部（admin）
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(61L);
         Indicator indicator = Indicator.create("既有指标", ownerOrg, targetOrg, "定量");
@@ -600,8 +754,9 @@ class StrategyApplicationServiceTest {
     void shouldBlockIndicatorCreationWhenDistributedPlanWeightNotHundred() {
         StrategyApplicationService service = createService();
 
-        SysOrg ownerOrg = SysOrg.create("纪委办公室", OrgType.functional);
-        ownerOrg.setId(37L);
+        // 2026-11-05（学院指标直发改造）：归属组织改为战略发展部（admin）
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(57L);
 
@@ -643,8 +798,9 @@ class StrategyApplicationServiceTest {
     void shouldAllowIntermediateWeightWhenPlanDraft() {
         StrategyApplicationService service = createService();
 
-        SysOrg ownerOrg = SysOrg.create("纪委办公室", OrgType.functional);
-        ownerOrg.setId(37L);
+        // 2026-11-05（学院指标直发改造）：归属组织改为战略发展部（admin）
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
         SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
         targetOrg.setId(57L);
 
