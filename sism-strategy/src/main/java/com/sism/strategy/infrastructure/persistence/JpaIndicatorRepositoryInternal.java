@@ -160,10 +160,10 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
      * 指标表本身不带 cycle，必须经任务与计划关联才能按周期收敛——否则历年同名核心指标会互相串号。
      */
     @Query(value = """
-            SELECT i.* FROM indicator i
-            INNER JOIN sys_task t ON i.task_id = t.task_id
-            INNER JOIN plan p ON t.plan_id = p.id
-            INNER JOIN sys_org o ON o.id = i.target_org_id
+            SELECT i.* FROM public.indicator i
+            INNER JOIN public.sys_task t ON i.task_id = t.task_id
+            INNER JOIN public.plan p ON t.plan_id = p.id
+            INNER JOIN public.sys_org o ON o.id = i.target_org_id
             WHERE i.owner_org_id = :ownerOrgId
               AND i.parent_indicator_id IS NULL
               AND COALESCE(i.is_deleted, false) = false
@@ -171,6 +171,7 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
               AND COALESCE(p.is_deleted, false) = false
               AND p.cycle_id = :cycleId
               AND o.type = 'functional'
+              AND COALESCE(o.is_deleted, false) = false
             ORDER BY i.id
             """, nativeQuery = true)
     List<Indicator> findCoreDispatchAnchors(@Param("ownerOrgId") Long ownerOrgId,

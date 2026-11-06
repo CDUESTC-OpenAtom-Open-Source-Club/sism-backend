@@ -131,7 +131,7 @@ public class PlanIntegrityService {
                 ensurePlanExists(
                         cycle.getId(),
                         PlanLevel.FUNC_TO_COLLEGE,
-                        strategyOrgProperties.getSystemAdminOrgId(),
+                        strategyOrgProperties.resolveStrategyOrgId(),
                         academicOrg.getId()
                 );
             }

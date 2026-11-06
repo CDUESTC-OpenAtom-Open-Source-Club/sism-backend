@@ -257,6 +257,20 @@ public class StrategyApplicationService {
         SysOrg effectiveTargetOrg = targetOrg != null ? targetOrg : indicator.getTargetOrg();
         assertDispatchScopeAllowed(indicator.getOwnerOrg(), effectiveTargetOrg);
 
+        // 2026-11-05（R7）：禁止把「战略部下发的核心指标」本身改投到学院。
+        //
+        // 核心指标是「战略部下发给职能部门」的一级指标（owner=战略部、target=职能部门、
+        // 无父级）。把它直接搬到学院名下，会得到一条 parent 为空的学院指标，
+        // 破坏需求 2「学院子指标必须 parent=核心指标」的结构，也破坏权重合计口径
+        // （合计只统计有父级的子指标，搬走核心指标等于凭空少一条）。
+        // 正确做法是产生一条新子指标（owner=战略部、target=学院、parent=该核心指标）。
+        if (effectiveTargetOrg != null
+                && effectiveTargetOrg.getType() == com.sism.organization.domain.OrgType.academic
+                && indicator.getParentIndicatorId() == null) {
+            throw new IllegalArgumentException(
+                    "核心指标不能直接改投到二级学院，请基于该核心指标新增学院子指标");
+        }
+
         Long resolvedTargetOrgId = targetOrg != null
                 ? targetOrg.getId()
                 : indicator.getTargetOrg() != null ? indicator.getTargetOrg().getId() : null;

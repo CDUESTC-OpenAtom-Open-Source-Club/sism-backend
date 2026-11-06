@@ -146,9 +146,15 @@ class StrategyApplicationServiceTest {
         SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
         collegeOrg.setId(61L);
 
-        Indicator indicator = Indicator.create("待下发指标", ownerOrg, sourceTargetOrg, "定量");
+        // 2026-11-05（R7）：被分发的指标必须是**有父级**的学院子指标。
+        // 原用例用「无父级的核心指标」触发分发，而 R7 起核心指标不得直接改投到学院
+        // （否则会得到一条 parent 为空的学院指标，破坏「子指标必须 parent=核心指标」
+        // 与权重合计口径）。本用例的主题是「分发时不重映射 taskId」，
+        // 故把被分发对象换成结构合法的学院子指标，测试意图保持不变。
+        Indicator indicator = Indicator.create("待下发指标", ownerOrg, collegeOrg, "定量");
         indicator.setId(301L);
         indicator.setTaskId(902L);
+        indicator.setParentIndicatorId(201L);
 
         StrategicTask sourceTask = createTask(902L, 7001L, sourceTargetOrg, ownerOrg);
 
@@ -164,6 +170,34 @@ class StrategyApplicationServiceTest {
         assertEquals(902L, indicatorCaptor.getValue().getTaskId());
         verify(taskRepository, never()).findByPlanId(any());
         verify(taskRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（R7）：战略部的核心指标不得直接改投到二级学院")
+    void shouldRejectCoreIndicatorRedistributionToCollege() {
+        StrategyApplicationService service = createService();
+
+        SysOrg strategyOrg = SysOrg.create("战略发展部", OrgType.admin);
+        strategyOrg.setId(35L);
+        SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
+        functionalOrg.setId(44L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(61L);
+
+        // 核心指标：无父级、目标是职能部门
+        Indicator coreIndicator = Indicator.create("核心指标", strategyOrg, functionalOrg, "定量");
+        coreIndicator.setId(303L);
+        coreIndicator.setTaskId(903L);
+
+        when(indicatorRepository.findById(303L)).thenReturn(Optional.of(coreIndicator));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.distributeIndicator(303L, collegeOrg, null)
+        );
+
+        assertTrue(error.getMessage().contains("核心指标不能直接改投到二级学院"));
+        verify(indicatorRepository, never()).save(any());
     }
 
     @Test

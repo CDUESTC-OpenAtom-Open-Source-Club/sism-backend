@@ -148,6 +148,22 @@ public class BusinessImportApplicationService {
             throw new IllegalArgumentException("指标下发导入目标必须是学院");
         }
 
+        // 2026-11-05（R10）：本周期该学院若已存在「职能部门创建的」存量下发计划，
+        // 必须直接拒绝 —— 需求 4 定的是「存量保留为只读历史、禁止再次下发」。
+        //
+        // 为什么不等到 commit 阶段再拦：findPlanForImportContext 对学院导入固定用
+        // 战略部 org 去查计划（「已下发不可再导入」的判定键），存量计划的 created_by 是职能部门，
+        // 永远查不中 → 该拦截对存量完全失效；enrichDistributionRows 的「同名即更新」也只在
+        // 新计划下匹配，存量同名子指标会被当成新指标**再创建一条生效的**，
+        // 结果同一学院同一周期出现两套生效的学院子指标（口径分裂、权重合计失真）。
+        // 所以在预览入口就挡住，并明确提示历史来源。
+        Plan legacyPlan = findLegacyDistributionPlan(cycleId, targetOrg.getId());
+        if (legacyPlan != null) {
+            throw new IllegalArgumentException(
+                    "该学院本周期已存在历史下发计划（来源：职能部门），按只读历史保留，不能再通过导入下发；"
+                            + "如需调整请走异动审批");
+        }
+
         ParsedWorkbook parsed = parser.parse(file, ImportType.DISTRIBUTION, sheetName);
         List<ImportRowPreview> rows = enrichDistributionRows(parsed.rows(), cycleId, sourceOrg, targetOrg);
         // 2026-11-05：来源组织一律记为战略发展部，避免批次上下文里残留职能部门来源
@@ -303,6 +319,29 @@ public class BusinessImportApplicationService {
         } catch (IllegalStateException ex) {
             throw new ImportCommitBlockedException(ex.getMessage(), ex);
         }
+    }
+
+    /**
+     * 查找本周期该学院的<b>存量</b>学院下发计划（创建方不是战略发展部的那条链路）。
+     *
+     * 2026-11-05（R10）：改造前学院下发计划的创建方是职能部门，改造后固定为战略发展部。
+     * 存量计划仍留在库里（需求 4：保留为只读历史），但它与新链路并存会让
+     * 「已下发不可再导入」的判定失效、同名子指标被重复创建。
+     * 故在导入预览入口显式检出并拒绝（见 previewDistribution）。
+     *
+     * @return 存量计划；不存在则返回 null
+     */
+    private Plan findLegacyDistributionPlan(Long cycleId, Long targetCollegeOrgId) {
+        if (cycleId == null || targetCollegeOrgId == null) {
+            return null;
+        }
+        Long strategyOrgId = strategyOrgId();
+        return planRepository.findByCycleId(cycleId).stream()
+                .filter(plan -> plan.getPlanLevel() == PlanLevel.FUNC_TO_COLLEGE)
+                .filter(plan -> targetCollegeOrgId.equals(plan.getTargetOrgId()))
+                .filter(plan -> !Objects.equals(plan.getCreatedByOrgId(), strategyOrgId))
+                .findFirst()
+                .orElse(null);
     }
 
     private Optional<Plan> findPlanForImportContext(PreviewContext context) {
