@@ -60,11 +60,8 @@ public class ExcelBusinessImportParser {
 
     private static final Map<String, List<String>> DISTRIBUTION_ALIASES = Map.ofEntries(
             Map.entry("college", List.of("学院", "下级部门", "责任学院")),
-            // 2026-10-31 终版表头加列（学院模板）：「任务类型」=父级核心指标所属任务的类型
-            // （基础性/发展性），系统预填、随组合并、组内继承；锚点级只读校验——与系统父级所属
-            // 任务类型不一致→阻断点名（BusinessImportApplicationService.applyDistributionAnchor）。
-            // 该列为系统预填信息，不新增落库字段：子指标任务类别仍由父级继承链决定；
-            // 「任务类别」别名兼容。旧导出表无该列时取空串，锚点校验自动跳过（回导兼容）。
+            // 2026-10-31 终版表头加列（学院模板）：「任务类型」当时是父级核心指标所属任务的类型
+            // （基础性/发展性），系统预填、随组合并、组内继承，锚点级只读校验。
             //
             // 2026-11-08（学院指标单层口径）：学院指标没有父级，这一列的语义改为
             // **战略部在导入时直接指定的学院任务类型**（基础性/发展性），落库时决定

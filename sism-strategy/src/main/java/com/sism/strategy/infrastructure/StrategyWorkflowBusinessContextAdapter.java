@@ -33,20 +33,48 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
     }
 
     /**
-     * 2026-11-08（学院指标单层口径）：该计划对应的「归口职能部门」。
+     * 2026-11-08（学院指标单层口径）：该业务实体对应的「归口职能部门」。
      *
-     * <p>只对计划实体生效（学院上报链的席位解析用）；非计划实体、未配置归口部门
-     * （存量数据）一律返回 empty，调用方回退到 created_by_org_id 的原口径。
+     * <p><b>为什么必须同时支持 PLAN 和 PLAN_REPORT</b>：学院上报链的审批实例
+     * entityType 是 {@code PLAN_REPORT}、entityId 是 reportId（见 ReportWorkflowEventListener）；
+     * 只认 PLAN 会让真实链路上永远读不到归口部门，席位继续回退到战略部（35），
+     * 而战略部没有 role2 账号 → 第 3 环直接抛 No available approver candidates。
+     * 这是本方法第一版的真实缺陷，必须先把报告映射回计划再查。
+     *
+     * <p>未配置归口部门（存量数据）→ empty，调用方回退 created_by_org_id 原口径。
      */
     @Override
     public Optional<Long> findFunctionalOrgIdByEntity(String entityType, Long entityId) {
-        if (!"PLAN".equalsIgnoreCase(entityType) || entityId == null) {
+        Long planId = resolvePlanIdForContext(entityType, entityId);
+        if (planId == null) {
             return Optional.empty();
         }
         return jdbcTemplate.query(
                 "SELECT functional_org_id FROM public.plan WHERE id = ? AND functional_org_id IS NOT NULL",
                 (rs, rowNum) -> rs.getLong("functional_org_id"),
-                entityId).stream().findFirst();
+                planId).stream().findFirst();
+    }
+
+    /**
+     * 把审批实例的业务实体映射到计划 id。
+     *
+     * <p>PLAN → 自身；PLAN_REPORT → 报告的 plan_id；其它 → 无法映射（异动链用指标，
+     * 不需要归口部门，走默认 empty）。
+     */
+    private Long resolvePlanIdForContext(String entityType, Long entityId) {
+        if (entityId == null) {
+            return null;
+        }
+        if ("PLAN".equalsIgnoreCase(entityType)) {
+            return entityId;
+        }
+        if ("PLAN_REPORT".equalsIgnoreCase(entityType)) {
+            return jdbcTemplate.query(
+                    "SELECT plan_id FROM public.plan_report WHERE id = ?",
+                    (rs, rowNum) -> rs.getLong("plan_id"),
+                    entityId).stream().findFirst().orElse(null);
+        }
+        return null;
     }
 
     @Override
