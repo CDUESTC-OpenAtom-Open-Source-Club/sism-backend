@@ -239,6 +239,28 @@ public class PlanApplicationService {
     public PlanResponse updatePlan(Long id, UpdatePlanRequest request) {
         Plan plan = requirePlan(id);
 
+        // 2026-11-05（审查 major #3）：学院下发计划的「创建方」与「目标」不可改写。
+        //
+        // 为什么必须锁：这两道闸门（assertCollegeDispatchCreatedByStrategyOrg /
+        // assertCollegeDispatchApprovalAdvanceAllowed）与导入侧的存量识别
+        // （findLegacyDistributionPlan）全都以 created_by_org_id 为唯一判据，
+        // 而该字段此前完全由请求体决定。后果双向：
+        //   ① 把存量计划改成 35 → 严格断言不再拦、R10 也不再认它是存量 →
+        //      旧链路复活，直接违反需求 4「存量计划不得被再次发起下发」；
+        //   ② 把新链路计划改成 44 → 该学院该周期的导入被永久拒绝，
+        //      提示语还写着「已存在历史下发计划」，排查会被误导。
+        // 计划的归属是历史事实，不属于可编辑字段。
+        if (plan.getPlanLevel() == PlanLevel.FUNC_TO_COLLEGE) {
+            if (request.getCreatedByOrgId() != null
+                    && !Objects.equals(request.getCreatedByOrgId(), plan.getCreatedByOrgId())) {
+                throw new IllegalArgumentException("学院下发计划的创建方不可修改");
+            }
+            if (request.getTargetOrgId() != null
+                    && !Objects.equals(request.getTargetOrgId(), plan.getTargetOrgId())) {
+                throw new IllegalArgumentException("学院下发计划的目标学院不可修改");
+            }
+        }
+
         Long nextTargetOrgId = request.getTargetOrgId() != null ? request.getTargetOrgId() : plan.getTargetOrgId();
         Long nextCreatedByOrgId = request.getCreatedByOrgId() != null ? request.getCreatedByOrgId() : plan.getCreatedByOrgId();
         assertNoActivePlanConflict(plan.getCycleId(), plan.getPlanLevel(), nextCreatedByOrgId, nextTargetOrgId, plan.getId());
@@ -390,9 +412,15 @@ public class PlanApplicationService {
     })
     public PlanResponse approvePlan(Long id) {
         Plan plan = requirePlan(id);
-        // 2026-11-05（学院指标直发改造）：approve 与 publish 同义（计划置 DISTRIBUTED + 指标同步下发），
+        // 2026-11-05（N11）：approve 与 publish 同义（计划置 DISTRIBUTED + 指标同步下发），
         // 必须走同一道「学院下发只能由战略发展部发起」的闸门，否则审批通过入口能把旧链路复活。
-        assertCollegeDispatchCreatedByStrategyOrg(plan);
+        //
+        // 但闸门分两层：这里校验的是「能否推进一个在途审批实例」——
+        // 存量「职能部门 → 学院」下发单在改造前就已提交、停在审批中，若一并拦掉，
+        // 审批人点通过就抛异常，实例永久卡在 IN_REVIEW（N11，合并阻塞项）。
+        // 该计划要真正发起一次新的下发，仍由 submit 路径的严格断言把住。
+        // REST 审批入口必须核验确有在审实例（否则该端点就是绕过审批的后门）。
+        assertCollegeDispatchApprovalAdvanceAllowed(plan, true);
 
         basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
         plan.approve();
@@ -459,7 +487,13 @@ public class PlanApplicationService {
             // （StrategyWorkflowBusinessStatusAdapter → 本方法），与 publish / approve 同义，
             // 必须走同一道闸门——否则改造前就在审批中的旧「职能部门 → 学院」下发单一旦终审通过，
             // 计划与指标仍会被置为 DISTRIBUTED，旧链路等于没取消。
-            assertCollegeDispatchCreatedByStrategyOrg(plan);
+            //
+            // 2026-11-05（N11）：闸门分两层——「发起」由 submit/publish 的严格断言把住；
+            // 这里校验的是「能否推进一个在途审批实例」。存量旧下发单在改造前已提交、停在审批中，
+            // 若一并拦掉，审批人点通过就抛异常，实例永久卡在 IN_REVIEW（待办清不掉、单据无法结案）。
+            // 本方法只被 workflow 终审回调调用（无 REST 端点），能走到这里即说明审批流程已走完，
+            // 故不再核验「在审实例」（此刻实例已是 APPROVED 终态）。
+            assertCollegeDispatchApprovalAdvanceAllowed(plan, false);
             basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
             plan.approve();
             Plan saved = planRepository.save(plan);
@@ -621,6 +655,74 @@ public class PlanApplicationService {
             throw new IllegalArgumentException(
                     "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标；该计划不能提交下发审批");
         }
+    }
+
+    /**
+     * 2026-11-05（N11）：学院下发计划的<b>审批推进</b>闸门。
+     *
+     * <p>为什么与 {@link #assertCollegeDispatchCreatedByStrategyOrg(Plan)} 分开：
+     * 那条断言管的是「<b>发起</b>一次新的下发」（publish / submit），存量旧链路的计划
+     * 必须被挡住，否则旧链路等于没取消。
+     *
+     * <p>但它不能管「<b>推进</b>一个已经在途的审批实例」：改造之前就已经提交、
+     * 停在审批中的「职能部门 → 学院」下发单（flow2），如果在这里被拦，审批人点「通过」
+     * 就会抛异常，实例永久卡在 IN_REVIEW —— 待办清不掉、单据无法结案、审计断链。
+     * 这是本次改造引入的回归（N11，合并阻塞项）。
+     *
+     * <p>口径：存量 FUNCDEPT 计划<b>只有在「已提交审批、正在审批中（PENDING）」时</b>
+     * 才允许走完最后一步，好让历史单据正常收尾；若它根本没走过审批（仍是 DRAFT），
+     * 则拒绝 —— 否则「审批通过」入口就变成了绕过审批把存量计划直接下发的后门。
+     *
+     * <p>新链路（创建方=战略发展部）一律放行，由 {@code assertCollegeDispatchCreatedByStrategyOrg}
+     * 在发起阶段把关。
+     */
+    private void assertCollegeDispatchApprovalAdvanceAllowed(Plan plan, boolean requireInReviewInstance) {
+        if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
+            return;
+        }
+        if (Objects.equals(plan.getCreatedByOrgId(), strategyOrgId())) {
+            return;
+        }
+        // 2026-11-05（审查 blocking #1）：状态判定必须走 PlanStatus.fromRaw ——
+        // 裸比较 "PENDING" 会漏掉存量在途单。库里的 plan.status 允许
+        // DRAFT/PENDING/DISTRIBUTED/IN_REVIEW/APPROVED/REJECTED/RETURNED/WITHDRAWN，
+        // 而「审批中」在库里的实际取值就是 IN_REVIEW（PENDING_APPROVAL/SUBMITTED 同理），
+        // fromRaw 会把它们统一归一为 PENDING。裸比较会让 N11 对目标数据整体无效。
+        if (PlanStatus.fromRaw(plan.getStatus()) != PlanStatus.PENDING) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标；"
+                            + "该历史计划不在审批中，不能通过审批入口下发");
+        }
+        // 2026-11-05（审查 major #2）：「状态=审批中」不等于「确有在审实例」——
+        // 审批实例被取消（adapter 无 CANCELLED 分支）或建实例失败的孤儿计划都会停在 PENDING。
+        // REST 审批入口若只看状态，就成了「绕过审批把存量计划直接下发」的后门。
+        // 因此 REST 入口必须核验确有在审实例；workflow 终审回调（markWorkflowApproved）
+        // 天然来自审批流程走完，无需再核验。
+        if (requireInReviewInstance && !hasInReviewAuditInstance(plan.getId())) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标；"
+                            + "该历史计划没有在审的审批实例，不能通过审批入口下发");
+        }
+    }
+
+    /**
+     * 该计划当前是否有在审的审批实例。
+     *
+     * <p>取「最新实例」并看其状态：撤回-重发循环下快照服务会优先绑定非终态实例，
+     * 全是终态时才会退化到旧实例 —— 因此实例被取消（终态）后这里返回 false，
+     * 正是我们想要的（「审批被取消的计划不得借审批入口下发」）。
+     */
+    private boolean hasInReviewAuditInstance(Long planId) {
+        if (planId == null) {
+            return false;
+        }
+        PlanWorkflowSnapshotQueryService.WorkflowSnapshot snapshot =
+                planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(planId);
+        if (snapshot == null || snapshot.getWorkflowStatus() == null) {
+            return false;
+        }
+        String status = snapshot.getWorkflowStatus().trim().toUpperCase(java.util.Locale.ROOT);
+        return "IN_REVIEW".equals(status) || "PENDING".equals(status);
     }
 
     /**

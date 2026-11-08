@@ -148,8 +148,13 @@ public class CollegeDispatchGuardService {
         return count == null ? 0 : count;
     }
 
-    /** 学院子指标的「自身目标组织」与「父级核心指标的目标部门」。 */
-    private record DispatchSourceCandidate(Long childTargetOrgId, Long parentTargetOrgId) {
+    /**
+     * 学院子指标的「自身目标组织」与「父级核心指标的目标部门」。
+     *
+     * <p>包级可见（非 private）：供 {@code CollegeDispatchGuardServiceTest} 直接构造测试样本，
+     * 避免为了测试把 SQL 结果集形状暴露成 public API。
+     */
+    record DispatchSourceCandidate(Long childTargetOrgId, Long parentTargetOrgId) {
     }
 
     /**

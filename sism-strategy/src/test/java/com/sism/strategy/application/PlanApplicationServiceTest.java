@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -399,7 +400,7 @@ class PlanApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("2026-11-05（BL1）：职能部门创建的 FUNC_TO_COLLEGE 计划不能被 approve 审批通过后下发")
+    @DisplayName("2026-11-05（N11 口径）：非审批中状态（DRAFT）的存量 FUNC_TO_COLLEGE 计划不能被 approve 下发")
     void shouldRejectApprovingCollegeDispatchPlanCreatedByFunctionalDept() {
         Long cycleId = 2026L;
         Long functionalDeptOrgId = 44L;
@@ -415,6 +416,163 @@ class PlanApplicationServiceTest {
         assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
         verify(planRepository, never()).save(any());
         verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（N11）：存量 FUNCDEPT 下发单若正在审批中，允许走完最后一步（不能卡死在 IN_REVIEW）")
+    void shouldAllowApprovingPendingLegacyCollegeDispatchPlan() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9111L);
+        // 改造之前就已提交、停在审批中的旧「职能部门 → 学院」下发单
+        plan.setStatus(PlanStatus.PENDING.value());
+
+        when(planRepository.findById(9111L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9111L))
+                .thenReturn(inReviewSnapshot());
+
+        PlanResponse response = service.approvePlan(9111L);
+
+        assertNotNull(response);
+        // 2026-11-05（审查 minor #5）：断言最终状态真的落到 DISTRIBUTED
+        assertEquals(PlanStatus.DISTRIBUTED.value(), plan.getStatus());
+        verify(planRepository).save(any(Plan.class));
+    }
+
+    @Test
+    @DisplayName("2026-11-05（N11）：workflow 终审回调同样允许存量在途下发单结案")
+    void shouldAllowWorkflowApprovalForPendingLegacyCollegeDispatchPlan() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9112L);
+        plan.setStatus(PlanStatus.PENDING.value());
+
+        when(planRepository.findById(9112L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertDoesNotThrow(() -> service.markWorkflowApproved(9112L));
+
+        // 2026-11-05（审查 minor #5）：断言最终状态真的落到 DISTRIBUTED
+        assertEquals(PlanStatus.DISTRIBUTED.value(), plan.getStatus());
+        verify(planRepository).save(any(Plan.class));
+    }
+
+    @Test
+    @DisplayName("2026-11-05（N11）：存量计划若没走过审批（仍是 DRAFT），审批入口仍然拒绝（防后门）")
+    void shouldStillRejectLegacyCollegeDispatchPlanNotInApproval() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9113L);
+        // Plan.create 默认 DRAFT —— 没有走过审批，不能借 approve 入口直接下发
+
+        when(planRepository.findById(9113L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.approvePlan(9113L)
+        );
+
+        assertTrue(error.getMessage().contains("不在审批中"));
+        verify(planRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（审查 blocking #1）：存量在途单的状态是 IN_REVIEW，必须同样放行")
+    void shouldAllowApprovingPendingLegacyPlanWithInReviewStatus() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9114L);
+        // 库里的「审批中」实际取值就是 IN_REVIEW（裸比较 "PENDING" 会漏掉这一类）
+        plan.setStatus("IN_REVIEW");
+
+        when(planRepository.findById(9114L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9114L))
+                .thenReturn(inReviewSnapshot());
+
+        PlanResponse response = service.approvePlan(9114L);
+
+        assertNotNull(response);
+        // 2026-11-05（审查 minor #5）：断言最终状态真的落到 DISTRIBUTED，
+        // 否则「不抛异常但不真正结案」的退化实现也会让测试变绿。
+        assertEquals(PlanStatus.DISTRIBUTED.value(), plan.getStatus());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（审查 major #2）：状态在审批中但没有在审实例时，REST 审批入口仍拒绝")
+    void shouldRejectApprovingLegacyPlanWithoutInReviewInstance() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9115L);
+        plan.setStatus("IN_REVIEW");
+
+        when(planRepository.findById(9115L)).thenReturn(Optional.of(plan));
+        // 实例已被取消（终态）→ 快照里没有在审实例
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9115L))
+                .thenReturn(cancelledSnapshot());
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.approvePlan(9115L)
+        );
+
+        assertTrue(error.getMessage().contains("没有在审的审批实例"));
+        verify(planRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（审查 major #3）：学院下发计划的创建方不可被改写（否则旧链路可复活）")
+    void shouldRejectUpdatingCreatedByOrgIdOfCollegeDispatchPlan() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9116L);
+
+        UpdatePlanRequest request = new UpdatePlanRequest();
+        request.setCreatedByOrgId(35L);
+
+        when(planRepository.findById(9116L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.updatePlan(9116L, request)
+        );
+
+        assertTrue(error.getMessage().contains("创建方不可修改"));
+        verify(planRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-05（审查 minor #7）：publish 对处于审批中的存量计划仍然拦截（需求 4 的最后一道防线）")
+    void shouldRejectPublishingPendingLegacyCollegeDispatchPlan() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9117L);
+        plan.setStatus("IN_REVIEW");
+
+        when(planRepository.findById(9117L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.publishPlan(9117L)
+        );
+
+        assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"));
+        verify(planRepository, never()).save(any());
     }
 
     @Test
@@ -441,7 +599,7 @@ class PlanApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("2026-11-05（BL1 补充）：workflow 终审通过也不能把职能部门创建的 FUNC_TO_COLLEGE 计划下发")
+    @DisplayName("2026-11-05（N11 口径）：非审批中状态（DRAFT）的存量计划不能被 workflow 终审回调下发")
     void shouldRejectWorkflowApprovalForCollegeDispatchPlanCreatedByFunctionalDept() {
         Long cycleId = 2026L;
         Long functionalDeptOrgId = 44L;
@@ -1165,6 +1323,22 @@ class PlanApplicationServiceTest {
         Plan plan = Plan.create(cycleId, 35L, 35L, PlanLevel.STRATEGIC);
         plan.setId(planId);
         return plan;
+    }
+
+    /** 2026-11-05（审查 major #2）：构造「有在审实例」的审批快照。 */
+    private PlanWorkflowSnapshotQueryService.WorkflowSnapshot inReviewSnapshot() {
+        return PlanWorkflowSnapshotQueryService.WorkflowSnapshot.builder()
+                .workflowInstanceId(7001L)
+                .workflowStatus("IN_REVIEW")
+                .build();
+    }
+
+    /** 2026-11-05（审查 major #2）：构造「实例已取消（终态）」的审批快照 —— 不算在审。 */
+    private PlanWorkflowSnapshotQueryService.WorkflowSnapshot cancelledSnapshot() {
+        return PlanWorkflowSnapshotQueryService.WorkflowSnapshot.builder()
+                .workflowInstanceId(7002L)
+                .workflowStatus("CANCELLED")
+                .build();
     }
 
     private Cycle createCycle(Long cycleId, int year) {

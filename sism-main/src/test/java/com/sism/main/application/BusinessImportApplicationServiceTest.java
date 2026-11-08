@@ -1195,8 +1195,110 @@ class BusinessImportApplicationServiceTest {
         return indicator;
     }
 
+    /**
+     * 只 stub 组织查询：存量计划拦截发生在解析工作簿之前，
+     * 父级锚点与计划查询根本不会执行，stub 多了会被 Mockito 判为 UnnecessaryStubbing。
+     */
+    private void stubLegacyPlanOnly(Fixture fixture) {
+        when(organizationRepository.findById(fixture.strategyOrg().getId()))
+                .thenReturn(Optional.of(fixture.strategyOrg()));
+        when(organizationRepository.findById(fixture.college().getId()))
+                .thenReturn(Optional.of(fixture.college()));
+    }
+
     private void stubPreviewDependencies(Fixture fixture) {
         stubPreviewDependencies(fixture, fixture.parentIndicator());
+    }
+
+    // 2026-11-05（R10）：存量「职能部门创建的」学院下发计划存在时，导入必须被明确拒绝。
+    //
+    // 为什么这是阻塞级问题：findPlanForImportContext 对学院导入固定用战略部 org 去查计划
+    // （「已下发不可再导入」的判定键），存量计划的 created_by 是职能部门 → 永远查不中 →
+    // 该拦截对存量完全失效；enrichDistributionRows 的「同名即更新」也只在新计划下匹配，
+    // 存量同名子指标会被当成新指标再创建一条生效的 → 同学院同周期出现两套生效子指标
+    // （口径分裂、权重合计失真）。所以必须在预览入口就挡住并点名历史来源。
+
+    @Test
+    @DisplayName("R10：本周期该学院已存在职能部门创建的历史下发计划时，导入必须被明确拒绝")
+    void shouldRejectImportWhenLegacyFunctionalDeptPlanExists() {
+        Fixture fixture = fixture();
+
+        // 存量计划：创建方是职能部门（改造前的下发方），目标是该学院
+        Plan legacyPlan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        legacyPlan.setId(608L);
+        legacyPlan.setStatus(PlanStatus.DISTRIBUTED.value());
+
+        stubLegacyPlanOnly(fixture);
+        when(planRepository.findByCycleId(2026L)).thenReturn(List.of(legacyPlan));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.previewDistribution(
+                        distributionWorkbook("legacy-plan.xlsx",
+                                "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        2026L,
+                        fixture.college().getId(),
+                        fixture.strategyOrg().getId(),
+                        null,
+                        fixture.currentUser())
+        );
+
+        assertTrue(error.getMessage().contains("已存在历史下发计划"));
+        assertTrue(error.getMessage().contains("只读历史"));
+    }
+
+    @Test
+    @DisplayName("R10：本周期该学院只有战略部创建的计划时，导入不被存量拦截")
+    void shouldNotRejectImportWhenOnlyStrategyPlanExists() {
+        Fixture fixture = fixture();
+
+        Plan strategyPlan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        strategyPlan.setId(900L);
+
+        stubPreviewDependencies(fixture);
+        when(planRepository.findByCycleId(2026L)).thenReturn(List.of(strategyPlan));
+
+        assertDoesNotThrow(() -> service.previewDistribution(
+                distributionWorkbook("strategy-plan.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser()));
+    }
+
+    @Test
+    @DisplayName("R10：存量计划属于别的学院时，不影响本学院导入")
+    void shouldNotRejectImportWhenLegacyPlanTargetsAnotherCollege() {
+        Fixture fixture = fixture();
+
+        Plan legacyPlanOfOtherCollege = Plan.create(
+                2026L,
+                57L,
+                fixture.functionalOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        legacyPlanOfOtherCollege.setId(609L);
+
+        stubPreviewDependencies(fixture);
+        when(planRepository.findByCycleId(2026L)).thenReturn(List.of(legacyPlanOfOtherCollege));
+
+        assertDoesNotThrow(() -> service.previewDistribution(
+                distributionWorkbook("other-college-plan.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser()));
     }
 
     private void stubPreviewDependencies(Fixture fixture, Indicator... parents) {
