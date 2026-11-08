@@ -342,45 +342,64 @@ class ExcelBusinessImportParserTest {
     }
 
     @Test
-    @DisplayName("终版表头: distribution merged/blank rows inherit parent group and warn when children sum not 100")
-    void shouldInheritParentGroupAndWarnWhenChildrenSumNot100() {
+    @DisplayName("2026-11-08 单层口径: 学院模板不再分组——每行独立，按学院整体合计基础性权重并提示")
+    void shouldWarnWhenCollegeBasicWeightsSumIsNot100() {
         try (Workbook workbook = new XSSFWorkbook()) {
-            Sheet sheet = distributionSheet(workbook);
+            // 新模板（学院 8 列）：序号|学院|任务类型|指标名称|指标类型|权重|下发备注|归口职能部门
+            Sheet sheet = distributionSheetV3(workbook);
 
             Row first = sheet.createRow(1);
             first.createCell(0).setCellValue(1);
             first.createCell(1).setCellValue("计算机学院");
-            first.createCell(2).setCellValue("建设智慧教学质量监测体系");
-            first.createCell(3).setCellValue("定量");
-            first.createCell(4).setCellValue("完成课程质量数据接入");
-            first.createCell(5).setCellValue("定量");
-            first.createCell(6).setCellValue(40);
+            first.createCell(2).setCellValue("基础性");
+            first.createCell(3).setCellValue("完成课程质量数据接入");
+            first.createCell(4).setCellValue("定量");
+            first.createCell(5).setCellValue(40);
+            first.createCell(7).setCellValue("教务处");
 
-            // 第 2 行：组列（序号/学院/核心指标/核心指标类型）留空 = 同一父级拆第二个子指标
             Row second = sheet.createRow(2);
-            second.createCell(4).setCellValue("建设院级教学督导队伍");
-            second.createCell(5).setCellValue("定性");
-            second.createCell(6).setCellValue(30);
+            second.createCell(0).setCellValue(2);
+            second.createCell(1).setCellValue("计算机学院");
+            second.createCell(2).setCellValue("基础性");
+            second.createCell(3).setCellValue("建设院级教学督导队伍");
+            second.createCell(4).setCellValue("定性");
+            second.createCell(5).setCellValue(30);
+            second.createCell(7).setCellValue("教务处");
 
             var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
 
             assertEquals(2, parsed.rows().size());
-            var stickyRow = parsed.rows().get(1);
-            assertTrue(stickyRow.errors().isEmpty(), "延续行不应有错误: " + stickyRow.errors());
-            assertEquals(1, stickyRow.normalized().seq(), "留空序号应继承父级组号");
-            assertEquals("建设智慧教学质量监测体系", stickyRow.normalized().parentIndicator(),
-                    "留空核心指标应继承上一组父级指标");
-            assertEquals("定量", stickyRow.normalized().parentIndicatorType(),
-                    "留空核心指标类型应继承组首行（父指标类型）");
-            assertEquals("建设院级教学督导队伍", stickyRow.normalized().indicatorName());
-            // 组内子指标 40+30=70 ≠ 100 → 组权重警告（终版文案以「核心指标」称呼父级列）
-            assertTrue(stickyRow.warnings().stream().anyMatch(
-                            msg -> msg.contains("核心指标「建设智慧教学质量监测体系」内子指标")
-                                    && msg.contains("权重合计为 70")),
-                    "组内子指标合计 70 应警告: " + stickyRow.warnings());
+            var firstRow = parsed.rows().get(0);
+            assertTrue(firstRow.errors().isEmpty(), "新模板行不应有错误: " + firstRow.errors());
+            // 按学院整体合计：40+30=70 ≠ 100 → 每行（参与合计的基础性行）都提示
+            assertTrue(firstRow.warnings().stream().anyMatch(
+                            msg -> msg.contains("本学院全部基础性指标权重合计为 70")
+                                    && msg.contains("应为 100")),
+                    "应按学院整体合计提示: " + firstRow.warnings());
+            // 新模板每行独立：第二行有自己的序号，不再有 sticky 组继承
+            assertEquals(2, parsed.rows().get(1).normalized().seq());
+            assertEquals("教务处", parsed.rows().get(1).normalized().functionalOrg(),
+                    "归口职能部门应按名称读入");
+            assertTrue(parsed.rows().get(1).normalized().parentIndicator().isEmpty(),
+                    "新模板没有核心指标列，父级字段应为空");
         } catch (Exception ex) {
             throw new AssertionError(ex);
         }
+    }
+
+    /** 2026-11-08 新模板（学院 8 列）：序号|学院|任务类型|指标名称|指标类型|权重|下发备注|归口职能部门 */
+    private Sheet distributionSheetV3(Workbook workbook) {
+        Sheet sheet = workbook.createSheet("学院指标模板");
+        Row header = sheet.createRow(0);
+        header.createCell(0).setCellValue("序号");
+        header.createCell(1).setCellValue("学院");
+        header.createCell(2).setCellValue("任务类型");
+        header.createCell(3).setCellValue("指标名称");
+        header.createCell(4).setCellValue("指标类型");
+        header.createCell(5).setCellValue("权重");
+        header.createCell(6).setCellValue("下发备注");
+        header.createCell(7).setCellValue("归口职能部门");
+        return sheet;
     }
 
     @Test

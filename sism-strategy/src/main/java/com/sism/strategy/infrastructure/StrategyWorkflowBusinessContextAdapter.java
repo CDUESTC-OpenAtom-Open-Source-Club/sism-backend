@@ -32,6 +32,23 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
         return Optional.of(entityId);
     }
 
+    /**
+     * 2026-11-08（学院指标单层口径）：该计划对应的「归口职能部门」。
+     *
+     * <p>只对计划实体生效（学院上报链的席位解析用）；非计划实体、未配置归口部门
+     * （存量数据）一律返回 empty，调用方回退到 created_by_org_id 的原口径。
+     */
+    @Override
+    public Optional<Long> findFunctionalOrgIdByEntity(String entityType, Long entityId) {
+        if (!"PLAN".equalsIgnoreCase(entityType) || entityId == null) {
+            return Optional.empty();
+        }
+        return jdbcTemplate.query(
+                "SELECT functional_org_id FROM public.plan WHERE id = ? AND functional_org_id IS NOT NULL",
+                (rs, rowNum) -> rs.getLong("functional_org_id"),
+                entityId).stream().findFirst();
+    }
+
     @Override
     public Optional<BusinessSummary> getBusinessSummary(String entityType, Long entityId) {
         // 2026-10-21：战略任务改名异动（entityType=TASK）——卡片显示任务名与流向

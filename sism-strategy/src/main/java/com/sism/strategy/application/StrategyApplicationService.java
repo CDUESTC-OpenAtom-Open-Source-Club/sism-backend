@@ -260,15 +260,22 @@ public class StrategyApplicationService {
         // 2026-11-05（R7）：禁止把「战略部下发的核心指标」本身改投到学院。
         //
         // 核心指标是「战略部下发给职能部门」的一级指标（owner=战略部、target=职能部门、
-        // 无父级）。把它直接搬到学院名下，会得到一条 parent 为空的学院指标，
-        // 破坏需求 2「学院子指标必须 parent=核心指标」的结构，也破坏权重合计口径
-        // （合计只统计有父级的子指标，搬走核心指标等于凭空少一条）。
-        // 正确做法是产生一条新子指标（owner=战略部、target=学院、parent=该核心指标）。
+        // 无父级）。把它直接搬到学院名下会破坏需求「学院指标由战略部按学院直发」的结构，
+        // 也破坏权重合计口径。正确做法是产生一条新的学院指标（owner=战略部、target=学院）。
+        //
+        // 2026-11-08（学院指标单层口径）：判定特征<b>不能再只看 parent == null</b>——
+        // 学院指标现在也没有父级（单层直发），只用 parent 判定会把「对一条学院指标再次下发」
+        // 误拦成「核心指标改投」，新口径下这条路会 100% 失败。
+        // 真正的核心指标特征是「当前目标不是学院（战略部 → 职能部门）」，
+        // 已经是学院指标的记录（target = 学院）不属于此处要拦的情况。
+        boolean currentTargetIsCollege = indicator.getTargetOrg() != null
+                && indicator.getTargetOrg().getType() == OrgType.academic;
         if (effectiveTargetOrg != null
-                && effectiveTargetOrg.getType() == com.sism.organization.domain.OrgType.academic
+                && effectiveTargetOrg.getType() == OrgType.academic
+                && !currentTargetIsCollege
                 && indicator.getParentIndicatorId() == null) {
             throw new IllegalArgumentException(
-                    "核心指标不能直接改投到二级学院，请基于该核心指标新增学院子指标");
+                    "核心指标不能直接改投到二级学院，请基于该核心指标新增学院指标");
         }
 
         Long resolvedTargetOrgId = targetOrg != null

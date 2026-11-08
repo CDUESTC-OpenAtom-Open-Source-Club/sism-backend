@@ -64,7 +64,13 @@ public final class BusinessImportDtos {
             String indicatorType,
             BigDecimal weight,
             String remark,
-            Long parentIndicatorId
+            Long parentIndicatorId,
+            // 2026-11-08（学院指标单层口径）：学院模板新增「归口职能部门」列。
+            // 学院指标改成「战略部 → 学院」直发后没有父级，学院上报链第 3 环
+            // 「分管职能部门负责人审批」的席位来源只能由这一列显式指定。
+            // 这里存**部门名称**（文件里就是名称），落库时再按名称查 sys_org 换 id，
+            // 原因：预览阶段用户看到的是名称，提前转 id 会让错误提示不可读。
+            String functionalOrg
     ) {
         public Map<String, Object> toMap() {
             return Map.ofEntries(
@@ -80,7 +86,8 @@ public final class BusinessImportDtos {
                     Map.entry("indicatorType", indicatorType == null ? "" : indicatorType),
                     Map.entry("weight", weight == null ? "" : weight),
                     Map.entry("remark", remark == null ? "" : remark),
-                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId)
+                    Map.entry("parentIndicatorId", parentIndicatorId == null ? "" : parentIndicatorId),
+                    Map.entry("functionalOrg", functionalOrg == null ? "" : functionalOrg)
             );
         }
     }

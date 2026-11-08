@@ -102,16 +102,17 @@ class BasicTaskWeightValidationServiceTest {
         verify(indicatorRepository).findByTaskIds(List.of(41001L));
     }
 
-    // ============ 2026-10-31 用户拍板：学院计划被拦时点名「无法计入基础性权重合计」的父级 ============
+    // ============ 2026-10-31 用户拍板（2026-11-08 单层口径修订）：被拦时点名「无法计入基础性权重合计」的指标 ============
 
     @Test
-    @DisplayName("2026-10-31 用户拍板：学院计划无基础性任务被拦时，点名所属任务为发展性的父级核心指标")
-    void shouldNameNonBasicParentsWhenFuncToCollegePlanHasNoBasicTask() {
+    @DisplayName("2026-10-31 用户拍板（单层口径修订）：学院计划无基础性任务被拦时，点名落在发展性任务上的学院指标")
+    void shouldNameNonBasicIndicatorsWhenFuncToCollegePlanHasNoBasicTask() {
         Plan plan = Plan.create(4L, 55L, 36L, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(403655L);
 
-        // 学院子指标全部落在发展性任务上（父级 = 职能部门核心指标「父指标」）
-        Indicator developmentChild = buildChildIndicator(2041L, 41023L, 36L, 55L, BigDecimal.valueOf(100));
+        // 2026-11-08：学院指标没有父级，点名对象改为指标自身
+        Indicator developmentChild = buildCollegeIndicator(
+                2041L, 41023L, 36L, 55L, "发展性指标甲", BigDecimal.valueOf(100));
 
         when(planRepository.findById(403655L)).thenReturn(java.util.Optional.of(plan));
         // 基础性任务查询返回空 → 「不存在基础性任务」分支
@@ -126,7 +127,6 @@ class BasicTaskWeightValidationServiceTest {
                 org.mockito.ArgumentMatchers.eq(403655L)))
                 .thenReturn(List.of(java.util.Map.of("task_id", 41023L, "task_type", "DEVELOPMENT")));
         when(indicatorRepository.findByTaskIds(List.of(41023L))).thenReturn(List.of(developmentChild));
-        when(indicatorRepository.findByIds(List.of(11041L))).thenReturn(List.of(developmentChild.getParent()));
 
         IllegalStateException error = assertThrows(
                 IllegalStateException.class,
@@ -135,28 +135,28 @@ class BasicTaskWeightValidationServiceTest {
 
         String message = error.getMessage();
         org.junit.jupiter.api.Assertions.assertTrue(
-                message.contains("父级核心指标『父指标』所属任务为“发展性”"),
-                "应点名父级核心指标及其任务类型: " + message);
+                message.contains("学院指标『发展性指标甲』所属任务为“发展性”"),
+                "应点名校验指标及其任务类型: " + message);
         org.junit.jupiter.api.Assertions.assertTrue(
                 message.contains("无法计入基础性权重合计"),
                 "应说明无法计入基础性权重合计: " + message);
         org.junit.jupiter.api.Assertions.assertTrue(
-                message.contains("基础性指标权重全计划合计须为 100"),
-                "应给出计划级合计要求: " + message);
+                message.contains("按学院整体合计须为 100"),
+                "应给出学院整体合计要求: " + message);
     }
 
     @Test
-    @DisplayName("2026-10-31 用户拍板：父级超过 3 个时列前 3 个并以「等 N 项」收尾（GateMessages 风格）")
-    void shouldLimitNamedParentsToThreeWithCount() {
+    @DisplayName("2026-10-31 用户拍板：超过 3 个时列前 3 个并以「等 N 项」收尾（GateMessages 风格）")
+    void shouldLimitNamedIndicatorsToThreeWithCount() {
         Plan plan = Plan.create(4L, 55L, 36L, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(403655L);
 
-        // 4 个发展性子指标分别挂在 4 个不同父级上（父级 ID = 9000 + 子指标 ID）
+        // 4 条指标分别落在 4 个发展性任务上（新口径：没有父级，点名指标自身）
         List<Indicator> children = List.of(
-                buildNamedChildIndicator(2041L, 41021L, 36L, 55L, "父指标甲"),
-                buildNamedChildIndicator(2042L, 41022L, 36L, 55L, "父指标乙"),
-                buildNamedChildIndicator(2043L, 41023L, 36L, 55L, "父指标丙"),
-                buildNamedChildIndicator(2044L, 41024L, 36L, 55L, "父指标丁"));
+                buildCollegeIndicator(2041L, 41021L, 36L, 55L, "指标甲", BigDecimal.valueOf(10)),
+                buildCollegeIndicator(2042L, 41022L, 36L, 55L, "指标乙", BigDecimal.valueOf(20)),
+                buildCollegeIndicator(2043L, 41023L, 36L, 55L, "指标丙", BigDecimal.valueOf(30)),
+                buildCollegeIndicator(2044L, 41024L, 36L, 55L, "指标丁", BigDecimal.valueOf(40)));
         when(planRepository.findById(403655L)).thenReturn(java.util.Optional.of(plan));
         when(jdbcTemplate.queryForList(
                 org.mockito.ArgumentMatchers.contains("t.task_type = 'BASIC'"),
@@ -172,11 +172,6 @@ class BasicTaskWeightValidationServiceTest {
                         java.util.Map.of("task_id", 41023L, "task_type", "DEVELOPMENT"),
                         java.util.Map.of("task_id", 41024L, "task_type", "DEVELOPMENT")));
         when(indicatorRepository.findByTaskIds(List.of(41021L, 41022L, 41023L, 41024L))).thenReturn(children);
-        when(indicatorRepository.findByIds(List.of(11041L, 11042L, 11043L, 11044L))).thenReturn(
-                List.of(children.get(0).getParent(),
-                        children.get(1).getParent(),
-                        children.get(2).getParent(),
-                        children.get(3).getParent()));
 
         IllegalStateException error = assertThrows(
                 IllegalStateException.class,
@@ -185,11 +180,11 @@ class BasicTaskWeightValidationServiceTest {
 
         String message = error.getMessage();
         org.junit.jupiter.api.Assertions.assertTrue(
-                message.contains("『父指标甲』『父指标乙』『父指标丙』 等 4 项"),
+                message.contains("『指标甲』『指标乙』『指标丙』 等 4 项"),
                 "应列前 3 个并以「等 N 项」收尾: " + message);
         org.junit.jupiter.api.Assertions.assertFalse(
-                message.contains("父指标丁"),
-                "第 4 个父级不应被点名: " + message);
+                message.contains("指标丁"),
+                "第 4 个不应被点名: " + message);
     }
 
     @Test
@@ -340,6 +335,29 @@ class BasicTaskWeightValidationServiceTest {
         indicator.setId(id);
         indicator.setTaskId(taskId);
         indicator.setParent(parent);
+        indicator.setIsDeleted(false);
+        return indicator;
+    }
+
+    /**
+     * 2026-11-08（学院指标单层口径）：学院指标没有父级，这是新口径下的标准形态——
+     * 用于验证「点名被拦指标」的文案（旧口径点名的是父级核心指标）。
+     */
+    private Indicator buildCollegeIndicator(Long id,
+                                            Long taskId,
+                                            Long ownerOrgId,
+                                            Long targetOrgId,
+                                            String indicatorName,
+                                            BigDecimal weight) {
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(ownerOrgId);
+        SysOrg targetOrg = SysOrg.create("学院", OrgType.academic);
+        targetOrg.setId(targetOrgId);
+
+        Indicator indicator = Indicator.create(indicatorName, ownerOrg, targetOrg, "定量");
+        indicator.setId(id);
+        indicator.setTaskId(taskId);
+        indicator.setWeightPercent(weight);
         indicator.setIsDeleted(false);
         return indicator;
     }
