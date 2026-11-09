@@ -83,9 +83,14 @@ public class ExcelBusinessImportParser {
             Map.entry("weight", List.of("权重", "指标权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
             // 2026-11-08：新模板第 7 列表头就是「下发备注」，原别名（备注/说明）识别不到它
             Map.entry("remark", List.of("下发备注", "备注", "说明")),
-            // 2026-11-08（学院指标单层口径）：新模板第 8 列「归口职能部门」，可留空。
+            // 2026-11-08（学院指标单层口径）：新模板第 8 列「归口职能部门」。
             // 为什么要有这一列：学院指标没有父级后，审批席位推不出「该学院归口哪个职能部门」，
             // 只能由战略部在导入时显式指定（见 Plan.functionalOrgId）。
+            //
+            // 2026-11-09（任务 1）：该列由「可留空」改为**必填**——留空会让
+            // plan.functional_org_id 为空，学院上报链第 3 环「分管职能部门负责人审批」
+            // 推不出审批席位（派单时抛 No available approver candidates），
+            // 所以在预览阶段就阻断，而不是让用户导入成功后在审批环节炸掉。
             Map.entry("functionalOrg", List.of("归口职能部门", "归口部门", "职能部门")),
             // 2026-10-31 层级化定案：序号=父级核心指标组号（组首行必填，组内留空=同上）；别名向后兼容
             //
@@ -135,6 +140,17 @@ public class ExcelBusinessImportParser {
         if (!header.fieldColumns().containsKey("seq")) {
             throw new IllegalStateException(
                     "导入文件缺少「序号」列（1、2、3…），请使用最新导出的表格或下载最新模板后重试");
+        }
+
+        // 2026-11-09（任务 1）：学院模板的「归口职能部门」列改为必填。
+        // 为什么整列缺失要在这里直接拒绝：学院指标改成「战略部 → 学院」单层直发后没有父级，
+        // 学院上报链第 3 环「分管职能部门负责人审批」的席位只能由这一列决定。
+        // 旧模板（没有这一列）导出的文件整批缺失该信息，放进来只会让每行都报「不能为空」，
+        // 不如像「序号」列一样在解析期给一句可操作的话（换最新模板）。
+        if (type == ImportType.DISTRIBUTION && !header.fieldColumns().containsKey("functionalOrg")) {
+            throw new IllegalStateException(
+                    "导入文件缺少「归口职能部门」列（该列决定学院上报审批由哪个职能部门负责审批），"
+                            + "请使用最新导出的表格或下载最新模板后重试");
         }
 
         List<FieldMapping> mappings = header.fieldColumns().entrySet().stream()
@@ -209,7 +225,7 @@ public class ExcelBusinessImportParser {
                 normalized = withInheritedGroup(normalized, currentGroupSeq, currentGroupValue, currentGroupTypes, type);
             }
 
-            errors.addAll(validate(normalized, type));
+            errors.addAll(validate(normalized, type, displayRowNo(normalized, rowIndex)));
             warnings.addAll(validateWarnings(normalized, type));
             // 2026-10-31：预览行的行号展示为「序号」（组号）；组号缺失时退回物理行号便于定位
             Integer seqValue = normalized.seq();
@@ -235,6 +251,15 @@ public class ExcelBusinessImportParser {
     /** 组名比较键：去空白、转小写（用于判断两行是否属于同一任务/父级组） */
     private String groupKey(String value) {
         return clean(value).replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 2026-11-09（任务 3）：错误文案里要能点名行号，方便用户直接定位到要改的那一行。
+     * 行号口径与预览表格展示一致：有「序号」用序号，没有就用物理行号。
+     */
+    private int displayRowNo(NormalizedImportRow row, int rowIndex) {
+        Integer seqValue = row.seq();
+        return (seqValue != null && seqValue > 0) ? seqValue : rowIndex + 1;
     }
 
     /**
@@ -523,8 +548,9 @@ public class ExcelBusinessImportParser {
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
         String remark = clean(value(source, aliases, "remark"));
         Integer seq = parsePositiveInt(value(source, aliases, "seq"));
-        // 2026-11-08（学院指标单层口径）：归口职能部门按**名称**读入，留空 = 不指定
-        // （落库时 functional_org_id 为 null，审批席位回退改造前口径）。
+        // 2026-11-08（学院指标单层口径）：归口职能部门按**名称**读入。
+        // 2026-11-09（任务 1）：该列改为必填——留空会在预览阶段被阻断（见 validate），
+        // 原因见 DISTRIBUTION_ALIASES 里 functionalOrg 的说明。
         String functionalOrg = clean(value(source, aliases, "functionalOrg"));
         return new NormalizedImportRow(
                 seq,
@@ -557,7 +583,7 @@ public class ExcelBusinessImportParser {
         }
     }
 
-    private List<String> validate(NormalizedImportRow row, ImportType type) {
+    private List<String> validate(NormalizedImportRow row, ImportType type, int displayNo) {
         List<String> errors = new ArrayList<>();
         // 2026-10-31 层级化定案：序号=组号，组首行必填（延续行由 sticky 继承补齐，不在此报错）
         // 2026-11-08：学院模板里「序号」就是行号，不再有分组语义，提示文案同步去掉「组」字样。
@@ -574,6 +600,21 @@ public class ExcelBusinessImportParser {
             if (isBlank(row.strategicTask())) {
                 errors.add("战略任务（组首行）不能为空；组内延续行请留空组列（留空=同上）");
             }
+        }
+        // 2026-11-09（任务 3）：学院模板的「任务类型」漏填/写错必须阻断，不能再静默按「发展性」兜底。
+        // 为什么必须拦：这一列是学院任务类别的唯一来源，兜底成「发展性」会把本该算进
+        // 「基础性权重合计=100」的指标排除在校验之外，权重口径直接失真。
+        if (type == ImportType.DISTRIBUTION && isBlank(row.taskType())) {
+            errors.add("第 " + displayNo + " 行「任务类型」不能为空或无法识别（基础性/发展性），"
+                    + "该列决定学院任务的类别与权重合计口径，请填写后再导入");
+        }
+        // 2026-11-09（任务 1）：「归口职能部门」必填（整批留空或某行留空都阻断）。
+        // 为什么必填：学院指标单层直发后没有父级，学院上报链第 3 环
+        // 「分管职能部门负责人审批」的席位只能由这一列指定的部门提供；
+        // 留空 → 导入能成功，但审批派单时推不出席位（No available approver candidates）。
+        if (type == ImportType.DISTRIBUTION && isBlank(row.functionalOrg())) {
+            errors.add("第 " + displayNo + " 行「归口职能部门」不能为空，"
+                    + "该列决定学院上报审批「分管职能部门负责人审批」环节派给哪个职能部门，请逐行填写后再导入");
         }
         // 2026-11-08（学院指标单层口径）：学院指标不再有父级，
         // 原「核心指标（组首行）不能为空」校验随父级锚点一起移除——

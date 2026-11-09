@@ -14,19 +14,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 2026-11-05（N11 / PR 审查第六部分最低要求）：{@link CollegeDispatchGuardService} 本体单测。
+ * {@link CollegeDispatchGuardService} 本体单测。
  *
- * <p>这个守卫的价值全在「不静默失效」：改造前它靠 {@code created_by_org_id} 圈定冲突范围，
- * 语义改成战略部后条件恒不成立 → 不报错、直接放行，比改造前更弱。所以它的三条边界必须钉死：
+ * <p>这个守卫的价值全在「不静默失效」：它的锚点一旦恒不成立，就会<b>不报错、直接放行</b>，
+ * 比改造前更危险。2026-11-09（单层口径）已经出过一次真实事故：
+ * 锚点靠「子指标 → 父级核心指标」推导，而单层后 {@code parent_indicator_id} 恒为 NULL，
+ * 原 SQL 的 {@code JOIN indicator parent} 恒不成立 → 异动侧守卫整体静默失效。
+ * 因此这里的用例必须钉死三件事：
  * <ol>
- *   <li><b>fail-safe 抛异常</b>：父级缺失且子指标也没有目标组织 → 明确拒绝，不静默放行；</li>
- *   <li><b>父级缺失退回学院目标</b>：父级查不到 → 退回按子指标自身的目标组织（本学院）判定；</li>
- *   <li><b>空计划放行</b>：本计划下没有任何学院子指标 → 无从冲突，放行（不误杀）。</li>
+ *   <li><b>锚点是「该学院」</b>（不再是父级所属部门），且 SQL 里<b>不得出现 parent JOIN</b>；</li>
+ *   <li><b>fail-safe 抛异常</b>：有指标但取不到目标组织 → 明确拒绝，不静默放行；</li>
+ *   <li><b>空计划放行</b>：本计划下没有任何指标 → 无从冲突，放行（不误杀）。</li>
  * </ol>
  */
 class CollegeDispatchGuardServiceTest {
@@ -39,99 +43,110 @@ class CollegeDispatchGuardServiceTest {
     private final JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
     private final CollegeDispatchGuardService service = new CollegeDispatchGuardService(jdbcTemplate);
 
-    /** 伪造「本计划下的学院子指标 → 父级核心指标」查询结果。 */
-    private void stubCandidates(Long childTargetOrgId, Long parentTargetOrgId) {
-        when(jdbcTemplate.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(PLAN_ID)))
-                .thenReturn(List.of(new CollegeDispatchGuardService.DispatchSourceCandidate(
-                        childTargetOrgId, parentTargetOrgId)));
+    /** 伪造「本计划下学院指标 → 目标组织」查询结果。 */
+    private void stubTargetOrgIds(Long... targetOrgIds) {
+        // 用 doReturn().when() 而不是 when(...).thenReturn(...)：
+        // 后者在桩未被消费时会让下一个 when() 抛 UnfinishedStubbingException
+        // （有的用例只调异动侧、不查目标组织，query 桩就是未消费的）。
+        // 另外 List.of 不允许 null，而 fail-safe 用例恰恰要传 null，
+        // 故用 Arrays.asList。
+        doReturn(java.util.Arrays.asList(targetOrgIds))
+                .when(jdbcTemplate)
+                .query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(PLAN_ID));
     }
 
-    private void stubCandidatesEmpty() {
-        when(jdbcTemplate.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(PLAN_ID)))
-                .thenReturn(List.of());
+    private void stubTargetOrgIdsEmpty() {
+        doReturn(List.of())
+                .when(jdbcTemplate)
+                .query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(PLAN_ID));
     }
 
     private void stubInFlightCount(int count) {
-        when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any(Object[].class)))
-                .thenReturn(count);
+        doReturn(count)
+                .when(jdbcTemplate)
+                .queryForObject(anyString(), eq(Integer.class), any(Object[].class));
     }
 
     @Test
-    @DisplayName("父级可解析：冲突范围取父级核心指标的目标部门（职能部门），不是子指标自身的学院")
-    void shouldDetectInFlightMutationByParentTargetOrg() {
-        stubCandidates(COLLEGE_ORG_ID, FUNCTIONAL_ORG_ID);
+    @DisplayName("锚点取该学院：冲突范围是指标自身的目标组织（学院），不是任何职能部门")
+    void shouldDetectInFlightMutationByCollegeTargetOrg() {
+        stubTargetOrgIds(COLLEGE_ORG_ID);
         stubInFlightCount(1);
 
         assertTrue(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
 
-        // 2026-11-05（审查 major #1）：必须锁住「冲突范围用的是父级目标部门」。
+        // 必须锁住「冲突范围用的是指标自身的目标组织」。
         // 之前把 SQL 与参数全部 any() 掉，变异检验发现把实现里的
-        // parent.target_org_id 换成 child.target_org_id，9 个用例照样全绿 ——
-        // 而这正是本守卫唯一的存在理由（改造后 created_by_org_id 恒不成立 → 静默失效）。
+        // parent.target_org_id 换成 child.target_org_id，用例照样全绿 ——
+        // 而这正是本守卫唯一的存在理由。
         ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
         verify(jdbcTemplate).queryForObject(anyString(), eq(Integer.class), argsCaptor.capture());
         Object[] args = argsCaptor.getValue();
         assertTrue(
-                java.util.Arrays.asList(args).contains(FUNCTIONAL_ORG_ID),
-                "冲突范围应包含父级核心指标的目标部门（职能部门）");
-        assertFalse(
                 java.util.Arrays.asList(args).contains(COLLEGE_ORG_ID),
-                "冲突范围不应包含子指标自身的学院 —— 那是父级缺失时的兜底口径");
+                "冲突范围应包含该学院（指标自身的目标组织）");
+        assertFalse(
+                java.util.Arrays.asList(args).contains(FUNCTIONAL_ORG_ID),
+                "冲突范围不应包含职能部门 —— 单层口径下职能部门已不再向学院下发指标");
     }
 
     @Test
-    @DisplayName("父级缺失：兜底口径改用子指标自身的目标组织（本学院）")
-    void shouldFallbackToChildTargetOrgWhenParentMissing() {
-        stubCandidates(COLLEGE_ORG_ID, null);
-        stubInFlightCount(1);
+    @DisplayName("2026-11-09 回归：下发侧 SQL 不得再 JOIN 父级指标（parent 恒为 NULL 会让守卫恒失效）")
+    void shouldNotJoinParentIndicatorInSourceQuery() {
+        stubTargetOrgIds(COLLEGE_ORG_ID);
+        stubInFlightCount(0);
 
-        assertTrue(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
+        service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID);
 
-        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
-        verify(jdbcTemplate).queryForObject(anyString(), eq(Integer.class), argsCaptor.capture());
-        Object[] args = argsCaptor.getValue();
-        assertTrue(
-                java.util.Arrays.asList(args).contains(COLLEGE_ORG_ID),
-                "父级缺失时应退回按子指标自身的目标组织（本学院）判定");
-        assertFalse(
-                java.util.Arrays.asList(args).contains(FUNCTIONAL_ORG_ID),
-                "父级缺失时不应使用父级目标部门");
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).query(sqlCaptor.capture(), any(org.springframework.jdbc.core.RowMapper.class), eq(PLAN_ID));
+        String sql = sqlCaptor.getValue().toLowerCase();
+        assertFalse(sql.contains("parent_indicator_id"),
+                "单层口径下学院指标的 parent_indicator_id 恒为 NULL，JOIN 父级会让冲突范围恒为空 → 守卫静默失效");
+        assertFalse(sql.contains("join public.indicator parent"),
+                "不得再 JOIN 父级指标表");
     }
 
     @Test
     @DisplayName("无在审异动：放行")
     void shouldAllowWhenNoMutationInFlight() {
-        stubCandidates(COLLEGE_ORG_ID, FUNCTIONAL_ORG_ID);
+        stubTargetOrgIds(COLLEGE_ORG_ID);
         stubInFlightCount(0);
 
         assertFalse(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
     }
 
     @Test
-    @DisplayName("父级缺失：退回按子指标自身的目标组织（本学院）判定，不静默放行")
-    void shouldFallbackToChildTargetOrgWhenParentMissingKeepsGuardActive() {
-        stubCandidates(COLLEGE_ORG_ID, null);
+    @DisplayName("多个指标指向多个学院：冲突范围含全部目标组织")
+    void shouldCollectAllTargetOrgs() {
+        stubTargetOrgIds(COLLEGE_ORG_ID, 62L);
         stubInFlightCount(1);
 
         assertTrue(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
+
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).queryForObject(anyString(), eq(Integer.class), argsCaptor.capture());
+        List<Object> args = java.util.Arrays.asList(argsCaptor.getValue());
+        assertTrue(args.contains(COLLEGE_ORG_ID), "应包含第一个学院");
+        assertTrue(args.contains(62L), "应包含第二个学院");
     }
 
     @Test
-    @DisplayName("父级缺失且子指标也没有目标组织：fail-safe 明确抛异常")
+    @DisplayName("有指标但取不到目标组织：fail-safe 明确抛异常，不静默放行")
     void shouldFailSafeWhenCannotResolveConflictScope() {
-        stubCandidates(null, null);
+        stubTargetOrgIds((Long) null);
 
         IllegalStateException error = assertThrows(
                 IllegalStateException.class,
                 () -> service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID)
         );
-        assertTrue(error.getMessage().contains("无法判定本次学院下发所依赖的职能部门"));
+        assertTrue(error.getMessage().contains("无法判定本次学院下发所面向的学院"));
     }
 
     @Test
-    @DisplayName("空计划：本计划下没有任何学院子指标 → 无从冲突，放行（不误杀）")
+    @DisplayName("空计划：本计划下没有任何指标 → 无从冲突，放行（不误杀）")
     void shouldAllowEmptyPlan() {
-        stubCandidatesEmpty();
+        stubTargetOrgIdsEmpty();
 
         assertFalse(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
     }
@@ -146,11 +161,11 @@ class CollegeDispatchGuardServiceTest {
     }
 
     @Test
-    @DisplayName("异动侧：存在依赖该职能部门的学院下发审批在途 → 拒绝异动")
+    @DisplayName("异动侧：存在面向该学院的学院下发审批在途 → 拒绝异动")
     void shouldDetectCollegeDispatchInFlightForOrg() {
         stubInFlightCount(2);
 
-        assertTrue(service.isCollegeDispatchInFlightForOrg(FUNCTIONAL_ORG_ID, CYCLE_ID));
+        assertTrue(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID));
     }
 
     @Test
@@ -158,16 +173,47 @@ class CollegeDispatchGuardServiceTest {
     void shouldAllowWhenNoCollegeDispatchInFlight() {
         stubInFlightCount(0);
 
-        assertFalse(service.isCollegeDispatchInFlightForOrg(FUNCTIONAL_ORG_ID, CYCLE_ID));
+        assertFalse(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID));
+    }
+
+    @Test
+    @DisplayName("2026-11-09 回归：异动侧 SQL 不得再 JOIN 父级指标（否则恒不成立 → 守卫恒放行）")
+    void shouldNotJoinParentIndicatorInMutationSideQuery() {
+        stubInFlightCount(0);
+
+        service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(sqlCaptor.capture(), eq(Integer.class), any(Object[].class));
+        String sql = sqlCaptor.getValue().toLowerCase();
+        assertFalse(sql.contains("parent_indicator_id"),
+                "异动侧若仍靠父级链推导，单层后恒不成立 → 守卫恒放行且不报错");
+        assertFalse(sql.contains("join public.indicator parent"),
+                "不得再 JOIN 父级指标表");
+        // 锚点必须落在指标自身的目标组织上
+        assertTrue(sql.contains("c.target_org_id = ?"),
+                "异动侧锚点应为指标自身的目标组织");
     }
 
     @Test
     @DisplayName("计数为 null 时按 0 处理，不抛 NPE")
     void shouldTreatNullCountAsZero() {
-        stubCandidates(COLLEGE_ORG_ID, FUNCTIONAL_ORG_ID);
+        stubTargetOrgIds(COLLEGE_ORG_ID);
         when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any(Object[].class)))
                 .thenReturn(null);
 
         assertFalse(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
+    }
+
+    @Test
+    @DisplayName("守卫两个方向口径对称：同一学院的指标既在异动在审、又有下发在途时互相拦得住")
+    void shouldRejectBothDirectionsForSameCollege() {
+        // 下发侧：学院指标在异动审批中 → 拒绝下发
+        stubTargetOrgIds(COLLEGE_ORG_ID);
+        stubInFlightCount(1);
+        assertTrue(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
+
+        // 异动侧：同一学院有下发审批在途 → 拒绝异动
+        assertTrue(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID));
     }
 }

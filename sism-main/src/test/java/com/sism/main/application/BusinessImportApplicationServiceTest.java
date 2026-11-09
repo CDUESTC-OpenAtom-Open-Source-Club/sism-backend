@@ -99,6 +99,13 @@ class BusinessImportApplicationServiceTest {
     @Mock
     private CollegeDispatchGuardService collegeDispatchGuardService;
 
+    /**
+     * 2026-11-09（任务 1）：学院模板的「归口职能部门」列已改为**必填**，
+     * 测试夹具里默认填「人力资源部」（= fixture 的职能部门），并由
+     * {@code stubPreviewDependencies} stub 出 sys_org 查询结果。
+     */
+    private static final String DEFAULT_FUNCTIONAL_ORG = "人力资源部";
+
     private BusinessImportApplicationService service;
 
     @BeforeEach
@@ -133,7 +140,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("70-percent-basic-weight.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -171,7 +178,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("mutation-in-review.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -204,7 +211,7 @@ class BusinessImportApplicationServiceTest {
         CurrentUser reporterOnly = reporterOnlyUser(fixture);
         var preview = service.previewDistribution(
                 distributionWorkbook("70-percent-basic-weight-normal-import.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -236,7 +243,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("reporter-auto-approve.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -293,7 +300,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("already-distributed.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -344,7 +351,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("already-distributed-invalid-weight.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -410,14 +417,15 @@ class BusinessImportApplicationServiceTest {
     void shouldMatchByNameForUpdateAndCreate() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
-        stubCommitDependencies(fixture, false);
+        // 2026-11-09（任务 1）：导入会写 plan.functional_org_id → 落库阶段必然 save 一次 plan，
+        // 这里必须给出 save 的返回（否则计划对象会丢），故用 savesNewPlan=true。
+        stubCommitDependencies(fixture, true);
         // 既有子指标（id=5001，名称「子指标A」，同父级、本学院范围）
         Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Plan plan = planWithId(900L, fixture);
         when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
                 2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
                 .thenReturn(Optional.of(plan));
-        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
         when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
                 .thenReturn(List.of(existingChild));
         // 提交阶段按（父级+名称）定位更新目标
@@ -461,13 +469,13 @@ class BusinessImportApplicationServiceTest {
     void shouldSkipRowWhenUpdateTargetVanishedBeforeCommit() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
-        stubCommitDependencies(fixture, false);
+        // 2026-11-09（任务 1）：落库会 save plan（写 functional_org_id），需要 save 的返回值
+        stubCommitDependencies(fixture, true);
         Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Plan plan = planWithId(900L, fixture);
         when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
                 2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
                 .thenReturn(Optional.of(plan));
-        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
         when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
                 .thenReturn(List.of(existingChild));
         // 预览后目标已被删除：提交阶段找不到（父级+名称）匹配 → 安全跳过
@@ -509,6 +517,9 @@ class BusinessImportApplicationServiceTest {
         // 2026-11-08（单层口径）：落库链不再反查父级指标/父级任务，这两个 stub 已无意义
         when(taskRepository.findByPlanIdAndCycleId(900L, 2026L))
                 .thenReturn(List.of(fixture.childTask()));
+        // 2026-11-09（任务 1）：落库会 save plan（写归口职能部门 id），save 必须有返回值
+        when(planRepository.save(any(Plan.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         Indicator coveredChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Indicator uncoveredChild = existingChildIndicator(fixture, 5002L, "子指标B");
         Plan plan = planWithId(900L, fixture);
@@ -560,7 +571,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("college-mismatch.xlsx",
-                        "别的学院", "定量", "子指标A", "子指标B"),
+                        "别的学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -786,15 +797,14 @@ class BusinessImportApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("2026-11-08 单层口径：文件「任务类型」留空 → 按系统默认发展性落库")
-    void shouldFallbackToDevelopmentWhenFileTaskTypeMissing() {
+    @DisplayName("2026-11-09（任务 3）：文件「任务类型」留空 → 预览阻断（不再静默按发展性落库）")
+    void shouldBlockRowWhenFileTaskTypeMissing() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
-        stubDistributionCommitBase(fixture);
-        when(taskRepository.findByPlanIdAndCycleId(900L, 2026L)).thenReturn(List.of());
-        List<StrategicTask> savedTasks = captureCreatedTasks();
 
-        // 「任务类型」列留空（旧文件回导的常见形态）：沿用系统默认 DEVELOPMENT
+        // 「任务类型」列留空（旧文件回导的常见形态）：
+        // 旧口径按系统默认 DEVELOPMENT 静默落库 → 基础性指标被排除在「合计=100」校验之外，口径失真；
+        // 新口径在预览阶段就阻断（模板规则文案里本来就写了「漏填或写错会被阻断」）。
         var preview = service.previewDistribution(
                 distributionWorkbook("file-task-type-missing.xlsx",
                         "马克思主义学院", null, "子指标A", "子指标B"),
@@ -804,7 +814,199 @@ class BusinessImportApplicationServiceTest {
                 null,
                 fixture.currentUser());
 
-        assertFalse(preview.blocking());
+        assertTrue(preview.blocking(), "任务类型缺失必须阻断导入");
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("任务类型")
+                                && msg.contains("第 " + preview.rows().get(0).rowNo() + " 行")),
+                "应点名行号并说明任务类型不能为空: " + preview.rows().get(0).errors());
+
+        // 阻断后不允许落库：确认导入必须被拒绝，一条指标都不该建
+        assertThrows(IllegalArgumentException.class, () -> service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(preview.confirmToken(), ConflictMode.APPEND, false, "确认导入"),
+                fixture.currentUser()));
+
+        verify(strategyApplicationService, never()).createIndicator(
+                anyString(), any(), any(), anyLong(), any(), anyString(), any(), any(), any(), any());
+        verify(taskRepository, never()).save(any(StrategicTask.class));
+    }
+
+    // ==================== 2026-11-09：导入侧三个正确性修复 ====================
+
+    @Test
+    @DisplayName("2026-11-09（任务 1）：「归口职能部门」缺失 → 预览阻断（不能让审批派单时落空）")
+    void shouldBlockPreviewWhenFunctionalOrgMissing() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+
+        // 整批留空 = 「归口职能部门」这一列没填：
+        // plan.functional_org_id 会是空 → 学院上报链第 3 环「分管职能部门负责人审批」
+        // 推不出审批席位（No available approver candidates），必须在预览阶段就挡住。
+        var preview = service.previewDistribution(
+                distributionWorkbook("functional-org-missing.xlsx",
+                        "马克思主义学院", "基础性", "子指标A", "子指标B", null),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking(), "归口职能部门缺失必须阻断导入");
+        for (var row : preview.rows()) {
+            assertEquals(ImportAction.ERROR, row.action());
+            assertTrue(row.errors().stream().anyMatch(msg -> msg.contains("归口职能部门")
+                            && msg.contains("分管职能部门负责人审批")),
+                    "应点明列名与原因（决定上报审批派给哪个部门）: " + row.errors());
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-09（任务 1）：「归口职能部门」名称查不到 → 预览阻断并点名该部门")
+    void shouldBlockPreviewWhenFunctionalOrgNameNotFound() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        // 名称在 sys_org 里查不到（不存在 / 已软删 / 不是职能部门）→ 必须点名
+        when(organizationRepository.findByNameContaining("不存在的职能部门")).thenReturn(List.of());
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("functional-org-unknown.xlsx",
+                        "马克思主义学院", "基础性", "子指标A", "子指标B", "不存在的职能部门"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking(), "归口职能部门查不到必须阻断导入");
+        for (var row : preview.rows()) {
+            assertEquals(ImportAction.ERROR, row.action());
+            assertTrue(row.errors().stream().anyMatch(msg -> msg.contains("归口职能部门")
+                            && msg.contains("不存在的职能部门")),
+                    "应点名查不到的部门名: " + row.errors());
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-09（任务 1）：已软删的归口职能部门同样按「查不到」阻断")
+    void shouldBlockPreviewWhenFunctionalOrgSoftDeleted() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        SysOrg deletedOrg = SysOrg.create("已撤销部门", OrgType.functional);
+        deletedOrg.setId(77L);
+        deletedOrg.delete();
+        when(organizationRepository.findByNameContaining("已撤销部门")).thenReturn(List.of(deletedOrg));
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("functional-org-deleted.xlsx",
+                        "马克思主义学院", "基础性", "子指标A", "子指标B", "已撤销部门"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking(), "已软删的归口部门不能放行");
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("已撤销部门") && msg.contains("归口职能部门")),
+                "应点名已删除的部门: " + preview.rows().get(0).errors());
+    }
+
+    @Test
+    @DisplayName("2026-11-09：已停用（is_active=false）的归口职能部门同样按「查不到」阻断")
+    void shouldBlockPreviewWhenFunctionalOrgInactive() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        // 停用部门同样推不出审批席位（没有在岗负责人可派单），不能放行到审批环节才炸
+        SysOrg inactiveOrg = SysOrg.create("已停用部门", OrgType.functional);
+        inactiveOrg.setId(78L);
+        inactiveOrg.setIsActive(false);
+        when(organizationRepository.findByNameContaining("已停用部门")).thenReturn(List.of(inactiveOrg));
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("functional-org-inactive.xlsx",
+                        "马克思主义学院", "基础性", "子指标A", "子指标B", "已停用部门"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking(), "已停用的归口部门不能放行");
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("已停用部门") && msg.contains("归口职能部门")),
+                "应点名已停用的部门: " + preview.rows().get(0).errors());
+    }
+
+    @Test
+    @DisplayName("2026-11-09：同一文件内出现两行同名指标 → 预览阻断（否则落库建两条、权重翻倍）")
+    void shouldBlockPreviewWhenSameIndicatorNameTwiceInOneFile() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+
+        // 两行同名：预览两行都是「新增」，落库会真的建出两条 →
+        // 同一学院出现两套同名生效指标，基础性权重合计从 60% 变 120% 被卡住，
+        // 用户看到的是一条莫名其妙的「合计不是 100」报错，定位不到真实原因。
+        var preview = service.previewDistribution(
+                distributionWorkbook("duplicate-name.xlsx",
+                        "马克思主义学院", "基础性", "重复指标", "重复指标", "人力资源部"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking(), "文件内同名指标必须阻断");
+        assertTrue(preview.rows().stream().anyMatch(row -> row.errors().stream()
+                        .anyMatch(msg -> msg.contains("重复") && msg.contains("不允许同名指标"))),
+                "应点名重复的指标名与重复行号");
+    }
+
+    @Test
+    @DisplayName("2026-11-09（任务 2）：同名指标 → 更新而不是新建（预览与落库同一把匹配键）")
+    void shouldUpdateSameNameIndicatorInsteadOfCreatingDuplicate() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        // 本用例只涉及 UPDATE 行，不触达 createIndicator —— 落库依赖单独最小 stub
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            TransactionCallback<Object> callback = invocation.getArgument(0);
+            return callback.doInTransaction(new SimpleTransactionStatus());
+        });
+        when(taskRepository.findByPlanIdAndCycleId(900L, 2026L)).thenReturn(List.of(fixture.childTask()));
+        // 2026-11-09（任务 1）：落库会 save plan（写归口职能部门 id），save 必须有返回值
+        when(planRepository.save(any(Plan.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
+        Plan plan = planWithId(900L, fixture);
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
+                .thenReturn(Optional.of(plan));
+        when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
+                .thenReturn(List.of(existingChild));
+        when(indicatorRepository.findByTaskId(fixture.childTask().getId()))
+                .thenReturn(List.of(existingChild));
+        when(strategyApplicationService.updateIndicator(
+                anyLong(), anyString(), any(), any(), any(), any(), anyLong(),
+                any(SysOrg.class), any(SysOrg.class)))
+                .thenReturn(existingChild);
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("same-name-update.xlsx",
+                        "马克思主义学院", "基础性", "子指标A", null),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertEquals(ImportAction.UPDATE, preview.rows().get(0).action(),
+                "同一计划、同一任务下的同名指标应判为更新而不是新增");
+        // 匹配键 =（计划 planId, 任务 taskId, 指标名）
+        assertTrue(preview.rows().get(0).businessKey().contains("plan:900"),
+                "匹配键应含计划: " + preview.rows().get(0).businessKey());
+        assertTrue(preview.rows().get(0).businessKey().contains("task:" + fixture.childTask().getId()),
+                "匹配键应含任务: " + preview.rows().get(0).businessKey());
 
         var result = service.commit(
                 preview.batchId(),
@@ -812,10 +1014,12 @@ class BusinessImportApplicationServiceTest {
                 fixture.currentUser());
 
         assertEquals("COMMITTED", result.status());
-        assertFalse(savedTasks.isEmpty(), "应按默认任务类别新建学院任务");
-        assertTrue(savedTasks.stream().allMatch(task -> task.getTaskType() == TaskType.DEVELOPMENT),
-                "任务类型留空时应按系统默认 DEVELOPMENT 落库: "
-                        + savedTasks.stream().map(StrategicTask::getTaskType).toList());
+        assertEquals(1, result.updatedCount());
+        assertEquals(0, result.createdCount(), "同名指标不应再新建一条（否则权重翻倍 → 合计 200 被卡住）");
+        // 落库必须更新既有那条（id=5001），而不是新建
+        verify(strategyApplicationService).updateIndicator(
+                eq(5001L), anyString(), any(), any(), any(), any(),
+                eq(fixture.childTask().getId()), any(SysOrg.class), any(SysOrg.class));
     }
 
     /** 学院导入提交链路的最小依赖 stub（新建计划 + 父级指标/任务查询 + createIndicator 落库） */
@@ -911,7 +1115,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("audit-success.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -953,7 +1157,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("audit-failure.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -1088,6 +1292,11 @@ class BusinessImportApplicationServiceTest {
                 .thenReturn(Optional.of(fixture.strategyOrg()));
         when(organizationRepository.findById(fixture.college().getId()))
                 .thenReturn(Optional.of(fixture.college()));
+        // 2026-11-09（任务 1）：预览阶段要按名称解析「归口职能部门」，
+        // 查不到就要点名报错——所以这里必须 stub 出 sys_org 的查询结果。
+        // 用 lenient：个别用例会换成别的部门名（或故意查不到），此时这个 stub 用不上。
+        lenient().when(organizationRepository.findByNameContaining(DEFAULT_FUNCTIONAL_ORG))
+                .thenReturn(List.of(fixture.functionalOrg()));
         when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
                 2026L,
                 PlanLevel.FUNC_TO_COLLEGE,
@@ -1125,7 +1334,7 @@ class BusinessImportApplicationServiceTest {
                 IllegalArgumentException.class,
                 () -> service.previewDistribution(
                         distributionWorkbook("legacy-plan.xlsx",
-                                "马克思主义学院", "定量", "子指标A", "子指标B"),
+                                "马克思主义学院", "基础性", "子指标A", "子指标B"),
                         2026L,
                         fixture.college().getId(),
                         fixture.strategyOrg().getId(),
@@ -1154,7 +1363,7 @@ class BusinessImportApplicationServiceTest {
 
         assertDoesNotThrow(() -> service.previewDistribution(
                 distributionWorkbook("strategy-plan.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -1179,7 +1388,7 @@ class BusinessImportApplicationServiceTest {
 
         assertDoesNotThrow(() -> service.previewDistribution(
                 distributionWorkbook("other-college-plan.xlsx",
-                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -1254,7 +1463,7 @@ class BusinessImportApplicationServiceTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> service.previewDistribution(
                         distributionWorkbook("source-not-strategy.xlsx",
-                                "马克思主义学院", "定量", "子指标A", "子指标B"),
+                                "马克思主义学院", "基础性", "子指标A", "子指标B"),
                         2026L,
                         fixture.college().getId(),
                         fixture.functionalOrg().getId(),
@@ -1342,15 +1551,16 @@ class BusinessImportApplicationServiceTest {
     /**
      * 构建学院指标导入工作簿（2026-11-08 单层口径，新模板 8 列）：
      * 序号|学院|任务类型|指标名称|指标类型|权重|下发备注|归口职能部门。
-     * 指标名 second 传 null 时只生成一行（用于覆盖删除等场景）；
-     * functionalOrg 传 null = 该列留空（落库 functional_org_id 为 null，审批席位回退原口径）。
+     * 指标名 second 传 null 时只生成一行（用于覆盖删除等场景）。
+     * 2026-11-09（任务 1）：「归口职能部门」列必填，默认填「人力资源部」；
+     * 显式传 null 才会留空（留空 = 缺失，用于验证预览阻断）。
      */
     private MockMultipartFile distributionWorkbook(String fileName,
                                                    String college,
                                                    String taskType,
                                                    String firstChildName,
                                                    String secondChildName) {
-        return distributionWorkbook(fileName, college, taskType, firstChildName, secondChildName, null);
+        return distributionWorkbook(fileName, college, taskType, firstChildName, secondChildName, DEFAULT_FUNCTIONAL_ORG);
     }
 
     private MockMultipartFile distributionWorkbook(String fileName,
@@ -1394,6 +1604,7 @@ class BusinessImportApplicationServiceTest {
      * 构建多行学院导入工作簿（新模板 8 列，2026-11-08 单层口径）。
      * row = {指标名称, 指标类型, 权重, 任务类型}，null = 该格留空。
      * 行号即序号（新模板序号=行号，不再有分组语义）。
+     * 2026-11-09（任务 1）：每行都填「归口职能部门」（该列必填）。
      */
     private MockMultipartFile multiRowDistributionWorkbook(String fileName,
                                                            String college,
@@ -1430,6 +1641,7 @@ class BusinessImportApplicationServiceTest {
                 if (cells[2] != null) {
                     row.createCell(5).setCellValue(cells[2]);
                 }
+                row.createCell(7).setCellValue(DEFAULT_FUNCTIONAL_ORG);
             }
 
             workbook.write(outputStream);

@@ -75,6 +75,10 @@ class ExcelBusinessImportParserTest {
             header.createCell(3).setCellValue("子指标名称");
             header.createCell(4).setCellValue("指标类型");
             header.createCell(5).setCellValue("权重");
+            // 2026-11-09（任务 1/任务 3）：「任务类型」「归口职能部门」已是必填列，
+            // 旧表头文件要能读进来就得把这两列补上（别名识别逻辑不变）。
+            header.createCell(6).setCellValue("任务类型");
+            header.createCell(7).setCellValue("归口职能部门");
 
             Row data = sheet.createRow(1);
             data.createCell(0).setCellValue(1);
@@ -83,12 +87,14 @@ class ExcelBusinessImportParserTest {
             data.createCell(3).setCellValue("一流课程建设数");
             data.createCell(4).setCellValue("定量");
             data.createCell(5).setCellValue("0.2");
+            data.createCell(6).setCellValue("基础性");
+            data.createCell(7).setCellValue("教务处");
 
             var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
 
             assertEquals(1, parsed.rows().size());
             var row = parsed.rows().get(0);
-            assertTrue(row.errors().isEmpty());
+            assertTrue(row.errors().isEmpty(), "补齐必填列后不应报错: " + row.errors());
             assertEquals("计算机学院", row.normalized().college());
             assertEquals("人才培养质量提升", row.normalized().parentIndicator());
             assertEquals("一流课程建设数", row.normalized().indicatorName());
@@ -114,6 +120,9 @@ class ExcelBusinessImportParserTest {
             header.createCell(7).setCellValue("权重");
             header.createCell(8).setCellValue("进度");
             header.createCell(9).setCellValue("里程碑");
+            // 2026-11-09（任务 1/任务 3）：这两列已是必填列，旧导出表回导必须补齐
+            header.createCell(10).setCellValue("任务类型");
+            header.createCell(11).setCellValue("归口职能部门");
 
             Row data = sheet.createRow(1);
             data.createCell(0).setCellValue(1);
@@ -128,6 +137,8 @@ class ExcelBusinessImportParserTest {
             data.createCell(7).setCellValue(100);
             data.createCell(8).setCellValue("当前进度：0%");
             data.createCell(9).setCellValue("1. 完成调研（2026-03-31，33%）");
+            data.createCell(10).setCellValue("基础性");
+            data.createCell(11).setCellValue("教务处");
 
             var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
 
@@ -576,6 +587,7 @@ class ExcelBusinessImportParserTest {
 
     /**
      * 2026-10-31 终版表头加列（学院 9 列）：序号|学院|任务类型|核心指标|核心指标类型|子指标名称|指标类型|权重|下发备注
+     * 2026-11-09（任务 1）：再补第 10 列「归口职能部门」（该列已改为必填）。
      */
     private Sheet distributionSheetV2(Workbook workbook) {
         Sheet sheet = workbook.createSheet("学院子指标模板");
@@ -589,6 +601,7 @@ class ExcelBusinessImportParserTest {
         header.createCell(6).setCellValue("指标类型");
         header.createCell(7).setCellValue("权重（可填 10 / 10% / 0.1）");
         header.createCell(8).setCellValue("下发备注");
+        header.createCell(9).setCellValue("归口职能部门");
         return sheet;
     }
 
@@ -607,6 +620,7 @@ class ExcelBusinessImportParserTest {
             first.createCell(5).setCellValue("完成课程质量数据接入");
             first.createCell(6).setCellValue("定量");
             first.createCell(7).setCellValue(40);
+            first.createCell(9).setCellValue("教务处");
 
             // 第 2 行：组列（序号/任务类型/核心指标/核心指标类型）留空 = 同一父级拆第二个子指标；
             // 学院列留空 = 默认当前学院（整列合并的从属格同语义）
@@ -614,6 +628,7 @@ class ExcelBusinessImportParserTest {
             second.createCell(5).setCellValue("建成教学质量看板");
             second.createCell(6).setCellValue("定量");
             second.createCell(7).setCellValue(60);
+            second.createCell(9).setCellValue("教务处");
 
             var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
 
@@ -647,11 +662,13 @@ class ExcelBusinessImportParserTest {
             first.createCell(5).setCellValue("完成课程质量数据接入");
             first.createCell(6).setCellValue("定量");
             first.createCell(7).setCellValue(40);
+            first.createCell(9).setCellValue("教务处");
 
             Row second = sheet.createRow(2);
             second.createCell(5).setCellValue("建成教学质量看板");
             second.createCell(6).setCellValue("定量");
             second.createCell(7).setCellValue(60);
+            second.createCell(9).setCellValue("教务处");
             // 学院 B2:B3 整列合并；序号 A2:A3、任务类型 C2:C3、核心指标 D2:D3、核心指标类型 E2:E3 按组合并
             sheet.addMergedRegion(new CellRangeAddress(1, 2, 1, 1));
             sheet.addMergedRegion(new CellRangeAddress(1, 2, 0, 0));
@@ -692,6 +709,7 @@ class ExcelBusinessImportParserTest {
             first.createCell(5).setCellValue("完成课程质量数据接入");
             first.createCell(6).setCellValue("定量");
             first.createCell(7).setCellValue(100);
+            first.createCell(9).setCellValue("教务处");
 
             // 延续行显式填了不同任务类型：以组首行为准 + 警告（锚点值是否被改由 enrich 阶段按组首行判定）
             Row second = sheet.createRow(2);
@@ -699,6 +717,7 @@ class ExcelBusinessImportParserTest {
             second.createCell(5).setCellValue("建成教学质量看板");
             second.createCell(6).setCellValue("定量");
             second.createCell(7).setCellValue(10);
+            second.createCell(9).setCellValue("教务处");
 
             var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
 
@@ -730,6 +749,8 @@ class ExcelBusinessImportParserTest {
             header.createCell(6).setCellValue("指标类型");
             header.createCell(7).setCellValue("权重");
             header.createCell(8).setCellValue("下发备注");
+            // 2026-11-09（任务 1）：「归口职能部门」列已改为必填
+            header.createCell(9).setCellValue("归口职能部门");
 
             Row data = sheet.createRow(1);
             data.createCell(0).setCellValue(1);
@@ -740,6 +761,7 @@ class ExcelBusinessImportParserTest {
             data.createCell(5).setCellValue("完成课程质量数据接入");
             data.createCell(6).setCellValue("定量");
             data.createCell(7).setCellValue(100);
+            data.createCell(9).setCellValue("教务处");
 
             var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
 
@@ -748,6 +770,108 @@ class ExcelBusinessImportParserTest {
             assertTrue(row.errors().isEmpty(), "别名表头不应报错: " + row.errors());
             assertEquals("基础性", row.normalized().taskType(),
                     "「任务类别」表头应识别为任务类型字段");
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    // ==================== 2026-11-09：导入侧三个正确性修复（解析器层） ====================
+
+    @Test
+    @DisplayName("2026-11-09（任务 1）：学院模板缺少「归口职能部门」列 → 解析期直接拒绝")
+    void shouldRejectDistributionSheetWithoutFunctionalOrgColumn() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("学院指标模板");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("学院");
+            header.createCell(2).setCellValue("任务类型");
+            header.createCell(3).setCellValue("指标名称");
+            header.createCell(4).setCellValue("指标类型");
+            header.createCell(5).setCellValue("权重");
+            header.createCell(6).setCellValue("下发备注");
+            // 故意不给「归口职能部门」列（旧模板导出）
+
+            Row data = sheet.createRow(1);
+            data.createCell(0).setCellValue(1);
+            data.createCell(1).setCellValue("计算机学院");
+            data.createCell(2).setCellValue("基础性");
+            data.createCell(3).setCellValue("完成课程质量数据接入");
+            data.createCell(4).setCellValue("定量");
+            data.createCell(5).setCellValue(100);
+
+            var ex = org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> parser.parseSheet(sheet, ImportType.DISTRIBUTION));
+            assertTrue(ex.getMessage().contains("归口职能部门"),
+                    "应点名缺失的列: " + ex.getMessage());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-09（任务 1）：「归口职能部门」留空 → 该行报错并阻断")
+    void shouldRejectRowWhenFunctionalOrgBlank() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = distributionSheetV3(workbook);
+
+            Row first = sheet.createRow(1);
+            first.createCell(0).setCellValue(1);
+            first.createCell(1).setCellValue("计算机学院");
+            first.createCell(2).setCellValue("基础性");
+            first.createCell(3).setCellValue("完成课程质量数据接入");
+            first.createCell(4).setCellValue("定量");
+            first.createCell(5).setCellValue(100);
+            // 「归口职能部门」留空 = 缺失
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(1, parsed.rows().size());
+            var row = parsed.rows().get(0);
+            assertEquals(ImportAction.ERROR, row.action());
+            assertTrue(row.errors().stream().anyMatch(msg -> msg.contains("归口职能部门")
+                            && msg.contains("分管职能部门负责人审批")),
+                    "应点明列名与原因: " + row.errors());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-09（任务 3）：「任务类型」留空或无法识别 → 该行报错并点名行号")
+    void shouldRejectRowWhenTaskTypeBlankOrUnknown() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = distributionSheetV3(workbook);
+
+            // 第 1 行：任务类型留空
+            Row first = sheet.createRow(1);
+            first.createCell(0).setCellValue(1);
+            first.createCell(1).setCellValue("计算机学院");
+            first.createCell(3).setCellValue("完成课程质量数据接入");
+            first.createCell(4).setCellValue("定量");
+            first.createCell(5).setCellValue(100);
+            first.createCell(7).setCellValue("教务处");
+
+            // 第 2 行：任务类型填了无法识别的值
+            Row second = sheet.createRow(2);
+            second.createCell(0).setCellValue(2);
+            second.createCell(1).setCellValue("计算机学院");
+            second.createCell(2).setCellValue("定量");
+            second.createCell(3).setCellValue("建成教学质量看板");
+            second.createCell(4).setCellValue("定量");
+            second.createCell(5).setCellValue(100);
+            second.createCell(7).setCellValue("教务处");
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(2, parsed.rows().size());
+            for (var row : parsed.rows()) {
+                assertEquals(ImportAction.ERROR, row.action());
+                assertTrue(row.errors().stream().anyMatch(msg -> msg.contains("任务类型")
+                                && msg.contains("第 " + row.rowNo() + " 行")),
+                        "应点名行号并说明任务类型问题: " + row.errors());
+            }
         } catch (Exception ex) {
             throw new AssertionError(ex);
         }
