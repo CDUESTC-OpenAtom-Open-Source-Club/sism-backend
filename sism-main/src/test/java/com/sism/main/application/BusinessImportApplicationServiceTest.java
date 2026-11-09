@@ -59,7 +59,6 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -99,13 +98,6 @@ class BusinessImportApplicationServiceTest {
     @Mock
     private CollegeDispatchGuardService collegeDispatchGuardService;
 
-    /**
-     * 2026-11-09（任务 1）：学院模板的「归口职能部门」列已改为**必填**，
-     * 测试夹具里默认填「人力资源部」（= fixture 的职能部门），并由
-     * {@code stubPreviewDependencies} stub 出 sys_org 查询结果。
-     */
-    private static final String DEFAULT_FUNCTIONAL_ORG = "人力资源部";
-
     private BusinessImportApplicationService service;
 
     @BeforeEach
@@ -140,7 +132,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("70-percent-basic-weight.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -178,7 +170,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("mutation-in-review.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -211,7 +203,7 @@ class BusinessImportApplicationServiceTest {
         CurrentUser reporterOnly = reporterOnlyUser(fixture);
         var preview = service.previewDistribution(
                 distributionWorkbook("70-percent-basic-weight-normal-import.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -243,7 +235,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("reporter-auto-approve.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -300,7 +292,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("already-distributed.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -351,7 +343,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("already-distributed-invalid-weight.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -379,35 +371,48 @@ class BusinessImportApplicationServiceTest {
     // ==================== #83 批次二：行为基线（固化现状，重构回归网） ====================
 
     @Test
-    @DisplayName("2026-11-08 单层口径：不再做「父级指标跨年度」校验（父级已不参与导入链路）")
-    void shouldNotValidateLegacyParentIndicatorCycle() {
+    @DisplayName("D4: distribution commit rejects parent indicator from another cycle")
+    void shouldRejectCrossYearParentIndicatorOnDistributionCommit() {
         Fixture fixture = fixture();
+        StrategicTask task2025 = crossYearTask(fixture);
+        Indicator crossYearIndicator = crossYearIndicator(fixture, task2025.getId());
         stubPreviewDependencies(fixture);
-        stubCommitDependencies(fixture);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            TransactionCallback<Object> callback = invocation.getArgument(0);
+            return callback.doInTransaction(new SimpleTransactionStatus());
+        });
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
+            Plan plan = invocation.getArgument(0);
+            plan.setId(900L);
+            return plan;
+        });
+        when(indicatorRepository.findById(2001L)).thenReturn(Optional.of(crossYearIndicator));
+        when(taskRepository.findById(task2025.getId())).thenReturn(Optional.of(task2025));
+        // 2026-11-01：预览阶段会反查父级指标所属任务（任务类别继承口径），fixture 父级任务正常存在
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
 
-        // 旧口径：父级指标若属于其他考核年度 → 阻断（要反查父级任务）。
-        // 单层直发后学院指标没有父级，这一整类校验连同 findById(parentId) 一起消失。
         var preview = service.previewDistribution(
-                distributionWorkbook("legacy-cross-year.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                distributionWorkbook("cross-year-distribution.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser());
 
-        var result = service.commit(
+        var blocked = assertThrows(IllegalArgumentException.class, () -> service.commit(
                 preview.batchId(),
                 new ImportCommitRequest(
                         preview.confirmToken(),
                         ConflictMode.APPEND,
                         false,
                         "确认导入"),
-                fixture.currentUser());
+                fixture.currentUser()));
 
-        assertEquals("COMMITTED", result.status());
-        assertEquals(2, result.createdCount());
-        verify(indicatorRepository, never()).findById(anyLong());
+        assertTrue(blocked.getMessage().contains("属于其他考核年度"));
+        assertTrue(blocked.getMessage().contains("2001"));
     }
 
     // ==================== 2026-10-31 层级化定案：按名称匹配更新/新增 ====================
@@ -417,15 +422,14 @@ class BusinessImportApplicationServiceTest {
     void shouldMatchByNameForUpdateAndCreate() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
-        // 2026-11-09（任务 1）：导入会写 plan.functional_org_id → 落库阶段必然 save 一次 plan，
-        // 这里必须给出 save 的返回（否则计划对象会丢），故用 savesNewPlan=true。
-        stubCommitDependencies(fixture, true);
+        stubCommitDependencies(fixture, false);
         // 既有子指标（id=5001，名称「子指标A」，同父级、本学院范围）
         Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Plan plan = planWithId(900L, fixture);
         when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
                 2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
                 .thenReturn(Optional.of(plan));
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
         when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
                 .thenReturn(List.of(existingChild));
         // 提交阶段按（父级+名称）定位更新目标
@@ -442,7 +446,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("name-match.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -469,13 +473,13 @@ class BusinessImportApplicationServiceTest {
     void shouldSkipRowWhenUpdateTargetVanishedBeforeCommit() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
-        // 2026-11-09（任务 1）：落库会 save plan（写 functional_org_id），需要 save 的返回值
-        stubCommitDependencies(fixture, true);
+        stubCommitDependencies(fixture, false);
         Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Plan plan = planWithId(900L, fixture);
         when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
                 2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
                 .thenReturn(Optional.of(plan));
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
         when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
                 .thenReturn(List.of(existingChild));
         // 预览后目标已被删除：提交阶段找不到（父级+名称）匹配 → 安全跳过
@@ -483,7 +487,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("target-vanished.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -514,12 +518,12 @@ class BusinessImportApplicationServiceTest {
             TransactionCallback<Object> callback = invocation.getArgument(0);
             return callback.doInTransaction(new SimpleTransactionStatus());
         });
-        // 2026-11-08（单层口径）：落库链不再反查父级指标/父级任务，这两个 stub 已无意义
+        when(indicatorRepository.findById(fixture.parentIndicator().getId()))
+                .thenReturn(Optional.of(fixture.parentIndicator()));
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
         when(taskRepository.findByPlanIdAndCycleId(900L, 2026L))
                 .thenReturn(List.of(fixture.childTask()));
-        // 2026-11-09（任务 1）：落库会 save plan（写归口职能部门 id），save 必须有返回值
-        when(planRepository.save(any(Plan.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
         Indicator coveredChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Indicator uncoveredChild = existingChildIndicator(fixture, 5002L, "子指标B");
         Plan plan = planWithId(900L, fixture);
@@ -539,7 +543,7 @@ class BusinessImportApplicationServiceTest {
         // 文件只含「子指标A」——同父级组内同名更新，未出现的「子指标B」被软删除
         var preview = service.previewDistribution(
                 distributionWorkbook("update-cover.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", null),
+                        "马克思主义学院", "定量", "子指标A", null),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -571,7 +575,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("college-mismatch.xlsx",
-                        "别的学院", "基础性", "子指标A", "子指标B"),
+                        "别的学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -611,64 +615,42 @@ class BusinessImportApplicationServiceTest {
         assertTrue(preview.blocking());
     }
 
-    // ==================== 2026-11-08（学院指标单层口径）：父级锚点/顺序/预填行机制整体移除 ====================
+    // ==================== 2026-10-31 用户拍板（父级行=上级定死锚点） ====================
 
     @Test
-    @DisplayName("2026-11-08 单层口径：旧模板「核心指标类型」列不再做一致性校验（不阻断）")
-    void shouldIgnoreLegacyParentIndicatorTypeColumn() {
+    @DisplayName("2026-10-31 用户拍板：父级核心指标类型被改 = 锚点不一致阻断（原警告升级），点名应为内容")
+    void shouldBlockWhenParentIndicatorTypeMismatch() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
 
-        // 旧口径：这一列预填父指标类型，被改 = 锚点不一致 → 阻断。
-        // 单层直发后没有父级可对，列即便存在也只是一段不被使用的文本（别名保留仅为旧文件可解析）。
+        // 文件「核心指标类型」填「定性」，系统父指标实际为「定量」→ 阻断错误并点名应为内容
         var preview = service.previewDistribution(
-                distributionWorkbook("legacy-parent-type-column.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                distributionWorkbook("parent-type-mismatch.xlsx",
+                        "马克思主义学院", "定性", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser());
 
-        assertFalse(preview.blocking(), "父级类型列已不参与校验，不应阻断");
-        assertTrue(preview.rows().get(0).errors().isEmpty(),
-                "不应有父级类型错误: " + preview.rows().get(0).errors());
+        assertTrue(preview.blocking());
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("与上级下发内容不一致（不可修改）")
+                                && msg.contains("应为“父级核心指标A（定量）”")),
+                "类型被改应阻断并点名应为内容: " + preview.rows().get(0).errors());
     }
 
     @Test
-    @DisplayName("2026-11-08 单层口径：旧模板「核心指标」列（名称）不再参与匹配，不存在「名称被改」阻断")
-    void shouldIgnoreLegacyParentIndicatorNameColumn() {
+    @DisplayName("2026-10-31 用户拍板：父级核心指标名称被改 = 锚点不一致阻断，点名行序与内容")
+    void shouldBlockWhenParentIndicatorNameChanged() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
 
-        // 旧口径：父级名被改（系统里不存在）→ 锚点不一致阻断。
-        // 单层后父级列不再参与匹配，任意内容都不会再触发该类错误。
+        // 文件父级名「父级核心指标B」在系统下发父级中不存在（预填名被改）
         var preview = service.previewDistribution(
-                distributionWorkbook("legacy-parent-name.xlsx",
-                        "马克思主义学院", "基础性", "子指标A1", "子指标A2"),
-                2026L,
-                fixture.college().getId(),
-                fixture.strategyOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertFalse(preview.blocking(), "父级名称不再参与匹配，不应阻断");
-        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
-        assertTrue(preview.rows().get(0).errors().isEmpty(),
-                "不应有父级匹配错误: " + preview.rows().get(0).errors());
-    }
-
-    @Test
-    @DisplayName("2026-11-08 单层口径：行顺序不再受「上级下发顺序」约束")
-    void shouldNotValidateRowOrderAgainstParentDispatchOrder() {
-        Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
-
-        // 新模板每一行都是独立的学院指标，顺序只影响排序展示，没有「父级组顺序」概念
-        var preview = service.previewDistribution(
-                multiRowDistributionWorkbook("row-order-free.xlsx", "马克思主义学院", new String[][]{
-                        {"子指标B1", "定量", "60", "基础性"},
-                        {"子指标A1", "定量", "40", "基础性"}
+                multiParentDistributionWorkbook("parent-name-changed.xlsx", "马克思主义学院", new String[][]{
+                        {"父级核心指标B", "定量", "子指标A1", "定量", "100"}
                 }),
                 2026L,
                 fixture.college().getId(),
@@ -676,21 +658,61 @@ class BusinessImportApplicationServiceTest {
                 null,
                 fixture.currentUser());
 
-        assertFalse(preview.blocking(), "行顺序不再校验，不应阻断");
-        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
-        assertEquals(ImportAction.CREATE, preview.rows().get(1).action());
+        assertTrue(preview.blocking());
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("第 1 行")
+                                && msg.contains("与上级下发内容不一致（不可修改）")
+                                && msg.contains("父级核心指标B")),
+                "名称被改应阻断并点名行序与内容: " + preview.rows().get(0).errors());
     }
 
     @Test
-    @DisplayName("2026-11-08 单层口径：文件只填部分指标合法（不再受「父级组子序列」约束）")
-    void shouldAllowSubsetOfIndicatorsInFile() {
+    @DisplayName("2026-10-31 用户拍板：父级组调换下发顺序（乱序）→ 阻断并点名乱序组")
+    void shouldBlockWhenParentGroupOrderViolated() {
         Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
+        Indicator parentB = parentIndicator(fixture, 2002L, "父级核心指标B", "定量");
+        stubPreviewDependencies(fixture, fixture.parentIndicator(), parentB);
+        when(taskRepository.findById(1001L)).thenReturn(Optional.of(fixture.parentTask()));
 
-        // 单层口径下没有「系统下发父级组」这个基线，文件想要几条就几条
+        // 系统下发顺序（按 ID 升序）= [A(2001), B(2002)]；文件先 B 后 A = 调换顺序
         var preview = service.previewDistribution(
-                multiRowDistributionWorkbook("subset-indicators.xlsx", "马克思主义学院", new String[][]{
-                        {"子指标A1", "定量", "100", "基础性"}
+                multiParentDistributionWorkbook("parent-order-violation.xlsx", "马克思主义学院", new String[][]{
+                        {"父级核心指标B", "定量", "子指标B1", "定量", "60"},
+                        {"父级核心指标A", "定量", "子指标A1", "定量", "40"}
+                }),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking());
+        // 逆序对（B、A）双双点名顺序不一致
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("顺序与上级下发顺序不一致")
+                                && msg.contains("父级核心指标B")),
+                "乱序组应被点名: " + preview.rows().get(0).errors());
+        assertEquals(ImportAction.ERROR, preview.rows().get(1).action());
+        assertTrue(preview.rows().get(1).errors().stream()
+                        .anyMatch(msg -> msg.contains("顺序与上级下发顺序不一致")
+                                && msg.contains("父级核心指标A")),
+                "逆序对的另一组也应被点名: " + preview.rows().get(1).errors());
+    }
+
+    @Test
+    @DisplayName("2026-10-31 用户拍板：删掉不填的父级组合法（文件父级组是下发顺序的子序列）")
+    void shouldAllowDeletingUnusedParentGroups() {
+        Fixture fixture = fixture();
+        Indicator parentB = parentIndicator(fixture, 2002L, "父级核心指标B", "定量");
+        stubPreviewDependencies(fixture, fixture.parentIndicator(), parentB);
+        when(taskRepository.findById(1001L)).thenReturn(Optional.of(fixture.parentTask()));
+
+        // 系统下发顺序 [A, B]，文件只保留 A 组（B 组整组不填、整行删除）→ 合法
+        var preview = service.previewDistribution(
+                multiParentDistributionWorkbook("parent-group-deleted.xlsx", "马克思主义学院", new String[][]{
+                        {"父级核心指标A", "定量", "子指标A1", "定量", "100"}
                 }),
                 2026L,
                 fixture.college().getId(),
@@ -704,14 +726,26 @@ class BusinessImportApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("2026-11-08 单层口径：指标名称为空的行是漏填，必须阻断（不再有「父级预填行跳过」）")
-    void shouldBlockRowWithBlankIndicatorName() {
+    @DisplayName("2026-10-31 用户拍板：未使用的父级预填行（未填子指标且未改动）→ 跳过不报错、不落库")
+    void shouldSkipUnusedParentPrefillRow() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
+        // 提交链最小依赖：只用到事务执行与建计划（预填行被跳过，不触达父级/落库查询）
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            TransactionCallback<Object> callback = invocation.getArgument(0);
+            return callback.doInTransaction(new SimpleTransactionStatus());
+        });
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
+            Plan plan = invocation.getArgument(0);
+            plan.setId(900L);
+            return plan;
+        });
 
+        // 预填行原样保留：父级名称/类型与系统一致，子指标名称/类型/权重全空
         var preview = service.previewDistribution(
-                multiRowDistributionWorkbook("blank-indicator-name.xlsx", "马克思主义学院", new String[][]{
-                        {null, "定量", "100", "基础性"}
+                multiParentDistributionWorkbook("unused-prefill-row.xlsx", "马克思主义学院", new String[][]{
+                        {"父级核心指标A", "定量", null, null, null}
                 }),
                 2026L,
                 fixture.college().getId(),
@@ -719,24 +753,38 @@ class BusinessImportApplicationServiceTest {
                 null,
                 fixture.currentUser());
 
-        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
-        assertTrue(preview.rows().get(0).errors().stream()
-                        .anyMatch(msg -> msg.contains("指标名称不能为空")),
-                "空指标名称应阻断: " + preview.rows().get(0).errors());
-        assertTrue(preview.blocking());
+        assertEquals(ImportAction.SKIP, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().isEmpty(),
+                "未使用的预填行不应有阻断错误: " + preview.rows().get(0).errors());
+        assertTrue(preview.rows().get(0).warnings().isEmpty(),
+                "未使用的预填行不应有默认权重警告: " + preview.rows().get(0).warnings());
+        assertFalse(preview.blocking());
+
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(preview.confirmToken(), ConflictMode.APPEND, false, "确认导入"),
+                fixture.currentUser());
+
+        assertEquals("COMMITTED", result.status());
+        assertEquals(0, result.createdCount());
+        assertEquals(1, result.skippedCount());
     }
 
     @Test
-    @DisplayName("2026-11-08 单层口径：多行多指标按文件顺序落库（不再有父级组）")
-    void shouldImportMultipleRowsInFileOrder() {
+    @DisplayName("2026-10-31 用户拍板：多个父级组按系统下发顺序填写的正常导入回归")
+    void shouldImportMultiParentGroupsInDistributedOrder() {
         Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
+        Indicator parentB = parentIndicator(fixture, 2002L, "父级核心指标B", "定量");
+        stubPreviewDependencies(fixture, fixture.parentIndicator(), parentB);
+        when(taskRepository.findById(1001L)).thenReturn(Optional.of(fixture.parentTask()));
         stubCommitDependencies(fixture);
+        when(indicatorRepository.findById(parentB.getId())).thenReturn(Optional.of(parentB));
 
+        // 文件父级组顺序 [A, B] 与系统下发顺序一致 → 正常导入
         var preview = service.previewDistribution(
-                multiRowDistributionWorkbook("multi-row-normal.xlsx", "马克思主义学院", new String[][]{
-                        {"子指标A1", "定量", "60", "基础性"},
-                        {"子指标B1", "定量", "40", "基础性"}
+                multiParentDistributionWorkbook("multi-parent-normal.xlsx", "马克思主义学院", new String[][]{
+                        {"父级核心指标A", "定量", "子指标A1", "定量", "60"},
+                        {"父级核心指标B", "定量", "子指标B1", "定量", "40"}
                 }),
                 2026L,
                 fixture.college().getId(),
@@ -748,7 +796,7 @@ class BusinessImportApplicationServiceTest {
         assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
         assertEquals(ImportAction.CREATE, preview.rows().get(1).action());
         assertTrue(preview.rows().stream().allMatch(row -> row.errors().isEmpty()),
-                "按文件顺序填写不应有错误: "
+                "按下发顺序填写不应有错误: "
                         + preview.rows().stream().flatMap(row -> row.errors().stream()).toList());
 
         var result = service.commit(
@@ -760,26 +808,35 @@ class BusinessImportApplicationServiceTest {
         assertEquals(2, result.createdCount());
     }
 
-    // ==================== 2026-11-08（单层口径）：学院任务类别只由文件「任务类型」列决定 ====================
+    // ==================== 2026-11-01（E2E 缺陷修复）：学院子指标任务类别继承父级任务类别 ====================
 
     @Test
-    @DisplayName("2026-11-08 单层口径：学院任务类别取自文件「任务类型」列，不再反查父级任务")
-    void shouldUseFileTaskTypeWithoutLookingUpParentTask() {
+    @DisplayName("2026-11-01: 学院模板无任务类别列——子指标落库任务的 taskCategory 继承父级核心指标所属任务的类别")
+    void shouldInheritParentTaskCategoryForCollegeChildIndicators() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
         stubDistributionCommitBase(fixture);
-        // 学院计划内没有任何任务 → findOrCreateTask 走新建分支，新建任务的类别即文件指定值
+        // 父级核心指标所属任务 = BASIC（fixture.parentTask），任务类别必须继承该值
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
+        // 学院计划内没有任何任务 → findOrCreateTask 走新建分支，新建任务的类别即继承结果
         when(taskRepository.findByPlanIdAndCycleId(900L, 2026L)).thenReturn(List.of());
         List<StrategicTask> savedTasks = captureCreatedTasks();
 
         var preview = service.previewDistribution(
-                distributionWorkbook("file-task-type-basic.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                distributionWorkbook("child-inherits-parent-task-type.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser());
+
+        // 父级任务类别可解析 → 不出现任务类别警告
+        assertTrue(preview.rows().stream()
+                        .flatMap(row -> row.warnings().stream())
+                        .noneMatch(msg -> msg.contains("任务类别")),
+                "父级任务类别可解析时不应警告: " + preview.rows().get(0).warnings());
 
         var result = service.commit(
                 preview.batchId(),
@@ -789,224 +846,37 @@ class BusinessImportApplicationServiceTest {
         assertEquals("COMMITTED", result.status());
         assertFalse(savedTasks.isEmpty(), "应新建学院任务");
         assertTrue(savedTasks.stream().allMatch(task -> task.getTaskType() == TaskType.BASIC),
-                "新建任务类别应取自文件「基础性」: "
-                        + savedTasks.stream().map(StrategicTask::getTaskType).toList());
-        assertEquals("学院基础性指标", savedTasks.get(0).getName());
-        // 单层口径下没有任何「父级任务」查询
-        verify(taskRepository, never()).findById(fixture.parentTask().getId());
+                "新建任务类别应继承父级任务的 BASIC: " + savedTasks.stream().map(StrategicTask::getTaskType).toList());
+        assertEquals("基础任务", savedTasks.get(0).getName());
     }
 
     @Test
-    @DisplayName("2026-11-09（任务 3）：文件「任务类型」留空 → 预览阻断（不再静默按发展性落库）")
-    void shouldBlockRowWhenFileTaskTypeMissing() {
+    @DisplayName("2026-11-01: 父级任务类别取不到（数据异常）→ 预览警告不静默，落库按系统默认发展性")
+    void shouldWarnAndFallbackToDefaultTaskTypeWhenParentTaskCategoryMissing() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
+        stubDistributionCommitBase(fixture);
+        // 父级核心指标仍挂着任务ID，但任务已不存在（数据异常）→ 类别取不到
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.empty());
+        when(taskRepository.findByPlanIdAndCycleId(900L, 2026L)).thenReturn(List.of());
+        List<StrategicTask> savedTasks = captureCreatedTasks();
 
-        // 「任务类型」列留空（旧文件回导的常见形态）：
-        // 旧口径按系统默认 DEVELOPMENT 静默落库 → 基础性指标被排除在「合计=100」校验之外，口径失真；
-        // 新口径在预览阶段就阻断（模板规则文案里本来就写了「漏填或写错会被阻断」）。
         var preview = service.previewDistribution(
-                distributionWorkbook("file-task-type-missing.xlsx",
-                        "马克思主义学院", null, "子指标A", "子指标B"),
+                distributionWorkbook("parent-task-category-missing.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser());
 
-        assertTrue(preview.blocking(), "任务类型缺失必须阻断导入");
-        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
-        assertTrue(preview.rows().get(0).errors().stream()
-                        .anyMatch(msg -> msg.contains("任务类型")
-                                && msg.contains("第 " + preview.rows().get(0).rowNo() + " 行")),
-                "应点名行号并说明任务类型不能为空: " + preview.rows().get(0).errors());
-
-        // 阻断后不允许落库：确认导入必须被拒绝，一条指标都不该建
-        assertThrows(IllegalArgumentException.class, () -> service.commit(
-                preview.batchId(),
-                new ImportCommitRequest(preview.confirmToken(), ConflictMode.APPEND, false, "确认导入"),
-                fixture.currentUser()));
-
-        verify(strategyApplicationService, never()).createIndicator(
-                anyString(), any(), any(), anyLong(), any(), anyString(), any(), any(), any(), any());
-        verify(taskRepository, never()).save(any(StrategicTask.class));
-    }
-
-    // ==================== 2026-11-09：导入侧三个正确性修复 ====================
-
-    @Test
-    @DisplayName("2026-11-09（任务 1）：「归口职能部门」缺失 → 预览阻断（不能让审批派单时落空）")
-    void shouldBlockPreviewWhenFunctionalOrgMissing() {
-        Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
-
-        // 整批留空 = 「归口职能部门」这一列没填：
-        // plan.functional_org_id 会是空 → 学院上报链第 3 环「分管职能部门负责人审批」
-        // 推不出审批席位（No available approver candidates），必须在预览阶段就挡住。
-        var preview = service.previewDistribution(
-                distributionWorkbook("functional-org-missing.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B", null),
-                2026L,
-                fixture.college().getId(),
-                fixture.strategyOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertTrue(preview.blocking(), "归口职能部门缺失必须阻断导入");
-        for (var row : preview.rows()) {
-            assertEquals(ImportAction.ERROR, row.action());
-            assertTrue(row.errors().stream().anyMatch(msg -> msg.contains("归口职能部门")
-                            && msg.contains("分管职能部门负责人审批")),
-                    "应点明列名与原因（决定上报审批派给哪个部门）: " + row.errors());
-        }
-    }
-
-    @Test
-    @DisplayName("2026-11-09（任务 1）：「归口职能部门」名称查不到 → 预览阻断并点名该部门")
-    void shouldBlockPreviewWhenFunctionalOrgNameNotFound() {
-        Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
-        // 名称在 sys_org 里查不到（不存在 / 已软删 / 不是职能部门）→ 必须点名
-        when(organizationRepository.findByNameContaining("不存在的职能部门")).thenReturn(List.of());
-
-        var preview = service.previewDistribution(
-                distributionWorkbook("functional-org-unknown.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B", "不存在的职能部门"),
-                2026L,
-                fixture.college().getId(),
-                fixture.strategyOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertTrue(preview.blocking(), "归口职能部门查不到必须阻断导入");
-        for (var row : preview.rows()) {
-            assertEquals(ImportAction.ERROR, row.action());
-            assertTrue(row.errors().stream().anyMatch(msg -> msg.contains("归口职能部门")
-                            && msg.contains("不存在的职能部门")),
-                    "应点名查不到的部门名: " + row.errors());
-        }
-    }
-
-    @Test
-    @DisplayName("2026-11-09（任务 1）：已软删的归口职能部门同样按「查不到」阻断")
-    void shouldBlockPreviewWhenFunctionalOrgSoftDeleted() {
-        Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
-        SysOrg deletedOrg = SysOrg.create("已撤销部门", OrgType.functional);
-        deletedOrg.setId(77L);
-        deletedOrg.delete();
-        when(organizationRepository.findByNameContaining("已撤销部门")).thenReturn(List.of(deletedOrg));
-
-        var preview = service.previewDistribution(
-                distributionWorkbook("functional-org-deleted.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B", "已撤销部门"),
-                2026L,
-                fixture.college().getId(),
-                fixture.strategyOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertTrue(preview.blocking(), "已软删的归口部门不能放行");
-        assertTrue(preview.rows().get(0).errors().stream()
-                        .anyMatch(msg -> msg.contains("已撤销部门") && msg.contains("归口职能部门")),
-                "应点名已删除的部门: " + preview.rows().get(0).errors());
-    }
-
-    @Test
-    @DisplayName("2026-11-09：已停用（is_active=false）的归口职能部门同样按「查不到」阻断")
-    void shouldBlockPreviewWhenFunctionalOrgInactive() {
-        Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
-        // 停用部门同样推不出审批席位（没有在岗负责人可派单），不能放行到审批环节才炸
-        SysOrg inactiveOrg = SysOrg.create("已停用部门", OrgType.functional);
-        inactiveOrg.setId(78L);
-        inactiveOrg.setIsActive(false);
-        when(organizationRepository.findByNameContaining("已停用部门")).thenReturn(List.of(inactiveOrg));
-
-        var preview = service.previewDistribution(
-                distributionWorkbook("functional-org-inactive.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B", "已停用部门"),
-                2026L,
-                fixture.college().getId(),
-                fixture.strategyOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertTrue(preview.blocking(), "已停用的归口部门不能放行");
-        assertTrue(preview.rows().get(0).errors().stream()
-                        .anyMatch(msg -> msg.contains("已停用部门") && msg.contains("归口职能部门")),
-                "应点名已停用的部门: " + preview.rows().get(0).errors());
-    }
-
-    @Test
-    @DisplayName("2026-11-09：同一文件内出现两行同名指标 → 预览阻断（否则落库建两条、权重翻倍）")
-    void shouldBlockPreviewWhenSameIndicatorNameTwiceInOneFile() {
-        Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
-
-        // 两行同名：预览两行都是「新增」，落库会真的建出两条 →
-        // 同一学院出现两套同名生效指标，基础性权重合计从 60% 变 120% 被卡住，
-        // 用户看到的是一条莫名其妙的「合计不是 100」报错，定位不到真实原因。
-        var preview = service.previewDistribution(
-                distributionWorkbook("duplicate-name.xlsx",
-                        "马克思主义学院", "基础性", "重复指标", "重复指标", "人力资源部"),
-                2026L,
-                fixture.college().getId(),
-                fixture.strategyOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertTrue(preview.blocking(), "文件内同名指标必须阻断");
-        assertTrue(preview.rows().stream().anyMatch(row -> row.errors().stream()
-                        .anyMatch(msg -> msg.contains("重复") && msg.contains("不允许同名指标"))),
-                "应点名重复的指标名与重复行号");
-    }
-
-    @Test
-    @DisplayName("2026-11-09（任务 2）：同名指标 → 更新而不是新建（预览与落库同一把匹配键）")
-    void shouldUpdateSameNameIndicatorInsteadOfCreatingDuplicate() {
-        Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
-        // 本用例只涉及 UPDATE 行，不触达 createIndicator —— 落库依赖单独最小 stub
-        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
-            @SuppressWarnings("unchecked")
-            TransactionCallback<Object> callback = invocation.getArgument(0);
-            return callback.doInTransaction(new SimpleTransactionStatus());
-        });
-        when(taskRepository.findByPlanIdAndCycleId(900L, 2026L)).thenReturn(List.of(fixture.childTask()));
-        // 2026-11-09（任务 1）：落库会 save plan（写归口职能部门 id），save 必须有返回值
-        when(planRepository.save(any(Plan.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-        Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
-        Plan plan = planWithId(900L, fixture);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
-                .thenReturn(Optional.of(plan));
-        when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
-                .thenReturn(List.of(existingChild));
-        when(indicatorRepository.findByTaskId(fixture.childTask().getId()))
-                .thenReturn(List.of(existingChild));
-        when(strategyApplicationService.updateIndicator(
-                anyLong(), anyString(), any(), any(), any(), any(), anyLong(),
-                any(SysOrg.class), any(SysOrg.class)))
-                .thenReturn(existingChild);
-
-        var preview = service.previewDistribution(
-                distributionWorkbook("same-name-update.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", null),
-                2026L,
-                fixture.college().getId(),
-                fixture.strategyOrg().getId(),
-                null,
-                fixture.currentUser());
-
-        assertEquals(ImportAction.UPDATE, preview.rows().get(0).action(),
-                "同一计划、同一任务下的同名指标应判为更新而不是新增");
-        // 匹配键 =（计划 planId, 任务 taskId, 指标名）
-        assertTrue(preview.rows().get(0).businessKey().contains("plan:900"),
-                "匹配键应含计划: " + preview.rows().get(0).businessKey());
-        assertTrue(preview.rows().get(0).businessKey().contains("task:" + fixture.childTask().getId()),
-                "匹配键应含任务: " + preview.rows().get(0).businessKey());
+        assertTrue(preview.rows().stream()
+                        .flatMap(row -> row.warnings().stream())
+                        .anyMatch(msg -> msg.contains("任务类别") && msg.contains("发展性")),
+                "父级任务类别取不到应警告: " + preview.rows().get(0).warnings());
+        // 警告不阻断
+        assertTrue(!preview.blocking());
 
         var result = service.commit(
                 preview.batchId(),
@@ -1014,12 +884,10 @@ class BusinessImportApplicationServiceTest {
                 fixture.currentUser());
 
         assertEquals("COMMITTED", result.status());
-        assertEquals(1, result.updatedCount());
-        assertEquals(0, result.createdCount(), "同名指标不应再新建一条（否则权重翻倍 → 合计 200 被卡住）");
-        // 落库必须更新既有那条（id=5001），而不是新建
-        verify(strategyApplicationService).updateIndicator(
-                eq(5001L), anyString(), any(), any(), any(), any(),
-                eq(fixture.childTask().getId()), any(SysOrg.class), any(SysOrg.class));
+        assertFalse(savedTasks.isEmpty(), "应按默认任务类别新建学院任务");
+        assertTrue(savedTasks.stream().allMatch(task -> task.getTaskType() == TaskType.DEVELOPMENT),
+                "取不到父级任务类别时应按系统默认 DEVELOPMENT 落库: "
+                        + savedTasks.stream().map(StrategicTask::getTaskType).toList());
     }
 
     /** 学院导入提交链路的最小依赖 stub（新建计划 + 父级指标/任务查询 + createIndicator 落库） */
@@ -1034,22 +902,15 @@ class BusinessImportApplicationServiceTest {
             plan.setId(900L);
             return plan;
         });
-        // 2026-11-08：新口径任务名按类别生成，未命中既有任务时会新建 —— 必须 stub save；
-        // 任务命中（同名同类）时不会调用 save，故用 lenient 允许这种「可能用不到」的 stub。
-        AtomicLong taskIds = new AtomicLong(9100L);
-        lenient().when(taskRepository.save(any(StrategicTask.class))).thenAnswer(invocation -> {
-            StrategicTask task = invocation.getArgument(0);
-            task.setId(taskIds.incrementAndGet());
-            return task;
-        });
+        when(indicatorRepository.findById(fixture.parentIndicator().getId()))
+                .thenReturn(Optional.of(fixture.parentIndicator()));
         AtomicLong indicatorIds = new AtomicLong(3000L);
-        // 2026-11-08（学院指标单层口径）：parentIndicatorId 传 null，参数匹配器必须用 any()
         when(strategyApplicationService.createIndicator(
                 anyString(),
                 any(SysOrg.class),
                 any(SysOrg.class),
                 anyLong(),
-                any(),
+                anyLong(),
                 anyString(),
                 any(BigDecimal.class),
                 any(),
@@ -1069,7 +930,7 @@ class BusinessImportApplicationServiceTest {
                 });
     }
 
-    /** 捕获 findOrCreateTask 新建的任务（taskRepository.save），用于断言任务类别取值结果 */
+    /** 捕获 findOrCreateTask 新建的任务（taskRepository.save），用于断言任务类别继承结果 */
     private List<StrategicTask> captureCreatedTasks() {
         List<StrategicTask> savedTasks = new ArrayList<>();
         AtomicLong taskIds = new AtomicLong(9100L);
@@ -1093,8 +954,7 @@ class BusinessImportApplicationServiceTest {
     }
 
     private Indicator existingChildIndicator(Fixture fixture, Long indicatorId, String name) {
-        // 2026-11-08（学院指标单层口径）：学院指标由战略部直发、不再挂父级，
-        // 预览/落库的匹配键因此都是 parent=null，测试数据必须同步（否则永远判 CREATE）。
+        // 2026-11-05（学院指标直发改造）：学院子指标的归属组织是战略发展部
         Indicator indicator = Indicator.create(
                 name,
                 fixture.strategyOrg(),
@@ -1102,6 +962,7 @@ class BusinessImportApplicationServiceTest {
                 "定量");
         indicator.setId(indicatorId);
         indicator.setTaskId(fixture.childTask().getId());
+        indicator.setParentIndicatorId(fixture.parentIndicator().getId());
         indicator.setIsDeleted(false);
         return indicator;
     }
@@ -1115,7 +976,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("audit-success.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -1157,7 +1018,7 @@ class BusinessImportApplicationServiceTest {
 
         var preview = service.previewDistribution(
                 distributionWorkbook("audit-failure.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -1177,52 +1038,61 @@ class BusinessImportApplicationServiceTest {
         assertEquals(2, result.createdCount());
     }
 
-    // ==================== 2026-11-08（学院指标单层口径）：任务类型列不再与父级比对，直接决定学院任务类别 ====================
+    // ==================== 2026-10-31 终版表头加列（学院模板「任务类型」列，锚点级只读校验） ====================
 
     @Test
-    @DisplayName("2026-11-08 单层口径：文件「任务类型」不再与父级比对（父级已不存在），预览不阻断")
-    void shouldNotBlockWhenFileTaskTypeDiffersFromFormerParentTask() {
+    @DisplayName("2026-10-31 终版表头加列：任务类型与系统父级所属任务类型不一致 = 阻断点名（应为内容）")
+    void shouldBlockWhenTaskTypeMismatchWithParentTask() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
+        // 父级核心指标所属任务 = BASIC（fixture.parentTask），文件却填「发展性」→ 阻断
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
 
-        // 旧口径要求这一列与系统父级所属任务一致，不一致就阻断；单层后父级已不存在，
-        // 这一列变成战略部指定学院任务类别的唯一来源，不做任何比对。
         var preview = service.previewDistribution(
-                distributionWorkbook("task-type-column.xlsx",
-                        "马克思主义学院", "发展性", "子指标A", "子指标B"),
+                distributionWorkbookV2("task-type-mismatch.xlsx",
+                        "马克思主义学院", "发展性", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser());
 
-        assertFalse(preview.blocking(),
-                "任务类型不再有父级比对，不应阻断: "
-                        + preview.rows().stream().flatMap(row -> row.errors().stream()).toList());
-        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
-        assertEquals(ImportAction.CREATE, preview.rows().get(1).action());
+        assertTrue(preview.blocking());
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("第 1 行")
+                                && msg.contains("任务类型与上级下发内容不一致（不可修改）")
+                                && msg.contains("父级核心指标A")
+                                && msg.contains("应为“基础性”")),
+                "任务类型被改应阻断并点名行序与应为内容: " + preview.rows().get(0).errors());
     }
 
     @Test
-    @DisplayName("2026-11-08 单层口径：文件「任务类型」= 基础性 → 学院任务落 BASIC，发展性 → 落 DEVELOPMENT")
-    void shouldCreateCollegeTasksByFileTaskType() {
+    @DisplayName("2026-10-31 终版表头加列：任务类型与系统一致 → 正常导入回归（预览通过+提交落库）")
+    void shouldImportNormallyWhenTaskTypeMatchesParentTask() {
         Fixture fixture = fixture();
         stubPreviewDependencies(fixture);
         stubDistributionCommitBase(fixture);
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
         when(taskRepository.findByPlanIdAndCycleId(900L, 2026L)).thenReturn(List.of());
         List<StrategicTask> savedTasks = captureCreatedTasks();
 
         var preview = service.previewDistribution(
-                distributionWorkbook("task-type-basic.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                distributionWorkbookV2("task-type-match.xlsx",
+                        "马克思主义学院", "基础性", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser());
 
-        assertFalse(preview.blocking(), "新模板基础性行不应阻断: "
-                + preview.rows().stream().flatMap(row -> row.errors().stream()).toList());
+        assertFalse(preview.blocking());
+        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
+        assertTrue(preview.rows().stream().allMatch(row -> row.errors().isEmpty()),
+                "任务类型与系统一致不应有错误: "
+                        + preview.rows().stream().flatMap(row -> row.errors().stream()).toList());
 
         var result = service.commit(
                 preview.batchId(),
@@ -1231,13 +1101,67 @@ class BusinessImportApplicationServiceTest {
 
         assertEquals("COMMITTED", result.status());
         assertEquals(2, result.createdCount());
+        // 「任务类型」列不落库：子指标任务类别仍由父级继承链决定（父级任务 BASIC → 继承 BASIC）
         assertTrue(savedTasks.stream().allMatch(task -> task.getTaskType() == TaskType.BASIC),
-                "任务类别应取自文件「任务类型」列: "
+                "任务类型列不落库，任务类别应继承父级任务 BASIC: "
                         + savedTasks.stream().map(StrategicTask::getTaskType).toList());
-        assertEquals("学院基础性指标", savedTasks.get(0).getName());
     }
 
-    /** 构建学院指标导入工作簿（2026-11-08 新模板 8 列；见 {@link #distributionWorkbook}）。 */
+    /** 构建学院子指标导入工作簿（2026-10-31 终版表头加列，9 列含「任务类型」）。 */
+    private MockMultipartFile distributionWorkbookV2(String fileName,
+                                                     String college,
+                                                     String taskType,
+                                                     String parentIndicatorType,
+                                                     String firstChildName,
+                                                     String secondChildName) {
+        try (Workbook workbook = new XSSFWorkbook();
+             ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("学院子指标模板");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("学院");
+            header.createCell(2).setCellValue("任务类型");
+            header.createCell(3).setCellValue("核心指标");
+            header.createCell(4).setCellValue("核心指标类型");
+            header.createCell(5).setCellValue("子指标名称");
+            header.createCell(6).setCellValue("指标类型");
+            header.createCell(7).setCellValue("权重（可填 10 / 10% / 0.1）");
+            header.createCell(8).setCellValue("下发备注");
+
+            Row first = sheet.createRow(1);
+            first.createCell(0).setCellValue(1);
+            if (college != null) {
+                first.createCell(1).setCellValue(college);
+            }
+            if (taskType != null) {
+                first.createCell(2).setCellValue(taskType);
+            }
+            first.createCell(3).setCellValue("父级核心指标A");
+            if (parentIndicatorType != null) {
+                first.createCell(4).setCellValue(parentIndicatorType);
+            }
+            first.createCell(5).setCellValue(firstChildName);
+            first.createCell(6).setCellValue("定量");
+            first.createCell(7).setCellValue(60);
+
+            if (secondChildName != null) {
+                // 第二行组列留空（sticky 延续同一父级，任务类型随组合并读空=继承）
+                Row second = sheet.createRow(2);
+                second.createCell(5).setCellValue(secondChildName);
+                second.createCell(6).setCellValue("定量");
+                second.createCell(7).setCellValue(40);
+            }
+
+            workbook.write(outputStream);
+            return new MockMultipartFile(
+                    "file",
+                    fileName,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    outputStream.toByteArray());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
 
     private StrategicTask crossYearTask(Fixture fixture) {
         StrategicTask task2025 = StrategicTask.create(
@@ -1282,27 +1206,8 @@ class BusinessImportApplicationServiceTest {
                 .thenReturn(Optional.of(fixture.college()));
     }
 
-    /**
-     * 2026-11-08（学院指标单层口径）：预览阶段<b>不再</b>查父级锚点
-     * （{@code findCoreDispatchAnchors} 已从导入链路移除），因此这里只 stub：
-     * 组织查询 + 「该学院本周期是否已有计划」。多 stub 会被 Mockito 判为 UnnecessaryStubbing。
-     */
     private void stubPreviewDependencies(Fixture fixture) {
-        when(organizationRepository.findById(fixture.strategyOrg().getId()))
-                .thenReturn(Optional.of(fixture.strategyOrg()));
-        when(organizationRepository.findById(fixture.college().getId()))
-                .thenReturn(Optional.of(fixture.college()));
-        // 2026-11-09（任务 1）：预览阶段要按名称解析「归口职能部门」，
-        // 查不到就要点名报错——所以这里必须 stub 出 sys_org 的查询结果。
-        // 用 lenient：个别用例会换成别的部门名（或故意查不到），此时这个 stub 用不上。
-        lenient().when(organizationRepository.findByNameContaining(DEFAULT_FUNCTIONAL_ORG))
-                .thenReturn(List.of(fixture.functionalOrg()));
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L,
-                PlanLevel.FUNC_TO_COLLEGE,
-                fixture.strategyOrg().getId(),
-                fixture.college().getId()))
-                .thenReturn(Optional.empty());
+        stubPreviewDependencies(fixture, fixture.parentIndicator());
     }
 
     // 2026-11-05（R10）：存量「职能部门创建的」学院下发计划存在时，导入必须被明确拒绝。
@@ -1334,7 +1239,7 @@ class BusinessImportApplicationServiceTest {
                 IllegalArgumentException.class,
                 () -> service.previewDistribution(
                         distributionWorkbook("legacy-plan.xlsx",
-                                "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                                "马克思主义学院", "定量", "子指标A", "子指标B"),
                         2026L,
                         fixture.college().getId(),
                         fixture.strategyOrg().getId(),
@@ -1363,7 +1268,7 @@ class BusinessImportApplicationServiceTest {
 
         assertDoesNotThrow(() -> service.previewDistribution(
                 distributionWorkbook("strategy-plan.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
@@ -1388,12 +1293,30 @@ class BusinessImportApplicationServiceTest {
 
         assertDoesNotThrow(() -> service.previewDistribution(
                 distributionWorkbook("other-college-plan.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser()));
+    }
+
+    private void stubPreviewDependencies(Fixture fixture, Indicator... parents) {
+        // 2026-11-05（学院指标直发改造）：来源组织 = 战略发展部；
+        // 2026-11-05（BL3）：父级锚点按「同一考核周期 + 目标为职能部门 + 无父级 + 未删除」收敛，
+        // 由仓储层的原生查询完成（指标表不带 cycle，需经 sys_task → plan → cycle_id 关联）。
+        when(organizationRepository.findById(fixture.strategyOrg().getId()))
+                .thenReturn(Optional.of(fixture.strategyOrg()));
+        when(organizationRepository.findById(fixture.college().getId()))
+                .thenReturn(Optional.of(fixture.college()));
+        when(indicatorRepository.findCoreDispatchAnchors(fixture.strategyOrg().getId(), 2026L))
+                .thenReturn(List.of(parents));
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L,
+                PlanLevel.FUNC_TO_COLLEGE,
+                fixture.strategyOrg().getId(),
+                fixture.college().getId()))
+                .thenReturn(Optional.empty());
     }
 
     private void stubCommitDependencies(Fixture fixture) {
@@ -1413,27 +1336,20 @@ class BusinessImportApplicationServiceTest {
                 return plan;
             });
         }
+        when(indicatorRepository.findById(fixture.parentIndicator().getId()))
+                .thenReturn(Optional.of(fixture.parentIndicator()));
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
         when(taskRepository.findByPlanIdAndCycleId(900L, 2026L))
                 .thenReturn(List.of(fixture.childTask()));
-        // 2026-11-08：新口径任务名按「学院基础性指标/学院发展性指标」生成，
-        // 未命中既有任务时会新建 —— 必须 stub save，否则 findOrCreateTask 返回 null → NPE。
-        // 任务命中时不调用 save，因此用 lenient 允许这种「可能用不到」的 stub。
-        AtomicLong taskIds = new AtomicLong(9100L);
-        lenient().when(taskRepository.save(any(StrategicTask.class))).thenAnswer(invocation -> {
-            StrategicTask task = invocation.getArgument(0);
-            task.setId(taskIds.incrementAndGet());
-            return task;
-        });
 
         AtomicLong indicatorIds = new AtomicLong(3000L);
-        // 2026-11-08（学院指标单层口径）：第 5 个参数（parentIndicatorId）现在固定传 null，
-        // anyLong() 不匹配 null（会让 stub 落到默认返回值 → NPE），必须用 any()。
         when(strategyApplicationService.createIndicator(
                 anyString(),
                 any(SysOrg.class),
                 any(SysOrg.class),
                 anyLong(),
-                any(),
+                anyLong(),
                 anyString(),
                 any(BigDecimal.class),
                 any(),
@@ -1463,7 +1379,7 @@ class BusinessImportApplicationServiceTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> service.previewDistribution(
                         distributionWorkbook("source-not-strategy.xlsx",
-                                "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                                "马克思主义学院", "定量", "子指标A", "子指标B"),
                         2026L,
                         fixture.college().getId(),
                         fixture.functionalOrg().getId(),
@@ -1475,26 +1391,27 @@ class BusinessImportApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("2026-11-08（单层口径）：父级锚点匹配已移除——不再出现「同名父级多命中」歧义阻断")
-    void shouldNoLongerBlockOnDuplicateLegacyParentNames() {
+    @DisplayName("2026-11-05（BL3）：同名父级多命中恢复硬阻断并点名（不再取 ID 最小的静默挂错父级）")
+    void shouldBlockOnAmbiguousSameNameParent() {
         Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
+        Indicator parentA = parentIndicator(fixture, 2001L, "父级核心指标A", "定量");
+        Indicator duplicateParentA = parentIndicator(fixture, 2003L, "父级核心指标A", "定量");
+        stubPreviewDependencies(fixture, parentA, duplicateParentA);
 
-        // 原口径：父级按名称反查，同一考核年度出现两条同名核心指标会硬阻断。
-        // 单层直发后文件里根本没有父级列、也不做锚点匹配，这条歧义判定随之消失。
         var preview = service.previewDistribution(
-                distributionWorkbook("duplicate-legacy-parent.xlsx",
-                        "马克思主义学院", "基础性", "子指标A", "子指标B"),
+                distributionWorkbook("ambiguous-parent-name.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser());
 
-        assertFalse(preview.blocking(), "父级不再参与匹配，不应因同名歧义阻断整批导入");
-        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
-        assertTrue(preview.rows().get(0).errors().isEmpty(),
-                "不应有父级相关错误: " + preview.rows().get(0).errors());
+        assertTrue(preview.blocking(), "同名多命中应阻断整批导入（不能静默挂错父级）");
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("匹配到多条同名记录")),
+                "应点名同名歧义: " + preview.rows().get(0).errors());
     }
 
     private Fixture fixture() {
@@ -1521,10 +1438,8 @@ class BusinessImportApplicationServiceTest {
         parentIndicator.setId(2001L);
         parentIndicator.setTaskId(parentTask.getId());
 
-        // 2026-11-08（学院指标单层口径）：学院任务名不再继承父级任务，默认按类别命名，
-        // fixture 里这条任务就是「文件填基础性 → 复用同名基础性任务」这条路径的载体。
         StrategicTask childTask = StrategicTask.create(
-                "学院基础性指标",
+                "基础任务",
                 TaskType.BASIC,
                 900L,
                 2026L,
@@ -1549,44 +1464,31 @@ class BusinessImportApplicationServiceTest {
     }
 
     /**
-     * 构建学院指标导入工作簿（2026-11-08 单层口径，新模板 8 列）：
-     * 序号|学院|任务类型|指标名称|指标类型|权重|下发备注|归口职能部门。
-     * 指标名 second 传 null 时只生成一行（用于覆盖删除等场景）。
-     * 2026-11-09（任务 1）：「归口职能部门」列必填，默认填「人力资源部」；
-     * 显式传 null 才会留空（留空 = 缺失，用于验证预览阻断）。
+     * 构建学院子指标导入工作簿（2026-10-31 终版表头，无「父级战略任务」列）。
+     * 子指标名 second 传 null 时只生成一行（用于覆盖删除等场景）。
      */
     private MockMultipartFile distributionWorkbook(String fileName,
                                                    String college,
-                                                   String taskType,
+                                                   String parentIndicatorType,
                                                    String firstChildName,
                                                    String secondChildName) {
-        return distributionWorkbook(fileName, college, taskType, firstChildName, secondChildName, DEFAULT_FUNCTIONAL_ORG);
-    }
-
-    private MockMultipartFile distributionWorkbook(String fileName,
-                                                   String college,
-                                                   String taskType,
-                                                   String firstChildName,
-                                                   String secondChildName,
-                                                   String functionalOrg) {
         try (Workbook workbook = new XSSFWorkbook();
              ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
-            Sheet sheet = workbook.createSheet("学院指标模板");
+            Sheet sheet = workbook.createSheet("学院子指标模板");
             Row header = sheet.createRow(0);
             header.createCell(0).setCellValue("序号");
             header.createCell(1).setCellValue("学院");
-            header.createCell(2).setCellValue("任务类型");
-            header.createCell(3).setCellValue("指标名称");
-            header.createCell(4).setCellValue("指标类型");
-            header.createCell(5).setCellValue("权重（可填 10 / 10% / 0.1）");
-            header.createCell(6).setCellValue("下发备注");
-            header.createCell(7).setCellValue("归口职能部门");
+            header.createCell(2).setCellValue("核心指标");
+            header.createCell(3).setCellValue("核心指标类型");
+            header.createCell(4).setCellValue("子指标名称");
+            header.createCell(5).setCellValue("指标类型");
+            header.createCell(6).setCellValue("权重（可填 10 / 10% / 0.1）");
+            header.createCell(7).setCellValue("下发备注");
 
-            appendDistributionRow(sheet, 1, college, taskType, firstChildName, 30, functionalOrg);
+            appendDistributionRow(sheet, 1, college, parentIndicatorType, firstChildName, 30);
             if (secondChildName != null) {
-                // 第二行学院留空 = 视为当前选择的学院（学院列留空不参与一致性校验），
-                // 与真实模板里「合并单元格从属行读空」同语义
-                appendDistributionRow(sheet, 2, null, taskType, secondChildName, 40, functionalOrg);
+                // 第二行组列留空（sticky 延续同一父级）
+                appendDistributionRow(sheet, 2, null, null, secondChildName, 40);
             }
 
             workbook.write(outputStream);
@@ -1601,47 +1503,44 @@ class BusinessImportApplicationServiceTest {
     }
 
     /**
-     * 构建多行学院导入工作簿（新模板 8 列，2026-11-08 单层口径）。
-     * row = {指标名称, 指标类型, 权重, 任务类型}，null = 该格留空。
-     * 行号即序号（新模板序号=行号，不再有分组语义）。
-     * 2026-11-09（任务 1）：每行都填「归口职能部门」（该列必填）。
+     * 构建多父级组的学院导入工作簿（每组一行、锚点行带组号；2026-10-31 锚点测试用）。
+     * group 列 = {父级核心指标名, 核心指标类型, 子指标名称, 子指标类型, 权重}，null = 留空；
+     * 子指标三列全空 = 未使用的父级预填行。学院列每行填写（与当前选择一致）。
      */
-    private MockMultipartFile multiRowDistributionWorkbook(String fileName,
-                                                           String college,
-                                                           String[][] rows) {
+    private MockMultipartFile multiParentDistributionWorkbook(String fileName,
+                                                              String college,
+                                                              String[][] groups) {
         try (Workbook workbook = new XSSFWorkbook();
              ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
-            Sheet sheet = workbook.createSheet("学院指标模板");
+            Sheet sheet = workbook.createSheet("学院子指标模板");
             Row header = sheet.createRow(0);
             header.createCell(0).setCellValue("序号");
             header.createCell(1).setCellValue("学院");
-            header.createCell(2).setCellValue("任务类型");
-            header.createCell(3).setCellValue("指标名称");
-            header.createCell(4).setCellValue("指标类型");
-            header.createCell(5).setCellValue("权重（可填 10 / 10% / 0.1）");
-            header.createCell(6).setCellValue("下发备注");
-            header.createCell(7).setCellValue("归口职能部门");
+            header.createCell(2).setCellValue("核心指标");
+            header.createCell(3).setCellValue("核心指标类型");
+            header.createCell(4).setCellValue("子指标名称");
+            header.createCell(5).setCellValue("指标类型");
+            header.createCell(6).setCellValue("权重（可填 10 / 10% / 0.1）");
+            header.createCell(7).setCellValue("下发备注");
 
-            for (int index = 0; index < rows.length; index++) {
-                String[] cells = rows[index];
-                Row row = sheet.createRow(index + 1);
-                row.createCell(0).setCellValue(index + 1);
+            for (int groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+                String[] group = groups[groupIndex];
+                Row row = sheet.createRow(groupIndex + 1);
+                row.createCell(0).setCellValue(groupIndex + 1);
                 if (college != null) {
                     row.createCell(1).setCellValue(college);
                 }
-                if (cells[3] != null) {
-                    row.createCell(2).setCellValue(cells[3]);
+                row.createCell(2).setCellValue(group[0]);
+                row.createCell(3).setCellValue(group[1]);
+                if (group[2] != null) {
+                    row.createCell(4).setCellValue(group[2]);
                 }
-                if (cells[0] != null) {
-                    row.createCell(3).setCellValue(cells[0]);
+                if (group[3] != null) {
+                    row.createCell(5).setCellValue(group[3]);
                 }
-                if (cells[1] != null) {
-                    row.createCell(4).setCellValue(cells[1]);
+                if (group[4] != null) {
+                    row.createCell(6).setCellValue(group[4]);
                 }
-                if (cells[2] != null) {
-                    row.createCell(5).setCellValue(cells[2]);
-                }
-                row.createCell(7).setCellValue(DEFAULT_FUNCTIONAL_ORG);
             }
 
             workbook.write(outputStream);
@@ -1658,24 +1557,25 @@ class BusinessImportApplicationServiceTest {
     private void appendDistributionRow(Sheet sheet,
                                        int rowIndex,
                                        String college,
-                                       String taskType,
+                                       String parentIndicatorType,
                                        String childName,
-                                       int weight,
-                                       String functionalOrg) {
+                                       int weight) {
         Row row = sheet.createRow(rowIndex);
-        row.createCell(0).setCellValue(rowIndex);
+        if (rowIndex == 1) {
+            row.createCell(0).setCellValue(1);
+        }
         if (college != null) {
             row.createCell(1).setCellValue(college);
         }
-        if (taskType != null) {
-            row.createCell(2).setCellValue(taskType);
+        if (rowIndex == 1) {
+            row.createCell(2).setCellValue("父级核心指标A");
         }
-        row.createCell(3).setCellValue(childName);
-        row.createCell(4).setCellValue("定量");
-        row.createCell(5).setCellValue(weight);
-        if (functionalOrg != null) {
-            row.createCell(7).setCellValue(functionalOrg);
+        if (parentIndicatorType != null) {
+            row.createCell(3).setCellValue(parentIndicatorType);
         }
+        row.createCell(4).setCellValue(childName);
+        row.createCell(5).setCellValue("定量");
+        row.createCell(6).setCellValue(weight);
     }
 
     /** 构建职能部门指标导入工作簿（2026-10-31 终版表头） */

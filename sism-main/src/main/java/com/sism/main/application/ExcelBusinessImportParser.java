@@ -60,42 +60,24 @@ public class ExcelBusinessImportParser {
 
     private static final Map<String, List<String>> DISTRIBUTION_ALIASES = Map.ofEntries(
             Map.entry("college", List.of("学院", "下级部门", "责任学院")),
-            // 2026-10-31 终版表头加列（学院模板）：「任务类型」当时是父级核心指标所属任务的类型
-            // （基础性/发展性），系统预填、随组合并、组内继承，锚点级只读校验。
-            //
-            // 2026-11-08（学院指标单层口径）：学院指标没有父级，这一列的语义改为
-            // **战略部在导入时直接指定的学院任务类型**（基础性/发展性），落库时决定
-            // 学院任务行的 task_type —— 权重合计只剩「基础性」参与，必须由文件决定；
-            // 一致性校验（与父级所属任务比对）随父级一起移除。
+            // 2026-10-31 终版表头加列（学院模板）：「任务类型」=父级核心指标所属任务的类型
+            // （基础性/发展性），系统预填、随组合并、组内继承；锚点级只读校验——与系统父级所属
+            // 任务类型不一致→阻断点名（BusinessImportApplicationService.applyDistributionAnchor）。
+            // 该列为系统预填信息，不新增落库字段：子指标任务类别仍由父级继承链决定；
+            // 「任务类别」别名兼容。旧导出表无该列时取空串，锚点校验自动跳过（回导兼容）。
             Map.entry("taskType", List.of("任务类型", "任务类别")),
             // 2026-10-31 层级化定案：新模板已删除「父级战略任务」列（父级指标所属任务由系统按名称反查），
             // 别名保留用于兼容读取旧导出表；新模板文件不含该列时此字段为空，落库取父级指标自身任务
             Map.entry("parentStrategicTask", List.of("父级战略任务", "战略任务", "任务名称")),
             // 2026-10-31 终版表头：「父级核心指标」列改名「核心指标」（别名保留兼容旧文件）
-            //
-            // 2026-11-08：新模板（8 列）已没有这一列，解析别名只为旧文件不报「表头识别不到」；
-            // 父级锚点匹配与「名称/类型不可修改」一致性校验一并移除，读到的值不再参与落库。
             Map.entry("parentIndicator", List.of("核心指标", "父级核心指标", "上级指标", "来源指标")),
             // 2026-10-31 终版表头：「核心指标类型」=父指标自身类型（定量/定性），系统预填、只读校验、不落库
             Map.entry("parentIndicatorType", List.of("核心指标类型", "父级指标类型")),
             Map.entry("indicatorName", List.of("子指标名称", "指标名称", "学院指标")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
             Map.entry("weight", List.of("权重", "指标权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
-            // 2026-11-08：新模板第 7 列表头就是「下发备注」，原别名（备注/说明）识别不到它
-            Map.entry("remark", List.of("下发备注", "备注", "说明")),
-            // 2026-11-08（学院指标单层口径）：新模板第 8 列「归口职能部门」。
-            // 为什么要有这一列：学院指标没有父级后，审批席位推不出「该学院归口哪个职能部门」，
-            // 只能由战略部在导入时显式指定（见 Plan.functionalOrgId）。
-            //
-            // 2026-11-09（任务 1）：该列由「可留空」改为**必填**——留空会让
-            // plan.functional_org_id 为空，学院上报链第 3 环「分管职能部门负责人审批」
-            // 推不出审批席位（派单时抛 No available approver candidates），
-            // 所以在预览阶段就阻断，而不是让用户导入成功后在审批环节炸掉。
-            Map.entry("functionalOrg", List.of("归口职能部门", "归口部门", "职能部门")),
+            Map.entry("remark", List.of("备注", "说明")),
             // 2026-10-31 层级化定案：序号=父级核心指标组号（组首行必填，组内留空=同上）；别名向后兼容
-            //
-            // 2026-11-08：新模板（8 列）里序号就是行号，不再有分组语义；
-            // 别名保留仅为旧文件回导不报缺列。
             Map.entry("seq", List.of("序号", "序 号"))
     );
 
@@ -140,17 +122,6 @@ public class ExcelBusinessImportParser {
         if (!header.fieldColumns().containsKey("seq")) {
             throw new IllegalStateException(
                     "导入文件缺少「序号」列（1、2、3…），请使用最新导出的表格或下载最新模板后重试");
-        }
-
-        // 2026-11-09（任务 1）：学院模板的「归口职能部门」列改为必填。
-        // 为什么整列缺失要在这里直接拒绝：学院指标改成「战略部 → 学院」单层直发后没有父级，
-        // 学院上报链第 3 环「分管职能部门负责人审批」的席位只能由这一列决定。
-        // 旧模板（没有这一列）导出的文件整批缺失该信息，放进来只会让每行都报「不能为空」，
-        // 不如像「序号」列一样在解析期给一句可操作的话（换最新模板）。
-        if (type == ImportType.DISTRIBUTION && !header.fieldColumns().containsKey("functionalOrg")) {
-            throw new IllegalStateException(
-                    "导入文件缺少「归口职能部门」列（该列决定学院上报审批由哪个职能部门负责审批），"
-                            + "请使用最新导出的表格或下载最新模板后重试");
         }
 
         List<FieldMapping> mappings = header.fieldColumns().entrySet().stream()
@@ -225,7 +196,7 @@ public class ExcelBusinessImportParser {
                 normalized = withInheritedGroup(normalized, currentGroupSeq, currentGroupValue, currentGroupTypes, type);
             }
 
-            errors.addAll(validate(normalized, type, displayRowNo(normalized, rowIndex)));
+            errors.addAll(validate(normalized, type));
             warnings.addAll(validateWarnings(normalized, type));
             // 2026-10-31：预览行的行号展示为「序号」（组号）；组号缺失时退回物理行号便于定位
             Integer seqValue = normalized.seq();
@@ -254,15 +225,6 @@ public class ExcelBusinessImportParser {
     }
 
     /**
-     * 2026-11-09（任务 3）：错误文案里要能点名行号，方便用户直接定位到要改的那一行。
-     * 行号口径与预览表格展示一致：有「序号」用序号，没有就用物理行号。
-     */
-    private int displayRowNo(NormalizedImportRow row, int rowIndex) {
-        Integer seqValue = row.seq();
-        return (seqValue != null && seqValue > 0) ? seqValue : rowIndex + 1;
-    }
-
-    /**
      * 留空延续（sticky）：把组号、任务/父级名称与组级类型（任务类型/核心指标类型）
      * 回填到延续行，其余内容列保持本行填写值。
      * 2026-10-31 终版表头（学院模板加列）：组级类型改为按字段映射传入——
@@ -287,8 +249,7 @@ public class ExcelBusinessImportParser {
                     row.indicatorType(),
                     row.weight(),
                     row.remark(),
-                    row.parentIndicatorId(),
-                    row.functionalOrg()
+                    row.parentIndicatorId()
             );
         }
         return new NormalizedImportRow(
@@ -304,8 +265,7 @@ public class ExcelBusinessImportParser {
                 row.indicatorType(),
                 row.weight(),
                 row.remark(),
-                row.parentIndicatorId(),
-                row.functionalOrg()
+                row.parentIndicatorId()
         );
     }
 
@@ -333,17 +293,8 @@ public class ExcelBusinessImportParser {
      * 职能部门模板：组内「基础性」行合计=100（沿用现行口径，只换分组）；
      * 学院模板：组内子指标合计=100。空权重按默认值 100 参与合计。
      * 合计不符 → 组内每行追加警告（不阻断预览；自动下发时仍有最终权重校验兜底）。
-     *
-     * <p>2026-11-08（学院指标单层口径）：学院模板已没有「父级核心指标」列，
-     * 因此不存在「同组」概念，口径改为<b>该学院该计划下全部基础性指标合计 100</b>
-     * （与 BasicTaskWeightValidationService 的新口径一致），单独走
-     * {@link #appendCollegeWeightWarning}。
      */
     private void appendGroupWeightWarnings(List<ImportRowPreview> rows, ImportType type) {
-        if (type == ImportType.DISTRIBUTION) {
-            appendCollegeWeightWarning(rows);
-            return;
-        }
         Map<Integer, List<Integer>> groups = new LinkedHashMap<>();
         for (int i = 0; i < rows.size(); i++) {
             Integer seq = rows.get(i).normalized().seq();
@@ -357,6 +308,9 @@ public class ExcelBusinessImportParser {
             List<Integer> weighted = indexes.stream()
                     .filter(index -> type != ImportType.STRATEGIC_TASK
                             || "基础性".equals(rows.get(index).normalized().taskType()))
+                    // 2026-10-31 用户拍板（父级行=上级定死锚点）：未使用的父级预填行（子指标三列全空）
+                    // 不参与组权重合计（其空权重不再按默认 100 计入，避免「未用行」制造假性权重警告）
+                    .filter(index -> !isParentOnlyDistributionRow(rows.get(index).normalized(), type))
                     .toList();
             if (weighted.isEmpty()) {
                 continue;
@@ -371,7 +325,9 @@ public class ExcelBusinessImportParser {
                 continue;
             }
             NormalizedImportRow head = rows.get(indexes.get(0)).normalized();
-            String scope = "战略任务「" + head.strategicTask() + "」内基础性指标";
+            String scope = type == ImportType.STRATEGIC_TASK
+                    ? "战略任务「" + head.strategicTask() + "」内基础性指标"
+                    : "核心指标「" + head.parentIndicator() + "」内子指标";
             String message = "第 " + entry.getKey() + " 组（" + scope + "）权重合计为 "
                     + total.stripTrailingZeros().toPlainString() + "，应为 100，请核对组内权重";
             for (Integer index : indexes) {
@@ -388,55 +344,6 @@ public class ExcelBusinessImportParser {
                         warnings
                 ));
             }
-        }
-    }
-
-    /**
-     * 2026-11-08（学院指标单层口径）：学院模板的权重合计提示。
-     *
-     * <p>为什么按「学院整体」而不是按组：单层直发后学院指标没有父级，
-     * 权重合计的业务口径变成「该学院该计划下全部**基础性**指标合计 100」
-     * （发展性指标不参与合计，与 BasicTaskWeightValidationService 一致）。
-     * 报告范围仍用「第 N 行」定位，不再出现「第 N 组 / 组内权重」等迷惑措辞。
-     *
-     * <p>只给参与合计的行挂警告：把不看基础性合计的行也一并报警会误导用户去改
-     * 根本不需要凑 100 的发展性权重。
-     */
-    private void appendCollegeWeightWarning(List<ImportRowPreview> rows) {
-        List<Integer> basicIndexes = new ArrayList<>();
-        for (int i = 0; i < rows.size(); i++) {
-            NormalizedImportRow normalized = rows.get(i).normalized();
-            if (!isBlank(normalized.indicatorName()) && "基础性".equals(normalized.taskType())) {
-                basicIndexes.add(i);
-            }
-        }
-        if (basicIndexes.isEmpty()) {
-            return;
-        }
-        BigDecimal total = basicIndexes.stream()
-                .map(index -> {
-                    BigDecimal weight = rows.get(index).normalized().weight();
-                    return weight == null ? BigDecimal.valueOf(100) : weight;
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (total.compareTo(BigDecimal.valueOf(100)) == 0) {
-            return;
-        }
-        String message = "本学院全部基础性指标权重合计为 "
-                + total.stripTrailingZeros().toPlainString() + "，应为 100，请核对（按学院整体合计）";
-        for (Integer index : basicIndexes) {
-            ImportRowPreview row = rows.get(index);
-            List<String> warnings = new ArrayList<>(row.warnings());
-            warnings.add(message);
-            rows.set(index, new ImportRowPreview(
-                    row.rowNo(),
-                    row.action(),
-                    row.businessKey(),
-                    row.normalized(),
-                    row.source(),
-                    row.errors(),
-                    warnings
-            ));
         }
     }
 
@@ -548,10 +455,6 @@ public class ExcelBusinessImportParser {
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
         String remark = clean(value(source, aliases, "remark"));
         Integer seq = parsePositiveInt(value(source, aliases, "seq"));
-        // 2026-11-08（学院指标单层口径）：归口职能部门按**名称**读入。
-        // 2026-11-09（任务 1）：该列改为必填——留空会在预览阶段被阻断（见 validate），
-        // 原因见 DISTRIBUTION_ALIASES 里 functionalOrg 的说明。
-        String functionalOrg = clean(value(source, aliases, "functionalOrg"));
         return new NormalizedImportRow(
                 seq,
                 department,
@@ -565,8 +468,7 @@ public class ExcelBusinessImportParser {
                 indicatorType,
                 weight,
                 remark,
-                null,
-                functionalOrg
+                null
         );
     }
 
@@ -583,14 +485,11 @@ public class ExcelBusinessImportParser {
         }
     }
 
-    private List<String> validate(NormalizedImportRow row, ImportType type, int displayNo) {
+    private List<String> validate(NormalizedImportRow row, ImportType type) {
         List<String> errors = new ArrayList<>();
         // 2026-10-31 层级化定案：序号=组号，组首行必填（延续行由 sticky 继承补齐，不在此报错）
-        // 2026-11-08：学院模板里「序号」就是行号，不再有分组语义，提示文案同步去掉「组」字样。
         if (row.seq() == null) {
-            errors.add(type == ImportType.STRATEGIC_TASK
-                    ? "组首行「序号」（组号）不能为空或不合法（应为 1、2、3… 的正整数）"
-                    : "「序号」不能为空或不合法（应为 1、2、3… 的正整数）");
+            errors.add("组首行「序号」（组号）不能为空或不合法（应为 1、2、3… 的正整数）");
         }
         if (type == ImportType.STRATEGIC_TASK) {
             if (isBlank(row.taskType())) {
@@ -600,34 +499,21 @@ public class ExcelBusinessImportParser {
             if (isBlank(row.strategicTask())) {
                 errors.add("战略任务（组首行）不能为空；组内延续行请留空组列（留空=同上）");
             }
+        } else {
+            if (isBlank(row.parentIndicator())) {
+                errors.add("核心指标（组首行）不能为空；组内延续行请留空组列（留空=同上）");
+            }
         }
-        // 2026-11-09（任务 3）：学院模板的「任务类型」漏填/写错必须阻断，不能再静默按「发展性」兜底。
-        // 为什么必须拦：这一列是学院任务类别的唯一来源，兜底成「发展性」会把本该算进
-        // 「基础性权重合计=100」的指标排除在校验之外，权重口径直接失真。
-        if (type == ImportType.DISTRIBUTION && isBlank(row.taskType())) {
-            errors.add("第 " + displayNo + " 行「任务类型」不能为空或无法识别（基础性/发展性），"
-                    + "该列决定学院任务的类别与权重合计口径，请填写后再导入");
-        }
-        // 2026-11-09（任务 1）：「归口职能部门」必填（整批留空或某行留空都阻断）。
-        // 为什么必填：学院指标单层直发后没有父级，学院上报链第 3 环
-        // 「分管职能部门负责人审批」的席位只能由这一列指定的部门提供；
-        // 留空 → 导入能成功，但审批派单时推不出席位（No available approver candidates）。
-        if (type == ImportType.DISTRIBUTION && isBlank(row.functionalOrg())) {
-            errors.add("第 " + displayNo + " 行「归口职能部门」不能为空，"
-                    + "该列决定学院上报审批「分管职能部门负责人审批」环节派给哪个职能部门，请逐行填写后再导入");
-        }
-        // 2026-11-08（学院指标单层口径）：学院指标不再有父级，
-        // 原「核心指标（组首行）不能为空」校验随父级锚点一起移除——
-        // 新模板（8 列）根本没有这一列，保留校验会把整批文件判成非法。
-        //
-        // 2026-10-31 的「父级预填行跳过」机制（子指标名称/类型/权重三列全空 → 不报缺内容）
-        // 也随之失效：没有父级列就没有「只填父级、未填子指标」的行，
-        // 只填序号/学院却空指标名称的行就是漏填，必须照常阻断。
-        if (isBlank(row.indicatorName())) {
-            errors.add(type == ImportType.STRATEGIC_TASK ? "核心指标不能为空" : "指标名称不能为空");
-        }
-        if (isBlank(row.indicatorType())) {
-            errors.add("指标类型不能为空或无法识别");
+        // 2026-10-31 用户拍板（父级行=上级定死锚点）：学院模板中「子指标名称/指标类型/权重」
+        // 全空的行是未使用的父级预填行——不再因缺子指标内容报阻断错误；是否跳过由
+        // BusinessImportApplicationService.enrichDistributionRows 按锚点一致性判定（父级被改=阻断）
+        if (!isParentOnlyDistributionRow(row, type)) {
+            if (isBlank(row.indicatorName())) {
+                errors.add(type == ImportType.STRATEGIC_TASK ? "核心指标不能为空" : "子指标名称不能为空");
+            }
+            if (isBlank(row.indicatorType())) {
+                errors.add("指标类型不能为空或无法识别");
+            }
         }
         if (row.weight() != null
                 && (row.weight().compareTo(BigDecimal.ZERO) < 0
@@ -637,10 +523,22 @@ public class ExcelBusinessImportParser {
         return errors;
     }
 
+    /**
+     * 2026-10-31 用户拍板（父级行=上级定死锚点）：学院模板的「父级预填行」识别口径——
+     * 子指标名称、指标类型、权重三列全空即视为未填任何子指标（仅父级组列有值）。
+     * 此类行不再按缺子指标内容阻断，改由 enrich 阶段按「父级行是否被改动」决定跳过或按锚点不一致阻断。
+     */
+    private boolean isParentOnlyDistributionRow(NormalizedImportRow row, ImportType type) {
+        return type == ImportType.DISTRIBUTION
+                && isBlank(row.indicatorName())
+                && isBlank(row.indicatorType())
+                && row.weight() == null;
+    }
+
     private List<String> validateWarnings(NormalizedImportRow row, ImportType type) {
         List<String> warnings = new ArrayList<>();
-        // 指标名称都为空的行已经按漏填阻断，再提示默认权重只会制造噪音
-        if (row.weight() == null && !isBlank(row.indicatorName())) {
+        // 未使用的父级预填行不落库，不提示默认权重（避免对将跳过的行产生误导性警告）
+        if (row.weight() == null && !isParentOnlyDistributionRow(row, type)) {
             // P-16 修复（2026-10-31）：默认值就是 100（BusinessImportApplicationService.defaultWeight），
             // 文案直说，不再让用户猜「系统默认值」是多少
             warnings.add("权重为空，将按默认值 100 处理");
