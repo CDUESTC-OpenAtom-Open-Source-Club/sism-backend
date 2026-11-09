@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -823,6 +824,12 @@ public class BusinessImportApplicationService {
         Plan plan = findOrCreatePlan(context.cycleId(), PlanLevel.FUNC_TO_COLLEGE, currentOrg.getId(), targetCollege.getId());
         CommitCounter counter = new CommitCounter(plan);
         Set<Long> coveredIds = new HashSet<>();
+        // 2026-11-09（修复学院上报链第 3 环派单失败）：本批导入所依赖的职能部门集合。
+        // 父级核心指标的目标组织 = 「该学院归口哪个职能部门」，这正是
+        // ApproverResolver 派「分管职能部门负责人审批」要用的席位来源。
+        // 不写 plan.functional_org_id 时它会回退到计划创建方（战略部 org 35），
+        // 而 org 35 没有 role2 账号 → 派单抛 No available approver candidates，上报卡死。
+        Set<Long> dispatchFunctionalOrgIds = new LinkedHashSet<>();
         List<ImportRowPreview> importRows = context.response().rows();
 
         for (int rowIndex = 0; rowIndex < importRows.size(); rowIndex++) {
@@ -847,6 +854,10 @@ public class BusinessImportApplicationService {
                     || parent.getParentIndicatorId() != null) {
                 throw new IllegalArgumentException(
                         "父级指标 ID " + normalized.parentIndicatorId() + " 不属于战略发展部下发的核心指标，请核对导出表中的内部 ID");
+            }
+            // 2026-11-09：父级核心指标的目标组织就是「归口职能部门」，收集起来落进计划
+            if (parent.getTargetOrg() != null && parent.getTargetOrg().getId() != null) {
+                dispatchFunctionalOrgIds.add(parent.getTargetOrg().getId());
             }
             StrategicTask parentTask = parent.getTaskId() == null
                     ? null
@@ -935,7 +946,44 @@ public class BusinessImportApplicationService {
         if (conflictMode == ConflictMode.UPDATE) {
             counter.deleted += softDeleteIndicatorsNotCovered(plan, targetCollege.getId(), coveredIds);
         }
+        // 2026-11-09：把本批导入推出的归口职能部门落到计划上（学院上报链席位用）
+        applyFunctionalOrgFromDispatchChain(plan, dispatchFunctionalOrgIds);
         return counter.toCounters();
+    }
+
+    /**
+     * 2026-11-09（修复学院上报链派单失败）：把「归口职能部门」写进计划。
+     *
+     * <p><b>为什么需要</b>：学院上报链第 3 环「分管职能部门负责人审批」（role2）的席位，
+     * {@code ApproverResolver} 优先读 {@code plan.functional_org_id}；该字段为空时会回退到
+     * 「计划创建方」，而学院下发计划的创建方是战略发展部（org 35）——org 35 没有 role2 账号，
+     * 派单直接抛 {@code No available approver candidates}，学院上报会永久卡在第 3 环。
+     *
+     * <p><b>为什么能从父级推出来</b>：学院子指标的父级核心指标是「战略部 → 职能部门」下发的，
+     * 其 {@code target_org} 就是那个职能部门，也就是「该学院归口哪个部门」的准确答案。
+     *
+     * <p><b>多部门的情况</b>：一个学院理论上只归口一个职能部门，但历史数据可能跨多个部门。
+     * 这里取 id 最小的作为稳定选择并打 warn，便于运维发现口径分裂，而不是静默随机。
+     */
+    private void applyFunctionalOrgFromDispatchChain(Plan plan, Set<Long> functionalOrgIds) {
+        if (plan == null || functionalOrgIds == null || functionalOrgIds.isEmpty()) {
+            return;
+        }
+        Long chosen = functionalOrgIds.stream()
+                .filter(Objects::nonNull)
+                .min(Long::compareTo)
+                .orElse(null);
+        if (chosen == null) {
+            return;
+        }
+        if (functionalOrgIds.size() > 1) {
+            log.warn("学院计划 {} 的父级核心指标来自多个职能部门 {}，归口部门取 id 最小者 {}；"
+                    + "学院上报审批将派给该部门，请确认数据口径", plan.getId(), functionalOrgIds, chosen);
+        }
+        if (!Objects.equals(plan.getFunctionalOrgId(), chosen)) {
+            plan.setFunctionalOrgId(chosen);
+            planRepository.save(plan);
+        }
     }
 
     private ImportWorkflowResult autoSubmitAndApprove(Plan plan,

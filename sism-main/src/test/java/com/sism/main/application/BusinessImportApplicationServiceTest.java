@@ -1107,6 +1107,48 @@ class BusinessImportApplicationServiceTest {
                         + savedTasks.stream().map(StrategicTask::getTaskType).toList());
     }
 
+    @Test
+    @DisplayName("2026-11-09：导入落库时按父级核心指标的目标部门写入 plan.functional_org_id（学院上报席位来源）")
+    void shouldWriteFunctionalOrgFromParentTargetOrgOnCommit() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+        stubDistributionCommitBase(fixture);
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
+        when(taskRepository.findByPlanIdAndCycleId(900L, 2026L)).thenReturn(List.of());
+        captureCreatedTasks();
+
+        var preview = service.previewDistribution(
+                distributionWorkbookV2("functional-org-from-parent.xlsx",
+                        "马克思主义学院", "基础性", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertFalse(preview.blocking());
+
+        // 捕获落库时对计划的保存，断言归口部门被写成「父级核心指标的目标部门」
+        org.mockito.ArgumentCaptor<Plan> planCaptor = org.mockito.ArgumentCaptor.forClass(Plan.class);
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(preview.confirmToken(), ConflictMode.APPEND, false, "确认导入"),
+                fixture.currentUser());
+
+        assertEquals("COMMITTED", result.status());
+        // 父级核心指标的目标组织 = 职能部门；save 之前必须已经 setFunctionalOrgId
+        org.mockito.Mockito.verify(planRepository, org.mockito.Mockito.atLeastOnce())
+                .save(planCaptor.capture());
+        Long expectedFunctionalOrgId = fixture.parentIndicator().getTargetOrg().getId();
+        assertTrue(
+                planCaptor.getAllValues().stream()
+                        .anyMatch(plan -> expectedFunctionalOrgId.equals(plan.getFunctionalOrgId())),
+                "落库时应把父级核心指标的目标部门写进 plan.functional_org_id，"
+                        + "否则学院上报链第 3 环没有席位可派；实际捕获到的计划 functionalOrgId="
+                        + planCaptor.getAllValues().stream().map(Plan::getFunctionalOrgId).toList());
+    }
+
     /** 构建学院子指标导入工作簿（2026-10-31 终版表头加列，9 列含「任务类型」）。 */
     private MockMultipartFile distributionWorkbookV2(String fileName,
                                                      String college,
