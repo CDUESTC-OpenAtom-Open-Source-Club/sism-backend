@@ -356,9 +356,13 @@ public class Indicator extends AggregateRoot<Long> {
         var targetOrgType = this.targetOrg.getType();
 
         if (ownerOrgType != null && targetOrgType != null) {
-            // 职能部门 → 二级学院 = 二级指标
-            if (ownerOrgType == com.sism.organization.domain.OrgType.functional
-                    && targetOrgType == com.sism.organization.domain.OrgType.academic) {
+            // 二级指标 = 目标组织是二级学院（归属方是职能部门还是战略发展部都算）。
+            // 2026-11-05（学院指标直发改造）：学院子指标的归属组织由职能部门改为战略发展部，
+            // 若仍只认「职能部门 → 学院」，这些子指标会被判成一级指标，
+            // findSecondLevelIndicators() 永远查不到（与 2026-10-30 修过的那个坑同类）。
+            if (targetOrgType == com.sism.organization.domain.OrgType.academic
+                    && (ownerOrgType == com.sism.organization.domain.OrgType.functional
+                        || ownerOrgType == com.sism.organization.domain.OrgType.admin)) {
                 return IndicatorLevel.SECOND;
             }
             // 其余（战略发展部 → 职能部门等）= 一级指标

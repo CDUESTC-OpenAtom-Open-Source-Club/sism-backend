@@ -176,6 +176,14 @@ public class JpaIndicatorRepository implements IndicatorRepository {
     }
 
     @Override
+    public List<Indicator> findCoreDispatchAnchors(Long ownerOrgId, Long cycleId) {
+        if (ownerOrgId == null || cycleId == null) {
+            return List.of();
+        }
+        return jpaRepository.findCoreDispatchAnchors(ownerOrgId, cycleId);
+    }
+
+    @Override
     public List<Indicator> findByIds(List<Long> ids) {
         if (ids == null || ids.isEmpty()) {
             return List.of();

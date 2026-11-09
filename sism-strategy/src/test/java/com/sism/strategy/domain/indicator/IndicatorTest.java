@@ -169,4 +169,35 @@ class IndicatorTest {
                 "getOrgType() 返回枚举名（小写），不再是 STRATEGY_DEPT 之类的大写字面量");
         assertEquals(IndicatorLevel.SECOND, indicator.calculateLevel());
     }
+
+    // ==================== 2026-11-05 回归：学院指标改战略部直发后的层级判定 ====================
+
+    @Test
+    @DisplayName("2026-11-05 回归：战略发展部→二级学院 的指标应判为 SECOND")
+    void shouldCalculateSecondLevelForStrategyDeptToCollege() {
+        // 学院指标下发改为战略发展部直发后，学院子指标的归属组织是战略部（admin）、
+        // 目标组织是二级学院（academic）。若层级判定仍只认「职能部门→学院」，
+        // 这些指标会被判成 FIRST，findSecondLevelIndicators() 永远查不到。
+        SysOrg strategyDept = SysOrg.create("战略发展部", OrgType.admin);
+        SysOrg college = SysOrg.create("工学院", OrgType.academic);
+
+        Indicator indicator = Indicator.create(
+                "学院子指标", "子指标描述", BigDecimal.valueOf(100), strategyDept, college, "定性");
+
+        assertEquals(IndicatorLevel.SECOND, indicator.calculateLevel());
+    }
+
+    @Test
+    @DisplayName("2026-11-05 回归：战略发展部→职能部门 的核心指标仍是 FIRST（可被拆解）")
+    void shouldKeepStrategyCoreIndicatorFirstLevel() {
+        SysOrg strategyDept = SysOrg.create("战略发展部", OrgType.admin);
+        SysOrg funcDept = SysOrg.create("教务处", OrgType.functional);
+
+        Indicator indicator = Indicator.create(
+                "核心指标", "核心指标描述", BigDecimal.valueOf(100), strategyDept, funcDept, "定性");
+
+        assertEquals(IndicatorLevel.FIRST, indicator.calculateLevel());
+        // canBreakdown = 一级指标 且 已下发 → 核心指标可拆解、学院子指标不可再拆解
+        assertTrue(indicator.isFirstLevel());
+    }
 }

@@ -61,6 +61,22 @@ import java.util.stream.Stream;
 @Service("strategyPlanApplicationService")
 @Slf4j
 public class PlanApplicationService {
+    /**
+     * 2026-11-05（学院指标直发改造）：战略发展部 org id 兜底值。
+     * 配置项 {@code sism.strategy.org.strategy-org-id} 缺失/被显式置空时用 35，
+     * 与 {@code StrategyOrgProperties} 的默认值、导入侧兜底值保持一致——
+     * 否则「配置为空」会变成「全部拒交」，把配置事故放大成业务中断。
+     */
+    private static final Long DEFAULT_STRATEGY_ORG_ID = 35L;
+    /**
+     * 2026-11-05（学院指标直发改造）：学院下发的审批流程码由服务端固定。
+     * 旧链路 {@code PLAN_DISPATCH_FUNCDEPT}（职能部门 → 学院）已停用（见 V101 迁移），
+     * 新链路复用 {@code PLAN_DISPATCH_STRATEGY}，不再由前端决定用哪个流程码。
+     */
+    private static final String COLLEGE_DISPATCH_WORKFLOW_CODE = "PLAN_DISPATCH_STRATEGY";
+    /** 系统管理员角色码：代操作的唯一豁免（战略部账号之外的合法兜底） */
+    private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
+
     private final PlanRepository planRepository;
     private final CycleRepository cycleRepository;
     private final IndicatorRepository indicatorRepository;
@@ -74,6 +90,8 @@ public class PlanApplicationService {
     private final StrategyOrgProperties strategyOrgProperties;
     private final PlanWorkflowRuntimeService planWorkflowRuntimeService;
     private final ObjectProvider<PlanApplicationService> selfProvider;
+    /** 2026-11-05（学院指标直发改造）：学院下发的「异动在途」守卫（显式口径） */
+    private final CollegeDispatchGuardService collegeDispatchGuardService;
 
     @Autowired
     public PlanApplicationService(
@@ -89,7 +107,8 @@ public class PlanApplicationService {
             PlanIntegrityService planIntegrityService,
             StrategyOrgProperties strategyOrgProperties,
             PlanWorkflowRuntimeService planWorkflowRuntimeService,
-            ObjectProvider<PlanApplicationService> selfProvider
+            ObjectProvider<PlanApplicationService> selfProvider,
+            CollegeDispatchGuardService collegeDispatchGuardService
     ) {
         this.planRepository = planRepository;
         this.cycleRepository = cycleRepository;
@@ -104,6 +123,7 @@ public class PlanApplicationService {
         this.strategyOrgProperties = strategyOrgProperties;
         this.planWorkflowRuntimeService = planWorkflowRuntimeService;
         this.selfProvider = selfProvider;
+        this.collegeDispatchGuardService = collegeDispatchGuardService;
     }
 
     public PlanApplicationService(PlanRepository planRepository,
@@ -117,7 +137,8 @@ public class PlanApplicationService {
                                   NamedParameterJdbcTemplate namedParameterJdbcTemplate,
                                   PlatformTransactionManager ignoredTransactionManager,
                                   PlanIntegrityService planIntegrityService,
-                                  StrategyOrgProperties strategyOrgProperties) {
+                                  StrategyOrgProperties strategyOrgProperties,
+                                  CollegeDispatchGuardService collegeDispatchGuardService) {
         this.planRepository = planRepository;
         this.cycleRepository = cycleRepository;
         this.indicatorRepository = indicatorRepository;
@@ -129,6 +150,7 @@ public class PlanApplicationService {
         this.namedParameterJdbcTemplate = namedParameterJdbcTemplate;
         this.planIntegrityService = planIntegrityService;
         this.strategyOrgProperties = strategyOrgProperties;
+        this.collegeDispatchGuardService = collegeDispatchGuardService;
         this.planWorkflowRuntimeService = new PlanWorkflowRuntimeService(
                 jdbcTemplate,
                 planRepository,
@@ -217,6 +239,28 @@ public class PlanApplicationService {
     public PlanResponse updatePlan(Long id, UpdatePlanRequest request) {
         Plan plan = requirePlan(id);
 
+        // 2026-11-05（审查 major #3）：学院下发计划的「创建方」与「目标」不可改写。
+        //
+        // 为什么必须锁：这两道闸门（assertCollegeDispatchCreatedByStrategyOrg /
+        // assertCollegeDispatchApprovalAdvanceAllowed）与导入侧的存量识别
+        // （findLegacyDistributionPlan）全都以 created_by_org_id 为唯一判据，
+        // 而该字段此前完全由请求体决定。后果双向：
+        //   ① 把存量计划改成 35 → 严格断言不再拦、R10 也不再认它是存量 →
+        //      旧链路复活，直接违反需求 4「存量计划不得被再次发起下发」；
+        //   ② 把新链路计划改成 44 → 该学院该周期的导入被永久拒绝，
+        //      提示语还写着「已存在历史下发计划」，排查会被误导。
+        // 计划的归属是历史事实，不属于可编辑字段。
+        if (plan.getPlanLevel() == PlanLevel.FUNC_TO_COLLEGE) {
+            if (request.getCreatedByOrgId() != null
+                    && !Objects.equals(request.getCreatedByOrgId(), plan.getCreatedByOrgId())) {
+                throw new IllegalArgumentException("学院下发计划的创建方不可修改");
+            }
+            if (request.getTargetOrgId() != null
+                    && !Objects.equals(request.getTargetOrgId(), plan.getTargetOrgId())) {
+                throw new IllegalArgumentException("学院下发计划的目标学院不可修改");
+            }
+        }
+
         Long nextTargetOrgId = request.getTargetOrgId() != null ? request.getTargetOrgId() : plan.getTargetOrgId();
         Long nextCreatedByOrgId = request.getCreatedByOrgId() != null ? request.getCreatedByOrgId() : plan.getCreatedByOrgId();
         assertNoActivePlanConflict(plan.getCycleId(), plan.getPlanLevel(), nextCreatedByOrgId, nextTargetOrgId, plan.getId());
@@ -260,7 +304,11 @@ public class PlanApplicationService {
     })
     public PlanResponse publishPlan(Long id) {
         Plan plan = requirePlan(id);
-        assertFunctionalDeptMutationNotInFlight(plan, "PLAN_DISPATCH_FUNCDEPT");
+        // 2026-11-05（学院指标直发改造）：publish 会把计划与计划下指标一并置为 DISTRIBUTED，
+        // 等于「向学院下发」。存量「职能部门创建的 FUNC_TO_COLLEGE」计划必须在这里被拦住，
+        // 否则旧链路等于没取消、存量也不是只读历史。
+        assertCollegeDispatchCreatedByStrategyOrg(plan);
+        assertFunctionalDeptMutationNotInFlight(plan);
 
         basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
         plan.activate();
@@ -301,7 +349,18 @@ public class PlanApplicationService {
                                                    Long currentUserId,
                                                    Long currentOrgId) {
         Plan plan = requirePlan(id);
-        assertFunctionalDeptMutationNotInFlight(plan, request == null ? null : request.getWorkflowCode());
+        // 2026-11-05（学院指标直发改造）：学院子指标下发只允许战略发展部发起。
+        // workflowCode 由前端传，服务端必须自己校验计划创建组织——否则存量里
+        // 「职能部门创建的 FUNC_TO_COLLEGE 计划」仍能被提交并走下发审批，
+        // 旧链路等于没取消（而且前端已无入口，用户也无从察觉）。
+        assertCollegeDispatchCreatedByStrategyOrg(plan);
+        // 2026-11-05（MA1）：光看「计划由谁创建」不够——职能部门账号可以代战略部点提交。
+        // 提交人本身也必须在战略发展部（系统管理员是唯一豁免，用于运维代操作）。
+        assertCollegeDispatchSubmitterInStrategyOrg(plan, currentUserId, currentOrgId);
+        // 2026-11-05（MA2）：下发流程码由服务端按计划级别判定，不再让前端决定用哪个流程码
+        // （前端传 PLAN_APPROVAL_* 就能把异动在途守卫整段跳过）。
+        assertCollegeDispatchWorkflowCode(plan, request == null ? null : request.getWorkflowCode());
+        assertFunctionalDeptMutationNotInFlight(plan);
         PlanWorkflowSnapshotQueryService.WorkflowSnapshot existingSnapshot =
                 planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(id);
 
@@ -353,6 +412,15 @@ public class PlanApplicationService {
     })
     public PlanResponse approvePlan(Long id) {
         Plan plan = requirePlan(id);
+        // 2026-11-05（N11）：approve 与 publish 同义（计划置 DISTRIBUTED + 指标同步下发），
+        // 必须走同一道「学院下发只能由战略发展部发起」的闸门，否则审批通过入口能把旧链路复活。
+        //
+        // 但闸门分两层：这里校验的是「能否推进一个在途审批实例」——
+        // 存量「职能部门 → 学院」下发单在改造前就已提交、停在审批中，若一并拦掉，
+        // 审批人点通过就抛异常，实例永久卡在 IN_REVIEW（N11，合并阻塞项）。
+        // 该计划要真正发起一次新的下发，仍由 submit 路径的严格断言把住。
+        // REST 审批入口必须核验确有在审实例（否则该端点就是绕过审批的后门）。
+        assertCollegeDispatchApprovalAdvanceAllowed(plan, true);
 
         basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
         plan.approve();
@@ -415,6 +483,17 @@ public class PlanApplicationService {
     @Transactional
     public void markWorkflowApproved(Long planId) {
         planRepository.findById(planId).ifPresent(plan -> {
+            // 2026-11-05（BL1 补充入口）：workflow 终审通过是「实际下发」的落库点
+            // （StrategyWorkflowBusinessStatusAdapter → 本方法），与 publish / approve 同义，
+            // 必须走同一道闸门——否则改造前就在审批中的旧「职能部门 → 学院」下发单一旦终审通过，
+            // 计划与指标仍会被置为 DISTRIBUTED，旧链路等于没取消。
+            //
+            // 2026-11-05（N11）：闸门分两层——「发起」由 submit/publish 的严格断言把住；
+            // 这里校验的是「能否推进一个在途审批实例」。存量旧下发单在改造前已提交、停在审批中，
+            // 若一并拦掉，审批人点通过就抛异常，实例永久卡在 IN_REVIEW（待办清不掉、单据无法结案）。
+            // 本方法只被 workflow 终审回调调用（无 REST 端点），能走到这里即说明审批流程已走完，
+            // 故不再核验「在审实例」（此刻实例已是 APPROVED 终态）。
+            assertCollegeDispatchApprovalAdvanceAllowed(plan, false);
             basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
             plan.approve();
             Plan saved = planRepository.save(plan);
@@ -490,11 +569,14 @@ public class PlanApplicationService {
     }
 
     /**
-     * 2026-10-30 定案：职能部门下发到学院的异动锁。
+     * 2026-10-30 定案：向学院下发时的异动锁。
      *
      * 判定口径：
-     * 1. 仅拦截 FUNC_TO_COLLEGE 计划 + PLAN_DISPATCH_FUNCDEPT 下发动作；
-     *    PLAN_APPROVAL_FUNCDEPT、PLAN_DISPATCH_STRATEGY、TASK 改名异动均不受影响。
+     * 1. 只作用于 FUNC_TO_COLLEGE 计划（学院下发）；STRAT_TO_FUNC 计划、TASK 改名异动不受影响。
+     *    2026-11-05（MA2）：本守卫<b>不再</b>由前端传入的 workflowCode 决定是否执行——
+     *    原口径「workflowCode 不是 PLAN_DISPATCH_FUNCDEPT 就不查」会让前端传 PLAN_APPROVAL_*
+     *    把整段守卫跳过（静默失效）。FUNC_TO_COLLEGE 的流程码已由服务端固定为
+     *    PLAN_DISPATCH_STRATEGY（见 assertCollegeDispatchWorkflowCode），凡是学院下发一律查锁。
      * 2. 战略部对职能部门指标发起异动时，指标的 target_org_id = 职能部门，异动审批实例
      *    flow_code = PLAN_MUTATION_STRATEGY 且 status = IN_REVIEW；此时该职能部门暂不能
      *    再向学院下发，否则学院拿到的指标口径会与异动审批后的口径冲突。
@@ -511,45 +593,27 @@ public class PlanApplicationService {
      * 内存在任意「目标组织为学院」的异动审批在审时，任何以学院（sys_org.type='academic'）
      * 为目标的下发一律拒绝（学院级联全锁，不限下发方）。
      */
-    private void assertFunctionalDeptMutationNotInFlight(Plan plan, String workflowCode) {
+    private void assertFunctionalDeptMutationNotInFlight(Plan plan) {
         if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
-            return;
-        }
-        if (workflowCode != null && !workflowCode.trim().isEmpty()
-                && !"PLAN_DISPATCH_FUNCDEPT".equals(workflowCode.trim().toUpperCase(Locale.ROOT))) {
             return;
         }
         if (plan.getCycleId() == null) {
             return;
         }
 
-        Long functionalDeptOrgId = plan.getCreatedByOrgId();
-        if (functionalDeptOrgId != null) {
-            Integer count = jdbcTemplate.queryForObject(
-                    """
-                    SELECT COUNT(*)
-                    FROM public.audit_instance ai
-                    JOIN public.audit_flow_def f ON f.id = ai.flow_def_id AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
-                    JOIN public.indicator i ON ai.entity_type = 'INDICATOR' AND i.id = ai.entity_id
-                    JOIN public.sys_task t ON t.task_id = i.task_id
-                    JOIN public.plan p ON p.id = t.plan_id
-                    WHERE ai.status = 'IN_REVIEW'
-                      AND i.target_org_id = ?
-                      AND p.cycle_id = ?
-                      AND COALESCE(i.is_deleted, false) = false
-                    """,
-                    Integer.class,
-                    functionalDeptOrgId,
-                    plan.getCycleId()
-            );
-            if (count != null && count > 0) {
-                throw new IllegalStateException("该职能部门的指标正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
-            }
+        // 2026-11-05（B8）：冲突范围改为显式口径——本计划下学院子指标的父级核心指标，
+        // 其目标部门（职能部门）的指标是否正在异动审批中。
+        // 原口径用 plan.created_by_org_id 圈定「该职能部门」：改造后 created_by 恒为战略部（35），
+        // 条件恒不成立 → 守卫静默失效（既不报错也不拦截）。
+        if (collegeDispatchGuardService.isSourceOrgMutationInFlight(plan.getId(), plan.getCycleId())) {
+            throw new IllegalStateException(
+                    "下发所依赖的职能部门的指标正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
         }
 
         // 学院级联全锁（2026-10-31 补齐）：下发目标 org 是学院时，同周期内任意
         // 「目标为学院」的异动在审即拒——异动审批改的是学院子计划的口径快照，
         // 期间向任何学院下发都会与在审口径冲突。
+        // 该分支不依赖 created_by_org_id 语义，口径本身是显式的，保留不变。
         Integer collegeCascadeCount = jdbcTemplate.queryForObject(
                 """
                 SELECT COUNT(*)
@@ -570,6 +634,170 @@ public class PlanApplicationService {
             throw new IllegalStateException(
                     "学院子计划的异动正在审批中，暂不能向学院下发；请等异动审批结束或撤回后再操作");
         }
+    }
+
+    /**
+     * 2026-11-05（学院指标直发改造）：FUNC_TO_COLLEGE 计划的创建组织必须是战略发展部。
+     *
+     * <p>为什么必须服务端校验：下发审批的 workflowCode 由前端传，前端入口已下线，
+     * 但旧数据里「职能部门创建的 FUNC_TO_COLLEGE 计划」仍然存在；若不在服务端拦住，
+     * 它们仍能被提交并进入下发审批——旧链路等于没取消。存量计划保留为只读历史，不再下发。
+     *
+     * <p>publish / approve 与 submit 是同一件事的三个入口（下发、审批通过、提交下发审批），
+     * 三处都要拦，否则任何一条旁路都能把存量旧链路重新推成 DISTRIBUTED。
+     */
+    private void assertCollegeDispatchCreatedByStrategyOrg(Plan plan) {
+        if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
+            return;
+        }
+        Long strategyOrgId = strategyOrgId();
+        if (!Objects.equals(plan.getCreatedByOrgId(), strategyOrgId)) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标；该计划不能提交下发审批");
+        }
+    }
+
+    /**
+     * 2026-11-05（N11）：学院下发计划的<b>审批推进</b>闸门。
+     *
+     * <p>为什么与 {@link #assertCollegeDispatchCreatedByStrategyOrg(Plan)} 分开：
+     * 那条断言管的是「<b>发起</b>一次新的下发」（publish / submit），存量旧链路的计划
+     * 必须被挡住，否则旧链路等于没取消。
+     *
+     * <p>但它不能管「<b>推进</b>一个已经在途的审批实例」：改造之前就已经提交、
+     * 停在审批中的「职能部门 → 学院」下发单（flow2），如果在这里被拦，审批人点「通过」
+     * 就会抛异常，实例永久卡在 IN_REVIEW —— 待办清不掉、单据无法结案、审计断链。
+     * 这是本次改造引入的回归（N11，合并阻塞项）。
+     *
+     * <p>口径：存量 FUNCDEPT 计划<b>只有在「已提交审批、正在审批中（PENDING）」时</b>
+     * 才允许走完最后一步，好让历史单据正常收尾；若它根本没走过审批（仍是 DRAFT），
+     * 则拒绝 —— 否则「审批通过」入口就变成了绕过审批把存量计划直接下发的后门。
+     *
+     * <p>新链路（创建方=战略发展部）一律放行，由 {@code assertCollegeDispatchCreatedByStrategyOrg}
+     * 在发起阶段把关。
+     */
+    private void assertCollegeDispatchApprovalAdvanceAllowed(Plan plan, boolean requireInReviewInstance) {
+        if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
+            return;
+        }
+        if (Objects.equals(plan.getCreatedByOrgId(), strategyOrgId())) {
+            return;
+        }
+        // 2026-11-05（审查 blocking #1）：状态判定必须走 PlanStatus.fromRaw ——
+        // 裸比较 "PENDING" 会漏掉存量在途单。库里的 plan.status 允许
+        // DRAFT/PENDING/DISTRIBUTED/IN_REVIEW/APPROVED/REJECTED/RETURNED/WITHDRAWN，
+        // 而「审批中」在库里的实际取值就是 IN_REVIEW（PENDING_APPROVAL/SUBMITTED 同理），
+        // fromRaw 会把它们统一归一为 PENDING。裸比较会让 N11 对目标数据整体无效。
+        if (PlanStatus.fromRaw(plan.getStatus()) != PlanStatus.PENDING) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标；"
+                            + "该历史计划不在审批中，不能通过审批入口下发");
+        }
+        // 2026-11-05（审查 major #2）：「状态=审批中」不等于「确有在审实例」——
+        // 审批实例被取消（adapter 无 CANCELLED 分支）或建实例失败的孤儿计划都会停在 PENDING。
+        // REST 审批入口若只看状态，就成了「绕过审批把存量计划直接下发」的后门。
+        // 因此 REST 入口必须核验确有在审实例；workflow 终审回调（markWorkflowApproved）
+        // 天然来自审批流程走完，无需再核验。
+        if (requireInReviewInstance && !hasInReviewAuditInstance(plan.getId())) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标；"
+                            + "该历史计划没有在审的审批实例，不能通过审批入口下发");
+        }
+    }
+
+    /**
+     * 该计划当前是否有在审的审批实例。
+     *
+     * <p>取「最新实例」并看其状态：撤回-重发循环下快照服务会优先绑定非终态实例，
+     * 全是终态时才会退化到旧实例 —— 因此实例被取消（终态）后这里返回 false，
+     * 正是我们想要的（「审批被取消的计划不得借审批入口下发」）。
+     */
+    private boolean hasInReviewAuditInstance(Long planId) {
+        if (planId == null) {
+            return false;
+        }
+        PlanWorkflowSnapshotQueryService.WorkflowSnapshot snapshot =
+                planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(planId);
+        if (snapshot == null || snapshot.getWorkflowStatus() == null) {
+            return false;
+        }
+        String status = snapshot.getWorkflowStatus().trim().toUpperCase(java.util.Locale.ROOT);
+        return "IN_REVIEW".equals(status) || "PENDING".equals(status);
+    }
+
+    /**
+     * 2026-11-05（MA1）：学院下发的<b>提交人</b>也必须在战略发展部（系统管理员例外）。
+     *
+     * <p>为什么不能只看计划创建组织：计划创建组织是数据，创建者可能早已离职/转岗，
+     * 也可能被别人通过导入创建；而「谁点了下发」是本次操作的责任人。
+     * 只校验创建组织等于允许任意部门的账号代战略部发起下发审批。
+     */
+    private void assertCollegeDispatchSubmitterInStrategyOrg(Plan plan,
+                                                              Long currentUserId,
+                                                              Long currentOrgId) {
+        if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
+            return;
+        }
+        if (Objects.equals(currentOrgId, strategyOrgId())) {
+            return;
+        }
+        if (isSystemAdmin(currentUserId)) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "学院指标下发只能由战略发展部账号提交；当前账号不属于战略发展部");
+    }
+
+    /**
+     * 2026-11-05（MA2）：FUNC_TO_COLLEGE 计划只接受 {@code PLAN_DISPATCH_STRATEGY}。
+     *
+     * <p>为什么必须服务端判定：workflowCode 由前端传。原实现用它决定「是否执行异动在途守卫」，
+     * 前端传 {@code PLAN_APPROVAL_*} 就能把整段守卫跳过——守卫可被前端绕过，等于没有守卫。
+     * 同时旧链路 {@code PLAN_DISPATCH_FUNCDEPT} 已停用，让前端决定流程码等于把链路开关交回前端。
+     * 学院下发的流程码因此固定为 {@code PLAN_DISPATCH_STRATEGY}（旧链路流程定义已停用）。
+     */
+    private void assertCollegeDispatchWorkflowCode(Plan plan, String workflowCode) {
+        if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
+            return;
+        }
+        String normalized = workflowCode == null ? "" : workflowCode.trim().toUpperCase(Locale.ROOT);
+        if (!COLLEGE_DISPATCH_WORKFLOW_CODE.equals(normalized)) {
+            throw new IllegalArgumentException(
+                    "学院指标下发审批只能使用 " + COLLEGE_DISPATCH_WORKFLOW_CODE + " 流程；当前流程码："
+                            + (workflowCode == null || workflowCode.isBlank() ? "空" : workflowCode));
+        }
+    }
+
+    /**
+     * 战略发展部 org id（配置项 {@code sism.strategy.org.strategy-org-id}，默认 35）。
+     * 配置缺失时兜底 35——与导入侧兜底、完整性服务的 systemAdminOrgId 保持同一口径，
+     * 避免「配置为空 = 全部拒交」把配置事故放大成业务中断。
+     */
+    private Long strategyOrgId() {
+        Long orgId = strategyOrgProperties.getStrategyOrgId();
+        return orgId == null ? DEFAULT_STRATEGY_ORG_ID : orgId;
+    }
+
+    /**
+     * 系统管理员豁免判定（与批量分发侧「查不到归属组织一律拒绝」的既有口径配套）：
+     * 系统管理员是运维代操作的唯一合法入口，其余账号一律按组织归属判定。
+     */
+    private boolean isSystemAdmin(Long userId) {
+        if (userId == null || userId <= 0) {
+            return false;
+        }
+        List<String> roleCodes = jdbcTemplate.queryForList(
+                """
+                SELECT r.role_code
+                FROM public.sys_user_role ur
+                JOIN public.sys_role r ON r.id = ur.role_id
+                WHERE ur.user_id = ?
+                """,
+                String.class,
+                userId
+        );
+        return roleCodes.stream()
+                .anyMatch(code -> SYSTEM_ADMIN_ROLE_CODE.equalsIgnoreCase(String.valueOf(code).trim()));
     }
 
     /**
