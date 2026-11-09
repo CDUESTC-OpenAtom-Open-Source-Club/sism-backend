@@ -14,6 +14,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Component
 @Slf4j
@@ -284,10 +285,26 @@ public class ApproverResolver {
 
     /**
      * 职能部门本级组织 = 业务摘要里的 sourceOrgId（= plan.createdByOrgId）。
+     *
+     * <p>2026-11-08（学院指标单层口径）：优先用计划的<b>归口职能部门</b>
+     * （{@code plan.functional_org_id}）。学院指标改成「战略部 → 学院」直接下发后没有父级，
+     * 而 created_by_org_id 固定是战略部（35）——继续拿它当席位会落到战略部，
+     * 与「职能部门审批学院上报」冲突，且组织内没有对应角色时直接抛
+     * No available approver candidates 让派单失败。
+     * 归口部门为空（存量数据 / 非学院链）时回退到 sourceOrgId，行为与改造前一致。
      */
     private Long resolveFunctionalDeptOrgId(AuditInstance instance, Long fallbackOrgId) {
         if (instance == null) {
             return fallbackOrgId;
+        }
+        Optional<Long> functionalOrgId = workflowBusinessContextPorts.stream()
+                .map(port -> port.findFunctionalOrgIdByEntity(
+                        instance.getEntityType(), instance.getEntityId()))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .findFirst();
+        if (functionalOrgId.isPresent()) {
+            return functionalOrgId.get();
         }
         return resolveBusinessSummary(instance.getEntityType(), instance.getEntityId())
                 .map(summary -> summary.sourceOrgId() != null ? summary.sourceOrgId() : fallbackOrgId)

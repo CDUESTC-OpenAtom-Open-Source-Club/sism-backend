@@ -142,6 +142,15 @@ public interface IndicatorRepository {
     Page<Indicator> findByVisibleOrg(Long orgId, Pageable pageable);
 
     /**
+     * 2026-11-05（学院指标直发改造）：查询「战略部下发给职能部门的核心指标」——学院下发导入的父级锚点。
+     *
+     * <p>口径必须同时满足：归属组织 = 战略发展部、<b>目标组织是职能部门</b>、本身没有父级、
+     * 未删除，且落在<b>同一考核周期</b>（经 indicator → sys_task → plan → cycle_id 关联）。
+     * 缺任何一条都会让锚点跨年度串号（同名父级错挂）或把「战略部 → 学院」的根指标误当父级。
+     */
+    List<Indicator> findCoreDispatchAnchors(Long ownerOrgId, Long cycleId);
+
+    /**
      * 根据 ID 列表批量查询指标
      */
     List<Indicator> findByIds(List<Long> ids);

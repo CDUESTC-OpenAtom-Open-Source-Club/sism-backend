@@ -3,7 +3,10 @@
 -- - plan is a distribution container, not a self-owned annual container.
 -- - Seed both baseline matrices:
 --   1) 系统管理员部门(战略发展部) -> 各职能部门
---   2) 各职能部门 -> 各二级学院
+--   2) 战略发展部 -> 各二级学院
+--   2026-11-05 学院指标直发改造：原「各职能部门 -> 各二级学院」的笛卡尔积取消，
+--   学院子指标统一由战略发展部下发，复用 FUNC_TO_COLLEGE 计划级别（不新增枚举）。
+--   存量 FUNC_TO_COLLEGE 计划不做迁移，保留为只读历史。
 -- - Runtime backend must also auto-heal missing plan rows when new organizations are added.
 -- Status rule:
 -- - plan.status is the authoritative package-level distribution status.
@@ -52,16 +55,12 @@ FROM (
     UNION ALL
 
     SELECT
-        c.id * 100000 + f.id * 100 + a.id AS id,
+        c.id * 100000 + a.id AS id,
         c.id AS cycle_id,
         a.id AS target_org_id,
-        f.id AS created_by_org_id,
+        35::BIGINT AS created_by_org_id,
         'FUNC_TO_COLLEGE'::plan_level AS plan_level
     FROM public.cycle c
-    JOIN public.sys_org f
-        ON f.type = 'functional'
-       AND f.is_deleted = false
-       AND f.is_active = true
     JOIN public.sys_org a
         ON a.type = 'academic'
        AND a.is_deleted = false

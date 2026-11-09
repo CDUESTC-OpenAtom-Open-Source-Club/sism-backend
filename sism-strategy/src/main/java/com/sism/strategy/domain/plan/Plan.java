@@ -51,6 +51,21 @@ public class Plan extends AggregateRoot<Long> {
     @Column(name = "created_by_org_id", nullable = false)
     private Long createdByOrgId;
 
+    /**
+     * 2026-11-08（学院指标单层口径）：该学院指标的归口职能部门（仅 FUNC_TO_COLLEGE 使用）。
+     *
+     * <p>为什么需要：学院指标改为「战略部 → 学院」直接下发后没有父级，
+     * 而学院上报链第 3 环「分管职能部门负责人审批」必须知道该学院归口哪个职能部门。
+     * 改造前这个答案藏在父级链里（父级核心指标的目标部门），单层后父级没了；
+     * 组织树也推不出（8 个学院的 parent_org_id 全是 35），
+     * created_by_org_id 现在固定是战略部 → 用它推席位会落错部门并派单失败。
+     *
+     * <p>可空：STRAT_TO_FUNC 计划不需要；存量学院计划为 null 时
+     * 审批席位回退到 created_by_org_id（改造前口径），向后兼容。
+     */
+    @Column(name = "functional_org_id")
+    private Long functionalOrgId;
+
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.NAMED_ENUM)
     @Column(name = "plan_level", columnDefinition = "plan_level", nullable = false)

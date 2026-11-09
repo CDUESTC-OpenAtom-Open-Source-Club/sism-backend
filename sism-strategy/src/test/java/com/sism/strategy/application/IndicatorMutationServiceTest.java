@@ -86,6 +86,13 @@ class IndicatorMutationServiceTest {
     @Mock
     private com.sism.workflow.application.query.WorkflowReadModelService workflowReadModelService;
 
+    /**
+     * 2026-11-05（学院指标直发改造）：下发/异动互斥守卫改为显式口径实现，
+     * 判定从「created_by_org_id = 职能部门」换成「父级核心指标的目标部门 == 异动指标目标部门」。
+     */
+    @Mock
+    private CollegeDispatchGuardService collegeDispatchGuardService;
+
     private IndicatorMutationService service;
 
     @BeforeEach
@@ -97,6 +104,8 @@ class IndicatorMutationServiceTest {
                 businessWorkflowApplicationService,
                 userProvider,
                 new StrategyOrgProperties(),
+                // 2026-11-05：下发/异动互斥守卫（显式口径）
+                collegeDispatchGuardService,
                 // 2026-10-21：任务改名异动留痕
                 taskMutationHistoryService,
                 // 2026-10-31：重发原地续链（save → sync → publish）
@@ -133,11 +142,9 @@ class IndicatorMutationServiceTest {
         when(jdbcTemplate.queryForList(
                 contains("SELECT i.target_org_id, p.cycle_id"), eq(INDICATOR_ID)))
                 .thenReturn(List.of(Map.of("target_org_id", TARGET_ORG_ID, "cycle_id", 2026L)));
-        // 该职能部门存在 IN_REVIEW 的 PLAN_DISPATCH_FUNCDEPT 下发审批
-        when(jdbcTemplate.queryForObject(
-                contains("PLAN_DISPATCH_FUNCDEPT"), eq(Integer.class),
-                eq(TARGET_ORG_ID), eq(2026L)))
-                .thenReturn(1);
+        // 2026-11-05：该职能部门正在被下发到学院（下发审批在途）
+        when(collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(TARGET_ORG_ID, 2026L))
+                .thenReturn(true);
 
         // 2026-10-30：单条异动入口已整体移除（batch_id 为 null → 快照落库 JOIN 不上 →
         // 变更值静默丢失），异动统一走批量提交；本守卫在批量路径上同口径生效。
