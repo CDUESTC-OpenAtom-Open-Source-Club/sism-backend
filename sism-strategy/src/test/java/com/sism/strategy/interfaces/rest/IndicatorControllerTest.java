@@ -216,7 +216,7 @@ class IndicatorControllerTest {
 
         assertThrows(
                 com.sism.exception.BusinessConflictException.class,
-                () -> controller.updateIndicator(2008L, new IndicatorController.UpdateIndicatorRequest())
+                () -> controller.updateIndicator(2008L, new IndicatorController.UpdateIndicatorRequest(), null)
         );
 
         verify(strategyApplicationService).assertIndicatorEditableFromUserInterface(2008L);
@@ -228,12 +228,17 @@ class IndicatorControllerTest {
     @Test
     @DisplayName("P-02：守卫放行（计划未下发）时 PUT 更新链路照常执行")
     void shouldContinueUpdateWhenGuardAllowsEdit() {
+        // 2026-11-05（R8）：更新入口会先回查「指标真实归属组织」做组织维度授权判定，
+        // 故这里要给出归属组织（职能部门）—— 归属不是战略部 → 放行，
+        // 与「职能部门维护本部门指标」的既有口径一致。
+        when(strategyApplicationService.getIndicatorById(2008L))
+                .thenReturn(createIndicator(2008L, 41003L));
         doThrow(new DistributedPlanMutationBlockedException("当前任务已下发，不能重复导入或下发"))
                 .when(strategyApplicationService)
                 .updateIndicator(eq(2008L), any(), any(), any(), any(), any(), any(), any(), any());
 
         ResponseEntity<ApiResponse<IndicatorController.IndicatorResponse>> response =
-                controller.updateIndicator(2008L, new IndicatorController.UpdateIndicatorRequest());
+                controller.updateIndicator(2008L, new IndicatorController.UpdateIndicatorRequest(), null);
 
         verify(strategyApplicationService).assertIndicatorEditableFromUserInterface(2008L);
         // 守卫（mock 缺省放行）未抛异常，链路继续走到 service 更新；此处借既有
@@ -275,7 +280,11 @@ class IndicatorControllerTest {
                     NamedParameterJdbcTemplate.class,
                     Class.forName("com.sism.iam.application.service.UserNotificationService"),
                     // 2026-10-24 跨窗口数据同步：新增广播端口依赖（本测试不触发，传 null）
-                    Class.forName("com.sism.shared.domain.notification.DataChangeBroadcaster")
+                    Class.forName("com.sism.shared.domain.notification.DataChangeBroadcaster"),
+                    // 2026-11-05（学院指标直发改造）：组织维度校验依赖
+                    com.sism.strategy.infrastructure.StrategyOrgProperties.class,
+                    // 2026-11-05（R6-R9）：指标写入的组织维度授权守卫依赖
+                    com.sism.strategy.application.StrategyOrgWriteGuard.class
             );
             Object userNotificationService = null;
             return constructor.newInstance(
@@ -285,6 +294,8 @@ class IndicatorControllerTest {
                             null,
                             null,
                             null,
+                            null,
+                            // 2026-11-05：下发/异动互斥守卫（本测试不触发异动，传 null）
                             null,
                             // 2026-10-21：任务改名异动留痕依赖（本测试不触发异动，传 null）
                             null,
@@ -306,7 +317,12 @@ class IndicatorControllerTest {
                     jdbcTemplate,
                     namedParameterJdbcTemplate,
                     userNotificationService,
-                    null
+                    null,
+                    // 2026-11-05：战略发展部 org id 配置
+                    new com.sism.strategy.infrastructure.StrategyOrgProperties(),
+                    // 2026-11-05（R6-R9）：组织维度授权守卫
+                    new com.sism.strategy.application.StrategyOrgWriteGuard(
+                            new com.sism.strategy.infrastructure.StrategyOrgProperties())
             );
         } catch (ReflectiveOperationException ex) {
             throw new IllegalStateException("Failed to create IndicatorController for test", ex);

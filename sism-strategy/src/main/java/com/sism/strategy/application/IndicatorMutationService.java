@@ -41,7 +41,8 @@ public class IndicatorMutationService {
     private static final String INDICATOR_ENTITY_TYPE = "INDICATOR";
     /** 2026-10-21：战略任务改名异动与指标异动同链，实体类型为 TASK。 */
     private static final String TASK_ENTITY_TYPE = "TASK";
-    private static final long STRATEGY_ORG_ID = 35L;
+    // 2026-11-05：原 STRATEGY_ORG_ID = 35L 常量已无引用点（战略部 org id 统一走
+    // StrategyOrgProperties#getStrategyOrgId），移除以免与配置项脱钩后成为「假口径」。
 
     // 2026-10-30：随单条异动入口 initiate 一并移除 A3 锁死主动通知的文案常量
     // （notifyLockedOrgUsers 本就无调用点，锁死提示改由审批中心整体流程承载）。
@@ -52,6 +53,11 @@ public class IndicatorMutationService {
     private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final com.sism.shared.domain.user.UserProvider userProvider;
     private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
+    /**
+     * 2026-11-05（学院指标直发改造）：下发/异动互斥守卫的显式口径实现。
+     * 原实现内联在本类里、且依赖 {@code plan.created_by_org_id} 的旧语义，改造后会静默失效。
+     */
+    private final CollegeDispatchGuardService collegeDispatchGuardService;
     /** 2026-10-21：任务改名异动复用任务变更留痕（audit_log entity_type=TASK）。 */
     private final com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
     /**
@@ -371,14 +377,28 @@ public class IndicatorMutationService {
     }
 
     /**
-     * 2026-10-30 定案（下发/异动互斥）：职能部门向学院下发（PLAN_DISPATCH_FUNCDEPT）审批在途时，
-     * 战略部不得再异动该职能部门自己的指标。
+     * 2026-11-09（学院指标单层口径）下发/异动互斥：对<b>学院指标</b>发起异动前，
+     * 检查该学院是否正有学院下发审批在途。
      *
-     * 判定口径：异动指标的目标部门（target_org_id）即职能部门；若该职能部门在当前考核周期
-     * 内存在任一 FUNC_TO_COLLEGE 计划的 PLAN_DISPATCH_FUNCDEPT 实例 IN_REVIEW，则拒绝异动。
-     * 下发审批审的是「该职能部门指标拆给学院」的稳定快照；异动会改动源指标，使审批对象失效。
+     * <p><b>口径演进</b>：
+     * <ul>
+     *   <li>2026-10-30 初版：职能部门向学院下发审批在途时，战略部不得异动该职能部门自己的指标
+     *       （因为下发审的是「部门指标拆给学院」的快照）；</li>
+     *   <li>2026-11-05：判定改为「该职能部门正在被下发到学院」，靠
+     *       {@code p.created_by_org_id = 本指标目标部门} 圈定 —— 改成战略部下发后该条件恒不成立
+     *       → 守卫静默失效（异动照常发起）；</li>
+     *   <li>2026-11-09（单层口径）：学院指标改为「战略部 → 学院」直发、<b>没有父级</b>，
+     *       职能部门也<b>不再</b>向学院下发指标 —— 「部门指标拆给学院」这层依赖已经不存在，
+     *       按部门锚定既会误拦（部门自己的指标在异动，却挡住给学院下发）也会漏拦。
+     *       现在唯一还成立的冲突是<b>同一批学院指标</b>自身：
+     *       下发审批审的是这批指标的快照，异动会改掉它。</li>
+     * </ul>
      *
-     * 仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
+     * <p><b>为什么这里必须限定 FUNC_TO_COLLEGE</b>：只有归属学院下发计划的指标（学院指标）
+     * 才与学院下发审批共享同一份快照。职能部门的指标属于「战略部 → 职能部门」链，
+     * 与学院下发审批无关，直接放行 —— 不限定的话，这个守卫要么对职能部门误拦、要么对学院漏拦。
+     *
+     * <p>仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
      */
     private void assertDispatchApprovalNotInFlightForIndicator(Long indicatorId) {
         java.util.List<Map<String, Object>> rows = jdbcTemplate.queryForList(
@@ -387,7 +407,12 @@ public class IndicatorMutationService {
                 FROM public.indicator i
                 JOIN public.sys_task t ON t.task_id = i.task_id
                 JOIN public.plan p ON p.id = t.plan_id
+                -- 2026-11-09（单层口径）：限定指标属于「学院下发计划」（即学院指标）。
+                -- 原口径限定 sys_org.type='functional'（目标组织是职能部门）——
+                -- 单层后学院指标的目标组织是学院，该条件恒不成立 → rows 为空 → 守卫对学院指标
+                -- 整体静默失效（同一批指标既在异动在审又有下发在途，不拦）。
                 WHERE i.id = ?
+                  AND p.plan_level = 'FUNC_TO_COLLEGE'
                 """,
                 indicatorId);
         if (rows.isEmpty()) {
@@ -399,26 +424,12 @@ public class IndicatorMutationService {
             return;
         }
 
-        Integer inFlight = jdbcTemplate.queryForObject(
-                """
-                SELECT COUNT(*)
-                FROM public.audit_instance ai
-                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
-                    AND f.flow_code = 'PLAN_DISPATCH_FUNCDEPT'
-                JOIN public.plan p ON p.id = ai.entity_id
-                WHERE ai.entity_type = 'PLAN'
-                  AND ai.status = 'IN_REVIEW'
-                  AND p.plan_level = 'FUNC_TO_COLLEGE'
-                  AND p.created_by_org_id = ?
-                  AND p.cycle_id = ?
-                  AND COALESCE(p.is_deleted, false) = false
-                """,
-                Integer.class,
+        boolean dispatchInFlight = collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(
                 ((Number) targetOrgId).longValue(),
                 ((Number) cycleId).longValue());
-        if (inFlight != null && inFlight > 0) {
+        if (dispatchInFlight) {
             throw new IllegalStateException(
-                    "该职能部门的下发审批正在进行中，暂不能发起异动；请等下发审批结束或撤回后再操作");
+                    "该学院的下发审批正在进行中，暂不能发起异动；请等下发审批结束或撤回后再操作");
         }
     }
 

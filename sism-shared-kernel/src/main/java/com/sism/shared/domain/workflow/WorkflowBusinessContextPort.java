@@ -22,6 +22,21 @@ public interface WorkflowBusinessContextPort {
     Optional<BusinessSummary> getBusinessSummary(String entityType, Long entityId);
 
     /**
+     * 2026-11-08（学院指标单层口径）：该业务实体对应的「归口职能部门」。
+     *
+     * <p>为什么单独开一个方法而不是往 {@link BusinessSummary} 里加字段：
+     * record 加字段会波及所有构造点；而这里只需要审批席位解析用到它，
+     * 且必须能与 {@code sourceOrgId} 语义解耦 —— 后者在前端展示里是「来源部门」，
+     * 学院指标单层后它是战略部（正确），但审批席位要落的是归口职能部门（另一个值）。
+     *
+     * <p>默认空实现：非计划类实体、以及未配置归口部门的存量数据都会走这里，
+     * 调用方按「回退到 sourceOrgId」处理，行为与改造前一致。
+     */
+    default Optional<Long> findFunctionalOrgIdByEntity(String entityType, Long entityId) {
+        return Optional.empty();
+    }
+
+    /**
      * P1 上报链改造：审批携带审核进度时，投影到业务明细行。
      * 默认空实现；仅关心该实体类型的上下文适配器覆写。
      *
