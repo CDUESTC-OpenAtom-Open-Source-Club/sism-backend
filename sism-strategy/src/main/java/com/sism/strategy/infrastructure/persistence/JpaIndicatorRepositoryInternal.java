@@ -99,6 +99,15 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
     /**
      * 2026-10-26 数据隔离修复（审批链验证报告 R13）：按可见组织过滤指标——
      * 部门账号只能看到「目标组织 = 本部门」或「拥有组织 = 本部门」的指标。
+     *
+     * <p>2026-11-10 用户拍板口径（归口可见性放行）：战略部直发的学院子指标
+     * （owner=战略发展部、target=二级学院、parent_indicator_id 非空），
+     * 其<b>归口职能部门</b>（即父级核心指标的目标组织）亦可见，
+     * 用于审核进度鉴定与归口查看。原两分支口径下该类子指标对归口部门完全不可见，
+     * 导致上报审批环节要求的「归口部门完成子指标审核进度鉴定」不可达（上报链死锁）。
+     *
+     * <p>本次放行<b>不区分指标状态</b>：DRAFT 子指标也会出现在归口视角，
+     * 供鉴定提前准备；写权限不受影响（写由 StrategyOrgWriteGuard/isDispatchOwned 闸门另行管）。
      */
     @Query(value = """
             SELECT i.* FROM indicator i
@@ -107,7 +116,16 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN cycle c ON p.cycle_id = c.id
             WHERE c.year = :year
               AND COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             ORDER BY COALESCE(i.sort_order, 2147483647) ASC, i.id ASC
             """,
            countQuery = """
@@ -117,7 +135,16 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN cycle c ON p.cycle_id = c.id
             WHERE c.year = :year
               AND COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             """,
            nativeQuery = true)
     Page<Indicator> findByYearAndVisibleOrg(
@@ -125,12 +152,27 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             @Param("orgId") Long orgId,
             Pageable pageable);
 
+    /**
+     * 2026-11-10 归口可见性放行（与 {@link #findByYearAndVisibleOrg} 同口径，无年份过滤版）：
+     * 在「目标组织 = 本部门」或「拥有组织 = 本部门」之外新增第三分支——
+     * 其父级核心指标的目标组织 = 本部门（归口职能部门）的子指标可见。
+     * 详见 findByYearAndVisibleOrg 的口径注释。
+     */
     @Query(value = """
             SELECT i.* FROM indicator i
             INNER JOIN sys_task t ON i.task_id = t.task_id
             INNER JOIN plan p ON t.plan_id = p.id
             WHERE COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             ORDER BY COALESCE(i.sort_order, 2147483647) ASC, i.id ASC
             """,
            countQuery = """
@@ -138,7 +180,16 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN sys_task t ON i.task_id = t.task_id
             INNER JOIN plan p ON t.plan_id = p.id
             WHERE COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             """,
            nativeQuery = true)
     Page<Indicator> findByVisibleOrg(@Param("orgId") Long orgId, Pageable pageable);
