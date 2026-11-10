@@ -158,6 +158,38 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
      * <p>口径：归属 = 战略发展部 + 目标组织是职能部门（sys_org.type='functional'）+ 自身无父级 +
      * 未删除 + <b>同一考核周期</b>（经 sys_task → plan → cycle_id 关联）。
      * 指标表本身不带 cycle，必须经任务与计划关联才能按周期收敛——否则历年同名核心指标会互相串号。
+     *
+     * <p>2026-11-10（用户拍板：草稿指标不能做父级锚点）：追加「核心指标状态 = DISTRIBUTED（已下发）」
+     * 过滤。职能部门没有收到「已下发」的核心指标，就不存在任何学院指标下发的资格——
+     * 计划尚未推进到下发的核心指标（approvePlan → 计划置 DISTRIBUTED → 指标经
+     * syncIndicatorStatusWithPlan 同步刷成 DISTRIBUTED）不能充当学院子指标的父级锚点。
+     */
+    @Query(value = """
+            SELECT i.* FROM public.indicator i
+            INNER JOIN public.sys_task t ON i.task_id = t.task_id
+            INNER JOIN public.plan p ON t.plan_id = p.id
+            INNER JOIN public.sys_org o ON o.id = i.target_org_id
+            WHERE i.owner_org_id = :ownerOrgId
+              AND i.parent_indicator_id IS NULL
+              AND COALESCE(i.is_deleted, false) = false
+              AND COALESCE(t.is_deleted, false) = false
+              AND COALESCE(p.is_deleted, false) = false
+              AND p.cycle_id = :cycleId
+              AND o.type = 'functional'
+              AND COALESCE(o.is_deleted, false) = false
+              AND i.status = 'DISTRIBUTED'
+            ORDER BY i.id
+            """, nativeQuery = true)
+    List<Indicator> findCoreDispatchAnchors(@Param("ownerOrgId") Long ownerOrgId,
+                                             @Param("cycleId") Long cycleId);
+
+    /**
+     * 2026-11-10（学院导入资格口径）：与 {@link #findCoreDispatchAnchors} 同一圈定
+     * （归属战略部 + 目标职能部门 + 无父级 + 未删除 + 同一考核周期），但<b>不过滤指标状态</b>。
+     *
+     * <p>用途：学院导入行级提示区分「系统里没有这条核心指标」与「存在但尚未下发」——
+     * 后者给出「请先完成职能部门核心指标下发」的业务化引导，而不是笼统的
+     * 「与上级下发内容不一致」。
      */
     @Query(value = """
             SELECT i.* FROM public.indicator i
@@ -174,8 +206,8 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
               AND COALESCE(o.is_deleted, false) = false
             ORDER BY i.id
             """, nativeQuery = true)
-    List<Indicator> findCoreDispatchAnchors(@Param("ownerOrgId") Long ownerOrgId,
-                                             @Param("cycleId") Long cycleId);
+    List<Indicator> findCoreIndicatorsInCycle(@Param("ownerOrgId") Long ownerOrgId,
+                                              @Param("cycleId") Long cycleId);
 
     @EntityGraph(attributePaths = {"ownerOrg", "targetOrg"})
     @Query("""
