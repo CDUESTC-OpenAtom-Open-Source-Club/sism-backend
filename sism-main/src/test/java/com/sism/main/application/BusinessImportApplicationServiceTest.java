@@ -12,6 +12,7 @@ import com.sism.strategy.application.BasicTaskWeightValidationService;
 import com.sism.strategy.application.CollegeDispatchGuardService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
+import com.sism.strategy.domain.indicator.IndicatorStatus;
 import com.sism.strategy.domain.plan.Plan;
 import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.plan.PlanStatus;
@@ -1253,6 +1254,8 @@ class BusinessImportApplicationServiceTest {
     }
 
     // 2026-11-05（R10）：存量「职能部门创建的」学院下发计划存在时，导入必须被明确拒绝。
+    // 2026-11-10（用户拍板收窄）：只拦「真下发过子指标」的 legacy 计划——空壳计划（无任务
+    // 或指标全软删）视为当年没下发过，放行由战略部新计划接管（见下方收窄用例）。
     //
     // 为什么这是阻塞级问题：findPlanForImportContext 对学院导入固定用战略部 org 去查计划
     // （「已下发不可再导入」的判定键），存量计划的 created_by 是职能部门 → 永远查不中 →
@@ -1261,11 +1264,12 @@ class BusinessImportApplicationServiceTest {
     // （口径分裂、权重合计失真）。所以必须在预览入口就挡住并点名历史来源。
 
     @Test
-    @DisplayName("R10：本周期该学院已存在职能部门创建的历史下发计划时，导入必须被明确拒绝")
+    @DisplayName("R10：本周期该学院已存在职能部门创建且真下发过子指标的历史计划时，导入必须被明确拒绝")
     void shouldRejectImportWhenLegacyFunctionalDeptPlanExists() {
         Fixture fixture = fixture();
 
-        // 存量计划：创建方是职能部门（改造前的下发方），目标是该学院
+        // 存量计划：创建方是职能部门（改造前的下发方），目标是该学院，
+        // 且计划下有未删除的子指标（2026-11-10 收窄口径：空壳计划放行，真下发过的才拦）
         Plan legacyPlan = Plan.create(
                 2026L,
                 fixture.college().getId(),
@@ -1273,9 +1277,18 @@ class BusinessImportApplicationServiceTest {
                 PlanLevel.FUNC_TO_COLLEGE);
         legacyPlan.setId(608L);
         legacyPlan.setStatus(PlanStatus.DISTRIBUTED.value());
+        StrategicTask legacyTask = StrategicTask.create(
+                "旧任务", TaskType.BASIC, 608L, 2026L, fixture.college(), fixture.functionalOrg());
+        legacyTask.setId(700L);
+        Indicator liveChild = Indicator.create("子指标A", fixture.functionalOrg(), fixture.college(), "定量");
+        liveChild.setId(3000L);
+        liveChild.setTaskId(700L);
+        liveChild.setIsDeleted(false);
 
         stubLegacyPlanOnly(fixture);
         when(planRepository.findByCycleId(2026L)).thenReturn(List.of(legacyPlan));
+        when(taskRepository.findByPlanId(608L)).thenReturn(List.of(legacyTask));
+        when(indicatorRepository.findByTaskIds(List.of(700L))).thenReturn(List.of(liveChild));
 
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
@@ -1341,6 +1354,181 @@ class BusinessImportApplicationServiceTest {
                 fixture.strategyOrg().getId(),
                 null,
                 fixture.currentUser()));
+    }
+
+    // ===== 2026-11-10（用户拍板）：学院导入资格与锚点口径 =====
+    //
+    // 核心原则：职能部门没有收到「已下发」的核心指标，就不存在任何学院指标下发的资格。
+    // 三处落地：① R10 收窄——空壳 legacy 计划放行、有未删子指标才拦；
+    // ② 父级锚点只收「已下发」（DISTRIBUTED）核心指标（repository 层原生 SQL 过滤）；
+    // ③ 行级提示区分「系统无此核心指标」与「存在但尚未下发」。
+
+    @Test
+    @DisplayName("R10 收窄：空壳 legacy 计划（无任务无指标）→ 放行，由战略部新计划接管")
+    void shouldAllowImportWhenLegacyPlanIsEmptyShell() {
+        Fixture fixture = fixture();
+
+        // 存量计划：职能部门创建、目标本学院，但当年没下发过任何子指标（连任务都没有）
+        Plan emptyLegacyPlan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        emptyLegacyPlan.setId(610L);
+
+        stubPreviewDependencies(fixture);
+        when(planRepository.findByCycleId(2026L)).thenReturn(List.of(emptyLegacyPlan));
+        when(taskRepository.findByPlanId(610L)).thenReturn(List.of());
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("empty-legacy-plan.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertFalse(preview.blocking(), "空壳 legacy 计划当年没下发过任何东西，导入应放行");
+        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
+    }
+
+    @Test
+    @DisplayName("R10 收窄：legacy 计划子指标全部软删（空壳）→ 放行")
+    void shouldAllowImportWhenLegacyPlanIndicatorsAllSoftDeleted() {
+        Fixture fixture = fixture();
+
+        Plan legacyPlan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        legacyPlan.setId(611L);
+        StrategicTask legacyTask = StrategicTask.create(
+                "旧任务", TaskType.BASIC, 611L, 2026L, fixture.college(), fixture.functionalOrg());
+        legacyTask.setId(701L);
+        Indicator softDeletedChild = Indicator.create("旧子指标", fixture.functionalOrg(), fixture.college(), "定量");
+        softDeletedChild.setId(3001L);
+        softDeletedChild.setTaskId(701L);
+        softDeletedChild.setIsDeleted(true);
+
+        stubPreviewDependencies(fixture);
+        when(planRepository.findByCycleId(2026L)).thenReturn(List.of(legacyPlan));
+        when(taskRepository.findByPlanId(611L)).thenReturn(List.of(legacyTask));
+        when(indicatorRepository.findByTaskIds(List.of(701L))).thenReturn(List.of(softDeletedChild));
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("soft-deleted-legacy-plan.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertFalse(preview.blocking(), "指标全软删的 legacy 计划等价空壳，导入应放行");
+        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
+    }
+
+    @Test
+    @DisplayName("R10 收窄：legacy 计划下存在未删除子指标 → 维持拦截（防同名重复创建）")
+    void shouldRejectImportWhenLegacyPlanHasLiveIndicators() {
+        Fixture fixture = fixture();
+
+        Plan legacyPlan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.functionalOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        legacyPlan.setId(612L);
+        StrategicTask legacyTask = StrategicTask.create(
+                "旧任务", TaskType.BASIC, 612L, 2026L, fixture.college(), fixture.functionalOrg());
+        legacyTask.setId(702L);
+        Indicator liveChild = Indicator.create("子指标A", fixture.functionalOrg(), fixture.college(), "定量");
+        liveChild.setId(3002L);
+        liveChild.setTaskId(702L);
+        liveChild.setIsDeleted(false);
+
+        stubLegacyPlanOnly(fixture);
+        when(planRepository.findByCycleId(2026L)).thenReturn(List.of(legacyPlan));
+        when(taskRepository.findByPlanId(612L)).thenReturn(List.of(legacyTask));
+        when(indicatorRepository.findByTaskIds(List.of(702L))).thenReturn(List.of(liveChild));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.previewDistribution(
+                        distributionWorkbook("live-legacy-plan.xlsx",
+                                "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        2026L,
+                        fixture.college().getId(),
+                        fixture.strategyOrg().getId(),
+                        null,
+                        fixture.currentUser())
+        );
+
+        assertTrue(error.getMessage().contains("已存在历史下发计划"),
+                "有未删子指标的 legacy 计划必须维持拦截: " + error.getMessage());
+    }
+
+    @Test
+    @DisplayName("2026-11-10 用户拍板：同名核心指标存在但尚未下发 → 业务化引导文案")
+    void shouldGuideWhenParentCoreIndicatorNotYetDistributed() {
+        Fixture fixture = fixture();
+
+        // 系统里存在同名核心指标（同周期、目标职能部门、未删），但所属计划还没推进到下发 → 状态非 DISTRIBUTED，
+        // 不会进入父级锚点集合；行级提示应引导先完成职能部门核心指标下发，而不是说「与上级下发内容不一致」
+        Indicator pendingParent = parentIndicator(fixture, 2005L, "父级核心指标B", "定量");
+        pendingParent.setStatus(IndicatorStatus.DRAFT);
+        stubPreviewDependencies(fixture);
+        when(indicatorRepository.findCoreIndicatorsInCycle(fixture.strategyOrg().getId(), 2026L))
+                .thenReturn(List.of(pendingParent));
+
+        var preview = service.previewDistribution(
+                multiParentDistributionWorkbook("parent-not-distributed.xlsx", "马克思主义学院", new String[][]{
+                        {"父级核心指标B", "定量", "子指标B1", "定量", "100"}
+                }),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking(), "父级核心指标尚未下发应阻断导入");
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("父级核心指标「父级核心指标B」尚未下发")
+                                && msg.contains("请先完成职能部门核心指标下发后再导入学院指标")),
+                "未下发父级应给出业务化引导文案: " + preview.rows().get(0).errors());
+        assertFalse(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("与上级下发内容不一致")),
+                "存在但未下发的场景不应报「与上级下发内容不一致」: " + preview.rows().get(0).errors());
+    }
+
+    @Test
+    @DisplayName("2026-11-10 用户拍板：同名核心指标系统里不存在 → 维持原文案（与上级下发内容不一致）")
+    void shouldKeepOriginalMessageWhenParentCoreIndicatorAbsent() {
+        Fixture fixture = fixture();
+        // findCoreIndicatorsInCycle 未打桩 → 返回空集合 = 系统里没有这条核心指标
+        stubPreviewDependencies(fixture);
+
+        var preview = service.previewDistribution(
+                multiParentDistributionWorkbook("parent-absent.xlsx", "马克思主义学院", new String[][]{
+                        {"父级核心指标B", "定量", "子指标B1", "定量", "100"}
+                }),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertTrue(preview.blocking());
+        assertEquals(ImportAction.ERROR, preview.rows().get(0).action());
+        assertTrue(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("在上级下发的父级核心指标中不存在")),
+                "系统里没有同名核心指标时维持原文案: " + preview.rows().get(0).errors());
+        assertFalse(preview.rows().get(0).errors().stream()
+                        .anyMatch(msg -> msg.contains("尚未下发")),
+                "系统里没有同名核心指标时不应误报「尚未下发」: " + preview.rows().get(0).errors());
     }
 
     private void stubPreviewDependencies(Fixture fixture, Indicator... parents) {

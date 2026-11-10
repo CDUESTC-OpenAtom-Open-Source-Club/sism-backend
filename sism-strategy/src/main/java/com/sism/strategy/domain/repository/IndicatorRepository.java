@@ -147,8 +147,17 @@ public interface IndicatorRepository {
      * <p>口径必须同时满足：归属组织 = 战略发展部、<b>目标组织是职能部门</b>、本身没有父级、
      * 未删除，且落在<b>同一考核周期</b>（经 indicator → sys_task → plan → cycle_id 关联）。
      * 缺任何一条都会让锚点跨年度串号（同名父级错挂）或把「战略部 → 学院」的根指标误当父级。
+     *
+     * <p>2026-11-10（用户拍板：草稿指标不能做父级锚点）：进一步要求核心指标状态 = DISTRIBUTED
+     * （已下发）——职能部门没有收到「已下发」的核心指标，就不存在任何学院指标下发的资格。
      */
     List<Indicator> findCoreDispatchAnchors(Long ownerOrgId, Long cycleId);
+
+    /**
+     * 2026-11-10（学院导入资格口径）：与 {@link #findCoreDispatchAnchors} 同一圈定，
+     * 但不过滤指标状态——用于行级提示区分「系统无此核心指标」与「存在但尚未下发」。
+     */
+    List<Indicator> findCoreIndicatorsInCycle(Long ownerOrgId, Long cycleId);
 
     /**
      * 根据 ID 列表批量查询指标

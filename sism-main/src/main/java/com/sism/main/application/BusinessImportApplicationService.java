@@ -21,6 +21,7 @@ import com.sism.strategy.application.BasicTaskWeightValidationService;
 import com.sism.strategy.application.CollegeDispatchGuardService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
+import com.sism.strategy.domain.indicator.IndicatorStatus;
 import com.sism.strategy.domain.plan.Plan;
 import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.repository.IndicatorRepository;
@@ -158,6 +159,11 @@ public class BusinessImportApplicationService {
         // 新计划下匹配，存量同名子指标会被当成新指标**再创建一条生效的**，
         // 结果同一学院同一周期出现两套生效的学院子指标（口径分裂、权重合计失真）。
         // 所以在预览入口就挡住，并明确提示历史来源。
+        //
+        // 2026-11-10（用户拍板收窄）：仅当 legacy 计划下存在「未删除的子指标」时才拦——
+        // 核心原则：职能部门没有收到「已下发」的核心指标，就不存在任何学院指标下发的资格；
+        // 空壳 legacy 计划 = 当年就没下发过任何东西，放行，由战略部 (35→学院) 新计划自然接管
+        // （空壳无同名冲突风险，逻辑安全）；有未删子指标的 legacy 计划维持拦截（防同名重复创建）。
         Plan legacyPlan = findLegacyDistributionPlan(cycleId, targetOrg.getId());
         if (legacyPlan != null) {
             throw new IllegalArgumentException(
@@ -330,7 +336,11 @@ public class BusinessImportApplicationService {
      * 「已下发不可再导入」的判定失效、同名子指标被重复创建。
      * 故在导入预览入口显式检出并拒绝（见 previewDistribution）。
      *
-     * @return 存量计划；不存在则返回 null
+     * <p>2026-11-10（用户拍板收窄）：只拦「真的下发过东西」的 legacy 计划——
+     * 计划下存在未删除的子指标才算数；空壳计划（没有任何存活指标）视为当年没下发过，
+     * 放行由战略部新计划接管（见 {@link #legacyPlanHasLiveIndicators}）。
+     *
+     * @return 存量计划；不存在或为空壳则返回 null
      */
     private Plan findLegacyDistributionPlan(Long cycleId, Long targetCollegeOrgId) {
         if (cycleId == null || targetCollegeOrgId == null) {
@@ -341,8 +351,32 @@ public class BusinessImportApplicationService {
                 .filter(plan -> plan.getPlanLevel() == PlanLevel.FUNC_TO_COLLEGE)
                 .filter(plan -> targetCollegeOrgId.equals(plan.getTargetOrgId()))
                 .filter(plan -> !Objects.equals(plan.getCreatedByOrgId(), strategyOrgId))
+                .filter(this::legacyPlanHasLiveIndicators)
                 .findFirst()
                 .orElse(null);
+    }
+
+    /**
+     * 2026-11-10（用户拍板口径）：legacy 计划是否真的下发过东西。
+     *
+     * <p>判定链：计划经 sys_task（task_id → plan_id）关联的任务，再经 indicator.task_id 关联的
+     * 指标中存在<b>未删除</b>的记录 → 该计划当年确实下发过子指标，维持拦截（防同名重复创建）。
+     * 没有任务、或任务下指标全被软删 → 空壳，当年没下发过任何东西，放行。
+     */
+    private boolean legacyPlanHasLiveIndicators(Plan plan) {
+        if (plan == null || plan.getId() == null) {
+            return false;
+        }
+        List<Long> taskIds = taskRepository.findByPlanId(plan.getId()).stream()
+                .map(StrategicTask::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (taskIds.isEmpty()) {
+            return false;
+        }
+        return indicatorRepository.findByTaskIds(taskIds).stream()
+                .anyMatch(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()));
     }
 
     private Optional<Plan> findPlanForImportContext(PreviewContext context) {
@@ -485,6 +519,14 @@ public class BusinessImportApplicationService {
                 .toList();
         Map<String, List<Indicator>> parentByName = systemParentAnchors.stream()
                 .collect(Collectors.groupingBy(indicator -> normalizeKey(indicator.getIndicatorDesc())));
+        // 2026-11-10（用户拍板）：锚点集合只含「已下发」核心指标后，匹配失败可能意味着
+        // 「同名核心指标存在但尚未下发」。取同一周期内全部核心指标（不滤状态）建「未下发」
+        // 名册，用于行级提示区分「系统里没有」与「存在但没下发」，给出可执行的引导文案。
+        Map<String, List<Indicator>> undistributedCoreByName = indicatorRepository
+                .findCoreIndicatorsInCycle(strategyOrgId(), cycleId)
+                .stream()
+                .filter(indicator -> indicator.getStatus() != IndicatorStatus.DISTRIBUTED)
+                .collect(Collectors.groupingBy(indicator -> normalizeKey(indicator.getIndicatorDesc())));
 
         Plan plan = findPlan(cycleId, PlanLevel.FUNC_TO_COLLEGE, sourceOrg.getId(), targetCollege.getId()).orElse(null);
         Map<String, Indicator> existingChildren = existingDistributionIndicators(plan, targetCollege);
@@ -492,7 +534,7 @@ public class BusinessImportApplicationService {
         // 第一遍：逐行做学院一致性、父级锚点匹配与锚点一致性硬校验（名称/类型被改=阻断）
         List<DistributionRowAnchor> anchored = new ArrayList<>();
         for (ImportRowPreview row : rows) {
-            anchored.add(applyDistributionAnchor(row, targetCollege, parentByName));
+            anchored.add(applyDistributionAnchor(row, targetCollege, parentByName, undistributedCoreByName));
         }
         // 第二遍：相对顺序校验——文件中出现的父级组序列必须是系统下发顺序的子序列
         // （允许删掉不填的组，不允许调换/乱序；违反=阻断）
@@ -539,7 +581,8 @@ public class BusinessImportApplicationService {
     /** 学院导入逐行锚点校验：学院一致性 + 父级匹配 + 名称/类型锚点硬校验（2026-10-31 用户拍板）。 */
     private DistributionRowAnchor applyDistributionAnchor(ImportRowPreview row,
                                                           SysOrg targetCollege,
-                                                          Map<String, List<Indicator>> parentByName) {
+                                                          Map<String, List<Indicator>> parentByName,
+                                                          Map<String, List<Indicator>> undistributedCoreByName) {
         List<String> errors = new ArrayList<>(row.errors());
         List<String> warnings = new ArrayList<>(row.warnings());
         NormalizedImportRow normalized = row.normalized();
@@ -554,6 +597,13 @@ public class BusinessImportApplicationService {
         if (parentCandidates.isEmpty()) {
             if (isBlank(normalized.parentIndicator())) {
                 errors.add("父级核心指标无法匹配");
+            } else if (!undistributedCoreByName
+                    .getOrDefault(normalizeKey(normalized.parentIndicator()), List.of()).isEmpty()) {
+                // 2026-11-10（用户拍板）：同名核心指标在系统里存在（同周期、目标职能部门、未删）
+                // 但状态非「已下发」→ 职能部门那一级还没下发完成，给出业务化引导而不是笼统的
+                // 「与上级下发内容不一致」——用户该去做的是催下发，不是改表格。
+                errors.add("父级核心指标「" + normalized.parentIndicator().trim()
+                        + "」尚未下发，请先完成职能部门核心指标下发后再导入学院指标");
             } else {
                 // 2026-10-31 用户拍板：父级核心指标名称被改 = 锚点不一致，阻断错误并点名行序与内容
                 errors.add("第 " + row.rowNo() + " 行父级核心指标与上级下发内容不一致（不可修改）：文件中填写为“"
