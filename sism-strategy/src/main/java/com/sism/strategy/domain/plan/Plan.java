@@ -105,7 +105,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void activate() {
         if (PlanStatus.DISTRIBUTED.value().equals(this.status)) {
-            throw new IllegalStateException("Plan is already distributed");
+            throw new IllegalStateException("该计划已下发，请勿重复下发；请刷新后查看最新状态");
         }
         String previousStatus = this.status;
         this.status = PlanStatus.DISTRIBUTED.value();
@@ -131,7 +131,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void ensureCanSubmitForApproval() {
         if (!PlanStatus.DRAFT.value().equals(this.status) && !PlanStatus.RETURNED.value().equals(this.status)) {
-            throw new IllegalStateException("Plan must be in DRAFT or RETURNED state to submit for approval");
+            throw new IllegalStateException("当前计划状态不支持发起下发审批（仅草稿或退回待重报状态可发起），请刷新后查看最新状态");
         }
     }
 
@@ -156,7 +156,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void approve() {
         if (PlanStatus.DISTRIBUTED.value().equals(this.status)) {
-            throw new IllegalStateException("Plan is already distributed");
+            throw new IllegalStateException("该计划已下发，请勿重复下发；请刷新后查看最新状态");
         }
         String previousStatus = this.status;
         this.status = PlanStatus.DISTRIBUTED.value();
@@ -180,7 +180,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void archive() {
         if (Boolean.TRUE.equals(this.isDeleted)) {
-            throw new IllegalStateException("Plan is already archived");
+            throw new IllegalStateException("该计划已归档，请勿重复归档；请刷新后查看最新状态");
         }
         String previousStatus = this.status;
         this.isDeleted = true;
