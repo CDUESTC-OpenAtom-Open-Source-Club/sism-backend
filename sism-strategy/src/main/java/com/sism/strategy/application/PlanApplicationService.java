@@ -470,7 +470,7 @@ public class PlanApplicationService {
         PlanWorkflowSnapshotQueryService.WorkflowSnapshot workflowSnapshot =
                 planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(id);
         if (workflowSnapshot == null || !Boolean.TRUE.equals(workflowSnapshot.getCanWithdraw())) {
-            throw new IllegalStateException("Plan is not in a withdrawable workflow state");
+            throw new IllegalStateException("当前计划状态不支持撤回，请刷新后查看最新状态");
         }
 
         planWorkflowRuntimeService.withdrawWorkflowCurrentStep(workflowSnapshot.getWorkflowInstanceId());

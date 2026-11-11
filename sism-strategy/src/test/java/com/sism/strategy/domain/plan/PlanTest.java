@@ -77,6 +77,21 @@ class PlanTest {
     }
 
     @Test
+    @DisplayName("Should reject approval submission from non-draft state with business-friendly Chinese message")
+    void shouldRejectApprovalSubmissionFromNonDraftStateWithChineseMessage() {
+        Plan plan = Plan.create(1L, 1L, 1L, PlanLevel.COMPREHENSIVE);
+        plan.submitForApproval();
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> plan.ensureCanSubmitForApproval());
+
+        assertTrue(error.getMessage().contains("当前计划状态不支持发起下发审批"),
+                "状态类异常必须是业务化中文消息: " + error.getMessage());
+        assertTrue(error.getMessage().contains("仅草稿或退回待重报状态可发起"),
+                "需说明仅草稿或退回待重报状态可发起: " + error.getMessage());
+    }
+
+    @Test
     @DisplayName("Should move plan to pending when submitted for approval")
     void shouldMovePlanToPendingWhenSubmittedForApproval() {
         Plan plan = Plan.create(1L, 1L, 1L, PlanLevel.COMPREHENSIVE);

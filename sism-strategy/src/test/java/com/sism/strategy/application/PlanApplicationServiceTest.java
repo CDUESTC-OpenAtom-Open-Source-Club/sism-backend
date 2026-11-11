@@ -1093,7 +1093,7 @@ class PlanApplicationServiceTest {
 
         IllegalStateException error = assertThrows(IllegalStateException.class, () -> service.withdrawPlan(22L));
 
-        assertEquals("Plan is not in a withdrawable workflow state", error.getMessage());
+        assertEquals("当前计划状态不支持撤回，请刷新后查看最新状态", error.getMessage());
         verify(planRepository, never()).save(any());
     }
 
