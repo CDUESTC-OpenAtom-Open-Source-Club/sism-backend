@@ -22,6 +22,13 @@ class PlanWorkflowRuntimeService {
     private static final String ROLE_CODE_APPROVER = "APPROVER";
     private static final String ROLE_CODE_STRATEGY_DEPT_HEAD = "STRATEGY_DEPT_HEAD";
     private static final String ROLE_CODE_VICE_PRESIDENT = "VICE_PRESIDENT";
+    /**
+     * 2026-11-10（学院下发审批独立流程）：学院下发审批链的流程码。
+     *
+     * <p>该链三步与 flow 1（PLAN_DISPATCH_STRATEGY）同构，席位全部在战略发展部：
+     * 步骤2 = 战略发展部负责人（role 3）、步骤3 = 分管校领导（role 4）。
+     */
+    private static final String COLLEGE_DISPATCH_FLOW_CODE = "PLAN_DISPATCH_COLLEGE";
 
     private final JdbcTemplate jdbcTemplate;
     private final PlanRepository planRepository;
@@ -435,6 +442,12 @@ class PlanWorkflowRuntimeService {
             WorkflowStepDefinition stepDef,
             WorkflowInstanceContext context
     ) {
+        // 2026-11-10（学院下发审批独立流程）：学院下发链（PLAN_DISPATCH_COLLEGE）的席位
+        // 全部在战略发展部——步骤2 = 战略发展部负责人（role 3）、步骤3 = 分管校领导（role 4）。
+        // 与 ApproverResolver 的同名分支同口径，保证「派单 / 复活续链」两处解析一致。
+        if (isCollegeDispatchFlow(context)) {
+            return strategyOrgProperties.resolveStrategyOrgId();
+        }
         String roleCode = loadRoleCode(stepDef.roleId());
         if (ROLE_CODE_STRATEGY_DEPT_HEAD.equals(roleCode)) {
             return strategyOrgProperties.getStrategyOrgId();
@@ -448,6 +461,30 @@ class PlanWorkflowRuntimeService {
                     .orElse(context.requesterOrgId());
         }
         return context.requesterOrgId();
+    }
+
+    /**
+     * 2026-11-10（学院下发审批独立流程）：判断实例是否走学院下发审批链
+     * （{@code PLAN_DISPATCH_COLLEGE}）。
+     *
+     * <p>按流程码判定而非计划层级：旧链路（PLAN_DISPATCH_FUNCDEPT）同样是 FUNC_TO_COLLEGE 计划，
+     * 但它的席位在职能部门本级，按层级判定会把两条链混在一起。
+     */
+    private boolean isCollegeDispatchFlow(WorkflowInstanceContext context) {
+        if (context == null || context.flowDefId() == null) {
+            return false;
+        }
+        List<String> flowCodes = jdbcTemplate.query(
+                """
+                SELECT flow_code
+                FROM public.audit_flow_def
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (rs, _rowNum) -> rs.getString(1),
+                context.flowDefId());
+        return !flowCodes.isEmpty()
+                && COLLEGE_DISPATCH_FLOW_CODE.equalsIgnoreCase(flowCodes.get(0));
     }
 
     /**

@@ -1,6 +1,7 @@
 -- audit_step_def clean seed
 -- Scope:
--- - Only keep the 4 approved workflow templates and their canonical 18 steps.
+-- - Keep the approved workflow templates and their canonical steps
+--   （2026-11-10 起：5 条业务流程 + flow 6 学院下发链，共 21 步）.
 -- - Single-table seed only. Upstream dependencies are seeded separately by:
 --   - audit_flow_def-data.sql
 --   - sys_role-data.sql
@@ -21,6 +22,11 @@
 --   填报人提交 → 二级学院审批人 → 学院院长审批人 → 职能部门审批人 → 战略发展部终审人（终）
 --   学院上报经内部三节点 + 上级职能部门审核人，最终由战略发展部审核人终审收口；
 --   职能部门链 flow 3 保持 4 节点不变。
+-- College dispatch chain (flow 6, 2026-11-10 学院下发审批独立流程) is 3 nodes,
+-- 与 flow 1（PLAN_DISPATCH_STRATEGY，职能部门下发链）节点同构、定义独立：
+--   填报人提交 → 战略发展部负责人审批 → 分管校领导审批（终）
+--   席位全部按创建方/提交方组织（战略发展部 org 35）解析，与 flow 1 一致。
+--   step id 沿用显式 id 体系顺延（19/20/21）。
 
 BEGIN;
 
@@ -57,7 +63,11 @@ VALUES
 
     (16, 5, '填报人修改', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
     (17, 5, '战略发展部负责人审批', 'APPROVAL', 3, false, NOW(), NOW(), 2),
-    (18, 5, '分管校领导审批', 'APPROVAL', 4, true, NOW(), NOW(), 3)
+    (18, 5, '分管校领导审批', 'APPROVAL', 4, true, NOW(), NOW(), 3),
+
+    (19, 6, '填报人提交', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
+    (20, 6, '战略发展部负责人审批', 'APPROVAL', 3, false, NOW(), NOW(), 2),
+    (21, 6, '分管校领导审批', 'APPROVAL', 4, true, NOW(), NOW(), 3)
 ON CONFLICT (id) DO UPDATE
 SET
     flow_id = EXCLUDED.flow_id,

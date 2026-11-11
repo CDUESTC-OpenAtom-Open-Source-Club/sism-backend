@@ -148,8 +148,14 @@ public class CollegeDispatchGuardService {
      * <p>对<b>职能部门</b>指标发起异动时自然放行：职能部门已不再向学院下发指标，
      * 不是任何学院指标的目标组织（原口径靠父级链推导，单层后该链不存在）。
      *
-     * <p>flow_code 同时保留 {@code PLAN_DISPATCH_FUNCDEPT}：该流程虽已停用（V101），
-     * 但历史库中可能仍有在途实例，保留可避免旧数据出现守卫空窗。
+     * <p>flow_code 同时保留三个流程码：
+     * <ul>
+     *   <li>{@code PLAN_DISPATCH_COLLEGE}：2026-11-10 起学院下发的在用流程（V103 新增）；</li>
+     *   <li>{@code PLAN_DISPATCH_STRATEGY}：2026-11-05~2026-11-09 的过渡复用码，
+     *       本改造落地前提交的学院下发单仍挂在 flow 1 上在途，保留防守卫空窗；</li>
+     *   <li>{@code PLAN_DISPATCH_FUNCDEPT}：该流程虽已停用（V101），
+     *       但历史库中可能仍有在途实例，保留可避免旧数据出现守卫空窗。</li>
+     * </ul>
      *
      * @param targetOrgId 待异动指标的目标组织（学院；职能部门自然不命中）
      * @param cycleId     考核周期 ID
@@ -164,7 +170,7 @@ public class CollegeDispatchGuardService {
                 SELECT COUNT(*)
                 FROM public.audit_instance ai
                 JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
-                    AND f.flow_code IN ('PLAN_DISPATCH_STRATEGY', 'PLAN_DISPATCH_FUNCDEPT')
+                    AND f.flow_code IN ('PLAN_DISPATCH_COLLEGE', 'PLAN_DISPATCH_STRATEGY', 'PLAN_DISPATCH_FUNCDEPT')
                 JOIN public.plan p ON p.id = ai.entity_id
                 WHERE ai.entity_type = 'PLAN'
                   AND ai.status = 'IN_REVIEW'
