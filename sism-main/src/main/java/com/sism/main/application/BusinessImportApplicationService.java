@@ -72,11 +72,13 @@ public class BusinessImportApplicationService {
     private static final Long DEFAULT_STRATEGY_ORG_ID = 35L;
     private static final String STRATEGIC_WORKFLOW_CODE = "PLAN_DISPATCH_STRATEGY";
     /**
-     * 2026-11-05（学院指标直发改造）：学院子指标下发复用「战略部下发」审批流程（flow 1）。
+     * 2026-11-10（学院下发审批独立流程）：学院指标下发（FUNC_TO_COLLEGE，DISTRIBUTION 导入）
+     * 提交一律走独立流程 {@code PLAN_DISPATCH_COLLEGE}（V103 迁移新增，节点与 flow 1 同构）。
      * 原 {@code PLAN_DISPATCH_FUNCDEPT}（职能部门 → 学院）整条链路已取消，流程定义停用
-     * （见 V101 迁移），不再新增流程定义行。
+     * （见 V101 迁移）；职能部门下发（STRAT_TO_FUNC，STRATEGIC_TASK 导入）继续用
+     * {@link #STRATEGIC_WORKFLOW_CODE}（flow 1 PLAN_DISPATCH_STRATEGY），零变化。
      */
-    private static final String DISTRIBUTION_WORKFLOW_CODE = "PLAN_DISPATCH_STRATEGY";
+    private static final String DISTRIBUTION_WORKFLOW_CODE = "PLAN_DISPATCH_COLLEGE";
 
     private final ExcelBusinessImportParser parser;
     private final UserRepository userRepository;

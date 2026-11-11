@@ -1,6 +1,7 @@
 -- audit_flow_def clean seed
 -- Scope:
--- - Only keep the four workflow templates used by the current approval chain.
+-- - Keep the workflow templates used by the current approval chains
+--   （2026-11-10 起：5 条在用流程 + 停用留痕的 flow 2）.
 -- - Exclude historical/dirty fields and rebuild clean business descriptions.
 -- Naming rule:
 -- - flow_code is aligned to PLAN semantics as well.
@@ -10,6 +11,10 @@
 --   该 seed 是 ON CONFLICT DO UPDATE，若这里仍写 true，重新灌 seed 会把旧流程重新启用。
 -- - 流程行保留不删（存量 audit_instance.flow_def_id 引用它），audit_step_def 的步骤行同样保留
 --   （删了历史审批卡片会失去节点信息）。
+-- 2026-11-10 学院下发审批独立流程：
+-- - 新增 PLAN_DISPATCH_COLLEGE（flow 6），节点与 flow 1 同构、定义独立，
+--   学院指标下发（FUNC_TO_COLLEGE，created_by=战略发展部）提交一律走该流程；
+--   职能部门下发（STRAT_TO_FUNC）继续用 PLAN_DISPATCH_STRATEGY（flow 1）。
 
 BEGIN;
 
@@ -29,7 +34,8 @@ VALUES
     (2, 'PLAN_DISPATCH_FUNCDEPT', 'Plan下发审批（职能部门）', false, NOW(), NOW(), '职能部门发起的 Plan 下发审批流程（2026-11-05 学院指标直发改造后停用，仅保留历史数据）', 1, 'PLAN'),
     (3, 'PLAN_APPROVAL_FUNCDEPT', 'Plan审批流程（职能部门）', true, NOW(), NOW(), '职能部门 Plan / 月报复用审批流程', 1, 'PLAN'),
     (4, 'PLAN_APPROVAL_COLLEGE', 'Plan审批流程（二级学院）', true, NOW(), NOW(), '二级学院 Plan / 月报复用审批流程', 1, 'PLAN'),
-    (5, 'PLAN_MUTATION_STRATEGY', '指标异动审批（战略发展部）', true, NOW(), NOW(), '战略发展部发起的指标异动审批流程', 1, 'INDICATOR')
+    (5, 'PLAN_MUTATION_STRATEGY', '指标异动审批（战略发展部）', true, NOW(), NOW(), '战略发展部发起的指标异动审批流程', 1, 'INDICATOR'),
+    (6, 'PLAN_DISPATCH_COLLEGE', 'Plan下发审批（二级学院）', true, NOW(), NOW(), '学院指标下发审批流程（战略发展部 → 二级学院；与 flow 1 节点同构、定义独立）', 1, 'PLAN')
 ON CONFLICT (id) DO UPDATE
 SET
     flow_code = EXCLUDED.flow_code,

@@ -69,11 +69,14 @@ public class PlanApplicationService {
      */
     private static final Long DEFAULT_STRATEGY_ORG_ID = 35L;
     /**
-     * 2026-11-05（学院指标直发改造）：学院下发的审批流程码由服务端固定。
-     * 旧链路 {@code PLAN_DISPATCH_FUNCDEPT}（职能部门 → 学院）已停用（见 V101 迁移），
-     * 新链路复用 {@code PLAN_DISPATCH_STRATEGY}，不再由前端决定用哪个流程码。
+     * 2026-11-10（学院下发审批独立流程）：学院下发的审批流程码由服务端固定为
+     * {@code PLAN_DISPATCH_COLLEGE}（V103 迁移新增，节点与 flow 1 同构、定义独立）。
+     * 旧链路 {@code PLAN_DISPATCH_FUNCDEPT}（职能部门 → 学院）已停用（见 V101 迁移）；
+     * 过渡期复用码 {@code PLAN_DISPATCH_STRATEGY} 对 FUNC_TO_COLLEGE 一并拒绝——
+     * 防旧前端/旧调用路径借 flow 1 绕回。职能部门下发（STRAT_TO_FUNC）继续走
+     * flow 1（PLAN_DISPATCH_STRATEGY），零变化。
      */
-    private static final String COLLEGE_DISPATCH_WORKFLOW_CODE = "PLAN_DISPATCH_STRATEGY";
+    private static final String COLLEGE_DISPATCH_WORKFLOW_CODE = "PLAN_DISPATCH_COLLEGE";
     /** 系统管理员角色码：代操作的唯一豁免（战略部账号之外的合法兜底） */
     private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
 
@@ -576,7 +579,8 @@ public class PlanApplicationService {
      *    2026-11-05（MA2）：本守卫<b>不再</b>由前端传入的 workflowCode 决定是否执行——
      *    原口径「workflowCode 不是 PLAN_DISPATCH_FUNCDEPT 就不查」会让前端传 PLAN_APPROVAL_*
      *    把整段守卫跳过（静默失效）。FUNC_TO_COLLEGE 的流程码已由服务端固定为
-     *    PLAN_DISPATCH_STRATEGY（见 assertCollegeDispatchWorkflowCode），凡是学院下发一律查锁。
+     *    PLAN_DISPATCH_COLLEGE（见 assertCollegeDispatchWorkflowCode，2026-11-10 起为独立流程；
+     *    原 PLAN_DISPATCH_STRATEGY 过渡码一并拒绝），凡是学院下发一律查锁。
      * 2. 战略部对职能部门指标发起异动时，指标的 target_org_id = 职能部门，异动审批实例
      *    flow_code = PLAN_MUTATION_STRATEGY 且 status = IN_REVIEW；此时该职能部门暂不能
      *    再向学院下发，否则学院拿到的指标口径会与异动审批后的口径冲突。
@@ -749,12 +753,14 @@ public class PlanApplicationService {
     }
 
     /**
-     * 2026-11-05（MA2）：FUNC_TO_COLLEGE 计划只接受 {@code PLAN_DISPATCH_STRATEGY}。
+     * 2026-11-10（学院下发审批独立流程）：FUNC_TO_COLLEGE 计划只接受 {@code PLAN_DISPATCH_COLLEGE}。
      *
      * <p>为什么必须服务端判定：workflowCode 由前端传。原实现用它决定「是否执行异动在途守卫」，
      * 前端传 {@code PLAN_APPROVAL_*} 就能把整段守卫跳过——守卫可被前端绕过，等于没有守卫。
-     * 同时旧链路 {@code PLAN_DISPATCH_FUNCDEPT} 已停用，让前端决定流程码等于把链路开关交回前端。
-     * 学院下发的流程码因此固定为 {@code PLAN_DISPATCH_STRATEGY}（旧链路流程定义已停用）。
+     * 旧链路 {@code PLAN_DISPATCH_FUNCDEPT} 已停用、2026-11-05 起的过渡复用码
+     * {@code PLAN_DISPATCH_STRATEGY} 也一并拒绝：旧前端/旧调用路径传旧码时应显式失败，
+     * 而不是静默走错流程。学院下发的流程码因此固定为 {@code PLAN_DISPATCH_COLLEGE}
+     * （V103 新增，节点与 flow 1 同构、定义独立）。
      */
     private void assertCollegeDispatchWorkflowCode(Plan plan, String workflowCode) {
         if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
