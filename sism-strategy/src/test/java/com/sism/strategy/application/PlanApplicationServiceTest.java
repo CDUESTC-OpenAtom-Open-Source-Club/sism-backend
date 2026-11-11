@@ -345,7 +345,8 @@ class PlanApplicationServiceTest {
         plan.setId(9101L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+        // 2026-11-10：学院下发走独立流程 PLAN_DISPATCH_COLLEGE
+        request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
 
         when(planRepository.findById(9101L)).thenReturn(Optional.of(plan));
         // 下发所依赖的职能部门指标正在异动审批中
@@ -368,7 +369,7 @@ class PlanApplicationServiceTest {
         plan.setId(9106L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+        request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
 
         when(planRepository.findById(9106L)).thenReturn(Optional.of(plan));
 
@@ -586,7 +587,7 @@ class PlanApplicationServiceTest {
         plan.setId(9109L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+        request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
 
         when(planRepository.findById(9109L)).thenReturn(Optional.of(plan));
 
@@ -627,7 +628,8 @@ class PlanApplicationServiceTest {
         plan.setId(9102L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+        // 2026-11-10：学院下发走独立流程 PLAN_DISPATCH_COLLEGE，合法放行
+        request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
 
         when(planRepository.findById(9102L)).thenReturn(Optional.of(plan));
         when(collegeDispatchGuardService.isSourceOrgMutationInFlight(9102L, cycleId)).thenReturn(false);
@@ -664,7 +666,7 @@ class PlanApplicationServiceTest {
         plan.setId(9105L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+        request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
 
         when(planRepository.findById(9105L)).thenReturn(Optional.of(plan));
         // 下发所依赖的职能部门自身指标无在审异动
@@ -703,10 +705,39 @@ class PlanApplicationServiceTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> service.submitPlanForApproval(9103L, request, 191L, strategyOrgId));
 
-        assertTrue(error.getMessage().contains("PLAN_DISPATCH_STRATEGY"),
-                "应明确告知学院下发只能用战略部下发流程: " + error.getMessage());
+        assertTrue(error.getMessage().contains("PLAN_DISPATCH_COLLEGE"),
+                "应明确告知学院下发只能用学院下发独立流程: " + error.getMessage());
         verify(planRepository, never()).save(any());
         verify(collegeDispatchGuardService, never()).isSourceOrgMutationInFlight(any(), any());
+    }
+
+    /**
+     * 2026-11-10（学院下发审批独立流程）口径翻转：学院下发不再复用 flow 1，
+     * 旧过渡码 PLAN_DISPATCH_STRATEGY 对 FUNC_TO_COLLEGE 必须显式拒绝——
+     * 防旧前端/旧调用路径借职能部门下发链绕回。
+     */
+    @Test
+    @DisplayName("2026-11-10 口径翻转：FUNC_TO_COLLEGE 计划提交旧过渡码 PLAN_DISPATCH_STRATEGY 被拒绝")
+    void shouldRejectLegacyStrategyWorkflowCodeForCollegeDispatchPlan() {
+        Long cycleId = 2026L;
+        Long strategyOrgId = 35L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9118L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        // 2026-11-05~11-09 的过渡复用码：本改造后对学院下发必须显式拒绝
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+
+        when(planRepository.findById(9118L)).thenReturn(Optional.of(plan));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.submitPlanForApproval(9118L, request, 188L, strategyOrgId));
+
+        assertTrue(error.getMessage().contains("PLAN_DISPATCH_COLLEGE"),
+                "应明确告知学院下发只能用学院下发独立流程: " + error.getMessage());
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
     }
 
     @Test
@@ -717,6 +748,7 @@ class PlanApplicationServiceTest {
         plan.setId(9104L);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        // 2026-11-10：职能部门下发链（flow 1）零变化，STRAT_TO_FUNC 继续用该码
         request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
 
         when(planRepository.findById(9104L)).thenReturn(Optional.of(plan));
@@ -838,7 +870,7 @@ class PlanApplicationServiceTest {
         plan.clearEvents();
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
-        // 2026-11-05（学院指标直发改造）：职能部门下发流程码已停用，战略部下发统一用 flow 1
+        // 2026-11-10（学院下发独立流程）：职能部门下发链（STRAT_TO_FUNC）继续用 flow 1，零变化
         request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
 
         when(planRepository.findById(8080L)).thenReturn(Optional.of(plan));

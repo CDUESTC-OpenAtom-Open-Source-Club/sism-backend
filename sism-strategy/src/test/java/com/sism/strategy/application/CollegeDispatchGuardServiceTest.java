@@ -195,6 +195,29 @@ class CollegeDispatchGuardServiceTest {
                 "异动侧锚点应为指标自身的目标组织");
     }
 
+    /**
+     * 2026-11-10（学院下发审批独立流程）：学院下发改走 PLAN_DISPATCH_COLLEGE 后，
+     * 在途流程码集合必须包含新码——否则新流程的在途下发拦不住异动（守卫空窗）。
+     * 同时保留 STRATEGY（过渡期在途实例）与 FUNCDEPT（历史在途实例）防守卫空窗。
+     */
+    @Test
+    @DisplayName("2026-11-10 回归：异动侧在途流程码必须含新码 PLAN_DISPATCH_COLLEGE 与历史码（防空窗）")
+    void shouldMatchAllDispatchFlowCodesIncludingNewCollegeFlow() {
+        stubInFlightCount(0);
+
+        service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(sqlCaptor.capture(), eq(Integer.class), any(Object[].class));
+        String sql = sqlCaptor.getValue();
+        assertTrue(sql.contains("PLAN_DISPATCH_COLLEGE"),
+                "新流程 PLAN_DISPATCH_COLLEGE 的在途实例必须被守卫覆盖，否则学院下发在途时异动可绕过");
+        assertTrue(sql.contains("PLAN_DISPATCH_STRATEGY"),
+                "过渡期（2026-11-05~11-09）挂在 flow 1 的在途下发单仍需被守卫覆盖");
+        assertTrue(sql.contains("PLAN_DISPATCH_FUNCDEPT"),
+                "历史停用流程的在途实例仍需被守卫覆盖（防旧数据守卫空窗）");
+    }
+
     @Test
     @DisplayName("计数为 null 时按 0 处理，不抛 NPE")
     void shouldTreatNullCountAsZero() {
