@@ -1531,6 +1531,179 @@ class BusinessImportApplicationServiceTest {
                 "系统里没有同名核心指标时不应误报「尚未下发」: " + preview.rows().get(0).errors());
     }
 
+    // ==================== 2026-11-12（HIGH④，A1 实测）：预览预警「新旧数据权重合计叠加」 ====================
+    //
+    // 缺陷：commit 阶段自动下发按「现有未删指标 + 本次导入」合并后的基础性权重合计拦截，
+    // 预览只看文件内部组内合计——目标部门已有草稿指标（55+45）再导入 40+30+30，预览 0 警告，
+    // 提交时才被 COMMIT_BLOCKED「当前为 200」，用户往返导入默认必失败。
+    // 修复：预览阶段复用 commit 的同一合计入口（sumExistingBasicWeight），合并合计 ≠ 100 时
+    // 给参与合计的每一行追加警告（只警告不阻断，用户可能正是要勾「覆盖已有数据」替换旧数据）。
+
+    @Test
+    @DisplayName("HIGH④：学院下发导入叠加已有草稿权重 → 预览 warnings 提示合并合计 170/100")
+    void shouldWarnOnDistributionPreviewWhenImportedWeightsStackOnExistingDraft() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+
+        // 目标学院已有草稿下发计划（战略部创建），基础性子指标 55+45
+        Plan draftPlan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        draftPlan.setId(900L);
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L,
+                PlanLevel.FUNC_TO_COLLEGE,
+                fixture.strategyOrg().getId(),
+                fixture.college().getId()))
+                .thenReturn(Optional.of(draftPlan));
+
+        StrategicTask draftTask = StrategicTask.create(
+                "基础任务", TaskType.BASIC, 900L, 2026L, fixture.college(), fixture.strategyOrg());
+        draftTask.setId(902L);
+        Indicator draftChildA = Indicator.create("草稿子指标甲", fixture.strategyOrg(), fixture.college(), "定量");
+        draftChildA.setId(3010L);
+        draftChildA.setTaskId(902L);
+        draftChildA.setParentIndicatorId(fixture.parentIndicator().getId());
+        draftChildA.setWeightPercent(BigDecimal.valueOf(55));
+        draftChildA.setIsDeleted(false);
+        Indicator draftChildB = Indicator.create("草稿子指标乙", fixture.strategyOrg(), fixture.college(), "定量");
+        draftChildB.setId(3011L);
+        draftChildB.setTaskId(902L);
+        draftChildB.setParentIndicatorId(fixture.parentIndicator().getId());
+        draftChildB.setWeightPercent(BigDecimal.valueOf(45));
+        draftChildB.setIsDeleted(false);
+
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(draftTask));
+        when(indicatorRepository.findByTaskIds(List.of(902L))).thenReturn(List.of(draftChildA, draftChildB));
+        // 父级锚点任务类别（决定子指标行是否计入基础性合计，与 commitDistribution 落库链同口径）
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
+        // commit 校验同一合计入口：现存基础性合计 55+45=100
+        when(basicTaskWeightValidationService.sumExistingBasicWeight(900L, fixture.college().getId()))
+                .thenReturn(BigDecimal.valueOf(100));
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("stacked-draft-weights.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertFalse(preview.blocking(), "只加警告不阻断预览（用户可能正是要勾覆盖替换旧数据）");
+        assertEquals(2, preview.rows().size());
+        for (var row : preview.rows()) {
+            assertTrue(row.warnings().stream()
+                            .anyMatch(msg -> msg.contains("合并现有数据后基础性权重合计为 170/100")),
+                    "参与基础性合计的每行都应提示合并合计 170/100: " + row.warnings());
+            assertTrue(row.warnings().stream()
+                            .anyMatch(msg -> msg.contains("请调整权重或勾选「覆盖已有数据」")),
+                    "警告应给出可执行引导: " + row.warnings());
+        }
+    }
+
+    @Test
+    @DisplayName("HIGH④：无旧数据时不新增合并合计警告（文件内部合计校验维持解析链原口径）")
+    void shouldNotAddMergedWeightWarningWithoutExistingData() {
+        Fixture fixture = fixture();
+        stubPreviewDependencies(fixture);
+
+        Plan draftPlan = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE);
+        draftPlan.setId(900L);
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L,
+                PlanLevel.FUNC_TO_COLLEGE,
+                fixture.strategyOrg().getId(),
+                fixture.college().getId()))
+                .thenReturn(Optional.of(draftPlan));
+
+        // 计划下没有任何存活子指标（首次导入）
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of());
+        when(basicTaskWeightValidationService.sumExistingBasicWeight(900L, fixture.college().getId()))
+                .thenReturn(BigDecimal.ZERO);
+        when(taskRepository.findById(fixture.parentTask().getId()))
+                .thenReturn(Optional.of(fixture.parentTask()));
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("no-existing-data.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertFalse(preview.blocking());
+        for (var row : preview.rows()) {
+            assertFalse(row.warnings().stream().anyMatch(msg -> msg.contains("合并现有数据后")),
+                    "无旧数据不应新增合并合计警告: " + row.warnings());
+        }
+    }
+
+    @Test
+    @DisplayName("HIGH④：战略任务导入叠加职能部门已有草稿权重 → 预览提示合并合计 200/100")
+    void shouldWarnOnStrategicPreviewWhenBasicWeightsStackOnExistingDraft() {
+        Fixture fixture = fixture();
+        when(organizationRepository.findById(fixture.functionalOrg().getId()))
+                .thenReturn(Optional.of(fixture.functionalOrg()));
+
+        // 职能部门已有草稿计划（战略部创建），基础性核心指标 55+45
+        Plan draftPlan = Plan.create(
+                2026L,
+                fixture.functionalOrg().getId(),
+                fixture.strategyOrg().getId(),
+                PlanLevel.STRAT_TO_FUNC);
+        draftPlan.setId(910L);
+        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L,
+                PlanLevel.STRAT_TO_FUNC,
+                fixture.strategyOrg().getId(),
+                fixture.functionalOrg().getId()))
+                .thenReturn(Optional.of(draftPlan));
+
+        StrategicTask draftBasicTask = StrategicTask.create(
+                "基础任务", TaskType.BASIC, 910L, 2026L, fixture.functionalOrg(), fixture.strategyOrg());
+        draftBasicTask.setId(905L);
+        Indicator draftCoreA = Indicator.create("草稿核心指标甲", fixture.strategyOrg(), fixture.functionalOrg(), "定量");
+        draftCoreA.setId(3020L);
+        draftCoreA.setTaskId(905L);
+        draftCoreA.setWeightPercent(BigDecimal.valueOf(55));
+        draftCoreA.setIsDeleted(false);
+        Indicator draftCoreB = Indicator.create("草稿核心指标乙", fixture.strategyOrg(), fixture.functionalOrg(), "定量");
+        draftCoreB.setId(3021L);
+        draftCoreB.setTaskId(905L);
+        draftCoreB.setWeightPercent(BigDecimal.valueOf(45));
+        draftCoreB.setIsDeleted(false);
+
+        when(taskRepository.findByPlanId(910L)).thenReturn(List.of(draftBasicTask));
+        when(indicatorRepository.findByTaskIds(List.of(905L))).thenReturn(List.of(draftCoreA, draftCoreB));
+        when(basicTaskWeightValidationService.sumExistingBasicWeight(910L, fixture.functionalOrg().getId()))
+                .thenReturn(BigDecimal.valueOf(100));
+
+        // 文件再带基础性 40+30+30（新名称 → 全部 CREATE），与 A1 实测场景同构
+        var preview = service.previewStrategicTasks(
+                basicStrategicWorkbook("stacked-core-weights.xlsx", "人力资源部", 40, 30, 30),
+                2026L,
+                fixture.functionalOrg().getId(),
+                null,
+                fixture.currentUser());
+
+        assertFalse(preview.blocking(), "只加警告不阻断预览");
+        assertEquals(3, preview.rows().size());
+        for (var row : preview.rows()) {
+            assertTrue(row.warnings().stream()
+                            .anyMatch(msg -> msg.contains("合并现有数据后基础性权重合计为 200/100")),
+                    "参与基础性合计的每行都应提示合并合计 200/100: " + row.warnings());
+        }
+    }
+
     private void stubPreviewDependencies(Fixture fixture, Indicator... parents) {
         // 2026-11-05（学院指标直发改造）：来源组织 = 战略发展部；
         // 2026-11-05（BL3）：父级锚点按「同一考核周期 + 目标为职能部门 + 无父级 + 未删除」收敛，
@@ -1831,6 +2004,46 @@ class BusinessImportApplicationServiceTest {
             data.createCell(4).setCellValue("提案办理满意度");
             data.createCell(5).setCellValue("定量");
             data.createCell(6).setCellValue(10);
+
+            workbook.write(outputStream);
+            return new MockMultipartFile(
+                    "file",
+                    fileName,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    outputStream.toByteArray());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    /** 构建职能部门指标导入工作簿（基础性多行、组列 sticky 延续，HIGH④ 预警测试用） */
+    private MockMultipartFile basicStrategicWorkbook(String fileName, String department, int... weights) {
+        try (Workbook workbook = new XSSFWorkbook();
+             ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("职能部门指标模板");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("部门");
+            header.createCell(2).setCellValue("战略任务");
+            header.createCell(3).setCellValue("任务类型");
+            header.createCell(4).setCellValue("核心指标");
+            header.createCell(5).setCellValue("指标类型");
+            header.createCell(6).setCellValue("权重（可填 10 / 10% / 0.1）");
+            header.createCell(7).setCellValue("下发备注");
+
+            for (int i = 0; i < weights.length; i++) {
+                Row row = sheet.createRow(i + 1);
+                if (i == 0) {
+                    // 组首行填组列（序号/部门/战略任务/任务类型），延续行留空 sticky 继承
+                    row.createCell(0).setCellValue(1);
+                    row.createCell(1).setCellValue(department);
+                    row.createCell(2).setCellValue("基础任务");
+                    row.createCell(3).setCellValue("基础性");
+                }
+                row.createCell(4).setCellValue("新核心指标" + (i + 1));
+                row.createCell(5).setCellValue("定量");
+                row.createCell(6).setCellValue(weights[i]);
+            }
 
             workbook.write(outputStream);
             return new MockMultipartFile(
