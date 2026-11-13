@@ -79,6 +79,8 @@ public class BusinessImportApplicationService {
      * {@link #STRATEGIC_WORKFLOW_CODE}（flow 1 PLAN_DISPATCH_STRATEGY），零变化。
      */
     private static final String DISTRIBUTION_WORKFLOW_CODE = "PLAN_DISPATCH_COLLEGE";
+    /** 2026-11-12（HIGH④）：基础性任务指标权重合计规则值（与 BasicTaskWeightValidationService 同值）。 */
+    private static final BigDecimal REQUIRED_BASIC_WEIGHT_TOTAL = BigDecimal.valueOf(100);
 
     private final ExcelBusinessImportParser parser;
     private final UserRepository userRepository;
@@ -465,7 +467,7 @@ public class BusinessImportApplicationService {
         // 旧「序号→内部ID 行身份精确更新」逻辑移除，序号仅作为任务组号参与分组与排序。
         Map<String, Indicator> existing = existingStrategicIndicators(plan);
 
-        return rows.stream().map(row -> {
+        List<ImportRowPreview> enriched = rows.stream().map(row -> {
             List<String> errors = new ArrayList<>(row.errors());
             List<String> warnings = new ArrayList<>(row.warnings());
             NormalizedImportRow normalized = row.normalized();
@@ -490,6 +492,46 @@ public class BusinessImportApplicationService {
                     warnings
             );
         }).toList();
+
+        // 2026-11-12（HIGH④）：本次导入将参与基础性权重合计的行贡献量（CREATE=落库权重、
+        // UPDATE=新值-旧值差量），交给统一的「新旧数据叠加」预警。
+        // 键用列表下标而非 rowNo——预览行 rowNo 展示口径是「序号（组号）」，同组多行同号会互相覆盖。
+        Map<Integer, BigDecimal> basicContributions = new LinkedHashMap<>();
+        for (int index = 0; index < enriched.size(); index++) {
+            BigDecimal contribution = strategicRowBasicContribution(enriched.get(index), existing);
+            if (contribution != null) {
+                basicContributions.put(index, contribution);
+            }
+        }
+        return appendMergedBasicWeightWarnings(enriched, plan, targetOrg.getId(), basicContributions);
+    }
+
+    /**
+     * 2026-11-12（HIGH④）：战略任务导入行对基础性权重合计的贡献量；不参与合计返回 null。
+     *
+     * <p>参与口径与 commitStrategic 落库链一致：任务类型 = 基础性（toTaskType 同款判定）、
+     * 行动作 CREATE/UPDATE（ERROR 会阻断提交、SKIP 不落库）。权重口径：
+     * CREATE 按落库值（空权重复用默认 100，与 createIndicator 的 defaultWeight 同款）；
+     * UPDATE 按提交后快照差量（新值-旧值，空权重沿用旧值 → 差量 0，updateIndicator 空值不覆盖）。
+     */
+    private BigDecimal strategicRowBasicContribution(ImportRowPreview row, Map<String, Indicator> existing) {
+        if (row.action() != ImportAction.CREATE && row.action() != ImportAction.UPDATE) {
+            return null;
+        }
+        if (toTaskType(row.normalized().taskType()) != TaskType.BASIC) {
+            return null;
+        }
+        if (row.action() == ImportAction.UPDATE) {
+            Indicator target = existing.get(row.businessKey());
+            BigDecimal oldWeight = target == null || target.getWeightPercent() == null
+                    ? BigDecimal.ZERO
+                    : target.getWeightPercent();
+            BigDecimal newWeight = row.normalized().weight() == null
+                    ? oldWeight
+                    : row.normalized().weight();
+            return newWeight.subtract(oldWeight);
+        }
+        return defaultWeight(row.normalized().weight());
     }
 
     private List<ImportRowPreview> enrichDistributionRows(List<ImportRowPreview> rows,
@@ -543,7 +585,13 @@ public class BusinessImportApplicationService {
         applyParentOrderValidation(anchored, systemParentAnchors);
 
         // 第三遍：组装预览行（错误优先阻断；未使用预填行置 SKIP；其余按名称匹配更新/新增）
-        return anchored.stream().map(anchor -> {
+        List<ImportRowPreview> enriched = new ArrayList<>();
+        // 2026-11-12（HIGH④）：本次导入将参与基础性权重合计的行贡献量
+        //（父级核心指标所属任务为「基础性」的子指标行，与 commitDistribution 落库链同口径）。
+        // 键用列表下标而非 rowNo——预览行 rowNo 展示口径是「序号（组号）」，同组多行同号会互相覆盖。
+        Map<Integer, BigDecimal> basicContributions = new LinkedHashMap<>();
+        for (int index = 0; index < anchored.size(); index++) {
+            DistributionRowAnchor anchor = anchored.get(index);
             NormalizedImportRow normalized = anchor.normalized();
             String businessKey = distributionBusinessKey(cycleId, sourceOrg.getId(), targetCollege.getId(), normalized);
             ImportAction action;
@@ -555,7 +603,7 @@ public class BusinessImportApplicationService {
             } else {
                 action = existingChildren.containsKey(businessKey) ? ImportAction.UPDATE : ImportAction.CREATE;
             }
-            return new ImportRowPreview(
+            ImportRowPreview previewRow = new ImportRowPreview(
                     anchor.row().rowNo(),
                     action,
                     businessKey,
@@ -564,7 +612,100 @@ public class BusinessImportApplicationService {
                     anchor.errors(),
                     anchor.warnings()
             );
-        }).toList();
+            enriched.add(previewRow);
+
+            BigDecimal contribution = distributionRowBasicContribution(anchor, action, businessKey, existingChildren);
+            if (contribution != null) {
+                basicContributions.put(index, contribution);
+            }
+        }
+        return appendMergedBasicWeightWarnings(enriched, plan, targetCollege.getId(), basicContributions);
+    }
+
+    /**
+     * 2026-11-12（HIGH④）：学院子指标导入行对基础性权重合计的贡献量；不参与合计返回 null。
+     *
+     * <p>参与口径与 commitDistribution 落库链一致：子指标任务类别继承父级核心指标
+     * （resolveParentTaskCategory 同款判定，父级任务为「基础性」才计入基础性合计）、
+     * 行动作 CREATE/UPDATE（ERROR 阻断、SKIP 不落库）。权重口径与战略链相同：
+     * CREATE 按落库值（空权重默认 100）；UPDATE 按提交后快照差量（空权重沿用旧值 → 差量 0）。
+     */
+    private BigDecimal distributionRowBasicContribution(DistributionRowAnchor anchor,
+                                                        ImportAction action,
+                                                        String businessKey,
+                                                        Map<String, Indicator> existingChildren) {
+        if (action != ImportAction.CREATE && action != ImportAction.UPDATE) {
+            return null;
+        }
+        if (resolveParentTaskCategory(anchor.matchedParent()) != TaskType.BASIC) {
+            return null;
+        }
+        BigDecimal weight = anchor.normalized().weight();
+        if (action == ImportAction.UPDATE) {
+            Indicator target = existingChildren.get(businessKey);
+            BigDecimal oldWeight = target == null || target.getWeightPercent() == null
+                    ? BigDecimal.ZERO
+                    : target.getWeightPercent();
+            BigDecimal newWeight = weight == null ? oldWeight : weight;
+            return newWeight.subtract(oldWeight);
+        }
+        return defaultWeight(weight);
+    }
+
+    /**
+     * 2026-11-12（HIGH④，A1 实测）：预览阶段预警「新旧数据权重合计叠加」。
+     *
+     * <p>commit 阶段的自动下发校验（BasicTaskWeightValidationService）按「现有未删指标 +
+     * 本次导入」合并后的基础性权重合计拦截；此前预览只做文件内部组内合计，旧数据叠加完全
+     * 不可见——目标部门已有草稿指标（55+45）再导入 40+30+30，预览 0 警告，提交时才被
+     * COMMIT_BLOCKED「当前为 200」，用户往返导入默认必失败。
+     *
+     * <p>口径：复用 commit 校验的同一合计入口（{@code sumExistingBasicWeight}）取现存合计，
+     * 叠加本次有效行贡献量（见 strategicRowBasicContribution / distributionRowBasicContribution），
+     * 合并合计 ≠ 100 时给参与合计的每一行 warnings 追加提示——<b>只警告不阻断预览</b>，
+     * 用户可能正是要勾选「覆盖已有数据」来替换旧数据。现存合计为 0（无旧数据）时不新增警告，
+     * 文件内部合计校验维持解析链原口径。
+     */
+    private List<ImportRowPreview> appendMergedBasicWeightWarnings(List<ImportRowPreview> rows,
+                                                                   Plan plan,
+                                                                   Long targetOrgId,
+                                                                   Map<Integer, BigDecimal> basicContributions) {
+        if (plan == null || plan.getId() == null || targetOrgId == null || basicContributions.isEmpty()) {
+            return rows;
+        }
+        BigDecimal existingTotal = basicTaskWeightValidationService.sumExistingBasicWeight(plan.getId(), targetOrgId);
+        if (existingTotal == null || existingTotal.compareTo(BigDecimal.ZERO) <= 0) {
+            return rows;
+        }
+        BigDecimal mergedTotal = basicContributions.values().stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .add(existingTotal);
+        if (mergedTotal.compareTo(REQUIRED_BASIC_WEIGHT_TOTAL) == 0) {
+            return rows;
+        }
+        String warning = "合并现有数据后基础性权重合计为 " + mergedTotal.stripTrailingZeros().toPlainString()
+                + "/" + REQUIRED_BASIC_WEIGHT_TOTAL.toPlainString()
+                + "，直接提交将被拦截：请调整权重或勾选「覆盖已有数据」";
+        List<ImportRowPreview> result = new ArrayList<>(rows.size());
+        for (int index = 0; index < rows.size(); index++) {
+            ImportRowPreview row = rows.get(index);
+            if (!basicContributions.containsKey(index)) {
+                result.add(row);
+                continue;
+            }
+            List<String> warnings = new ArrayList<>(row.warnings());
+            warnings.add(warning);
+            result.add(new ImportRowPreview(
+                    row.rowNo(),
+                    row.action(),
+                    row.businessKey(),
+                    row.normalized(),
+                    row.source(),
+                    row.errors(),
+                    warnings
+            ));
+        }
+        return result;
     }
 
     /**

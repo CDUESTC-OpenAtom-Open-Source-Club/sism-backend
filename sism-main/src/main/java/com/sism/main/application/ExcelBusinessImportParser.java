@@ -50,8 +50,11 @@ public class ExcelBusinessImportParser {
             Map.entry("strategicTask", List.of("战略任务", "任务名称", "任务内容")),
             Map.entry("indicatorName", List.of("核心指标", "指标名称", "指标内容")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
-            // 2026-10-20：导出/模板表头带格式提示「权重（可填 10 / 10% / 0.1）」，需兼容识别
-            Map.entry("weight", List.of("权重", "指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
+            // 2026-10-20：导出/模板表头带格式提示「权重（可填 10 / 10% / 0.1）」，需兼容识别。
+            // 2026-11-12 前端方案A模板/导出列头改为「权重（纯数字）」——注意：前端模板表头文案演进时
+            // 必须同步本别名表，否则 matchField 全等匹配失败导致整列不映射（weight=null 按默认 100）
+            Map.entry("weight", List.of("权重", "指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)",
+                    "权重（纯数字）", "权重(纯数字)")),
             Map.entry("remark", List.of("下发备注", "备注", "说明")),
             // 2026-10-31 层级化定案：序号=组号（组首行必填，组内留空=同上），不再做行身份匹配；
             // 列别名保留（向后兼容旧导出表）
@@ -75,7 +78,9 @@ public class ExcelBusinessImportParser {
             Map.entry("parentIndicatorType", List.of("核心指标类型", "父级指标类型")),
             Map.entry("indicatorName", List.of("子指标名称", "指标名称", "学院指标")),
             Map.entry("indicatorType", List.of("指标类型", "计量方式")),
-            Map.entry("weight", List.of("权重", "指标权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)")),
+            // 2026-11-12 同步职能部门模板：权重列头新增「权重（纯数字）」（半角括号兜底手写文件）
+            Map.entry("weight", List.of("权重", "指标权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)",
+                    "权重（纯数字）", "权重(纯数字)")),
             Map.entry("remark", List.of("备注", "说明")),
             // 2026-10-31 层级化定案：序号=父级核心指标组号（组首行必填，组内留空=同上）；别名向后兼容
             Map.entry("seq", List.of("序号", "序 号"))

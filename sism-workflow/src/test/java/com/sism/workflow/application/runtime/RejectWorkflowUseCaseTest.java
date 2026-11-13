@@ -214,4 +214,221 @@ class RejectWorkflowUseCaseTest {
         assertEquals(410L, saved.getStepInstances().get(3).getApproverId());
         assertEquals(44L, saved.getStepInstances().get(3).getApproverOrgId());
     }
+
+    /**
+     * HIGH①（2026-11-12 实例 #5 实测复现）：学院上报链（PLAN_APPROVAL_COLLEGE，工学院式五节点
+     * 填报人提交→学院审核人→归口负责人→归口校领导→战略部终审）从终审逐级驳回，
+     * 回退生成的「学院审核人审批」步骤 approver_org 必须按席位规则重解为学院 org（57），
+     * 不能错继承归口部门 org（44）——否则学院审核人收不到待办、链卡死。
+     * 同时回归：归口节点（归口校领导/归口负责人）回退后 org 维持归口 44 不变。
+     */
+    @Test
+    void reject_shouldReResolveCollegeReviewerOrgBySeatRuleWhenRolledBackFromFunctionalSteps() {
+        AuditFlowDef flowDef = new AuditFlowDef();
+
+        AuditStepDef submit = new AuditStepDef();
+        submit.setId(101L);
+        submit.setStepName("填报人提交");
+        submit.setStepOrder(1);
+        submit.setStepType(AuditStepDef.STEP_TYPE_SUBMIT);
+
+        AuditStepDef collegeReviewer = new AuditStepDef();
+        collegeReviewer.setId(102L);
+        collegeReviewer.setStepName("学院审核人审批");
+        collegeReviewer.setStepOrder(2);
+        collegeReviewer.setStepType(AuditStepDef.STEP_TYPE_APPROVAL);
+        collegeReviewer.setRoleId(2L);
+
+        AuditStepDef functionalHead = new AuditStepDef();
+        functionalHead.setId(103L);
+        functionalHead.setStepName("职能部门审批人审批");
+        functionalHead.setStepOrder(3);
+        functionalHead.setStepType(AuditStepDef.STEP_TYPE_APPROVAL);
+        functionalHead.setRoleId(2L);
+
+        AuditStepDef functionalVicePresident = new AuditStepDef();
+        functionalVicePresident.setId(104L);
+        functionalVicePresident.setStepName("分管职能部门校领导审批");
+        functionalVicePresident.setStepOrder(4);
+        functionalVicePresident.setStepType(AuditStepDef.STEP_TYPE_APPROVAL);
+        functionalVicePresident.setRoleId(4L);
+
+        AuditStepDef strategyFinal = new AuditStepDef();
+        strategyFinal.setId(105L);
+        strategyFinal.setStepName("职能部门终审");
+        strategyFinal.setStepOrder(5);
+        strategyFinal.setStepType(AuditStepDef.STEP_TYPE_APPROVAL);
+        strategyFinal.setRoleId(3L);
+        strategyFinal.setIsTerminal(true);
+
+        flowDef.setSteps(List.of(submit, collegeReviewer, functionalHead, functionalVicePresident, strategyFinal));
+
+        AuditInstance instance = new AuditInstance();
+        instance.setId(10L);
+        instance.setFlowDefId(100L);
+        instance.setRequesterId(200L);
+        instance.setRequesterOrgId(57L);
+        instance.setStatus(AuditInstance.STATUS_PENDING);
+
+        AuditStepInstance submitInstance = new AuditStepInstance();
+        submitInstance.setStepNo(1);
+        submitInstance.setStepDefId(101L);
+        submitInstance.setStepName("填报人提交");
+        submitInstance.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitInstance.setApproverId(200L);
+        submitInstance.setApproverOrgId(57L);
+
+        AuditStepInstance collegeReviewerInstance = new AuditStepInstance();
+        collegeReviewerInstance.setStepNo(2);
+        collegeReviewerInstance.setStepDefId(102L);
+        collegeReviewerInstance.setStepName("学院审核人审批");
+        collegeReviewerInstance.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        collegeReviewerInstance.setApproverId(210L);
+        collegeReviewerInstance.setApproverOrgId(57L);
+
+        AuditStepInstance functionalHeadInstance = new AuditStepInstance();
+        functionalHeadInstance.setStepNo(3);
+        functionalHeadInstance.setStepDefId(103L);
+        functionalHeadInstance.setStepName("职能部门审批人审批");
+        functionalHeadInstance.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        functionalHeadInstance.setApproverId(310L);
+        functionalHeadInstance.setApproverOrgId(44L);
+
+        AuditStepInstance functionalVicePresidentInstance = new AuditStepInstance();
+        functionalVicePresidentInstance.setStepNo(4);
+        functionalVicePresidentInstance.setStepDefId(104L);
+        functionalVicePresidentInstance.setStepName("分管职能部门校领导审批");
+        functionalVicePresidentInstance.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        functionalVicePresidentInstance.setApproverId(320L);
+        functionalVicePresidentInstance.setApproverOrgId(44L);
+
+        AuditStepInstance strategyFinalInstance = new AuditStepInstance();
+        strategyFinalInstance.setStepNo(5);
+        strategyFinalInstance.setStepDefId(105L);
+        strategyFinalInstance.setStepName("职能部门终审");
+        strategyFinalInstance.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        strategyFinalInstance.setApproverId(189L);
+        strategyFinalInstance.setApproverOrgId(35L);
+
+        instance.addStepInstance(submitInstance);
+        instance.addStepInstance(collegeReviewerInstance);
+        instance.addStepInstance(functionalHeadInstance);
+        instance.addStepInstance(functionalVicePresidentInstance);
+        instance.addStepInstance(strategyFinalInstance);
+
+        when(workflowDefinitionQueryService.getAuditFlowDefById(100L)).thenReturn(flowDef);
+        // 回退节点席位重解一律以实例请求方组织（57 学院）为 context——
+        // stub 按精确参数绑定，若实现继续沿用「最后已批步骤 org（44）」这些 stub 不会命中。
+        when(approverResolver.resolveAssignedApproverId(functionalVicePresident, 200L, 57L, instance)).thenReturn(320L);
+        when(approverResolver.resolveApproverOrgId(functionalVicePresident, 57L, instance)).thenReturn(44L);
+        when(approverResolver.resolveAssignedApproverId(functionalHead, 200L, 57L, instance)).thenReturn(310L);
+        when(approverResolver.resolveApproverOrgId(functionalHead, 57L, instance)).thenReturn(44L);
+        when(approverResolver.resolveAssignedApproverId(collegeReviewer, 200L, 57L, instance)).thenReturn(210L);
+        when(approverResolver.resolveApproverOrgId(collegeReviewer, 57L, instance)).thenReturn(57L);
+        when(auditInstanceRepository.save(any(AuditInstance.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        // 终审驳回 → 回退归口校领导
+        rejectWorkflowUseCase.reject(instance, 189L, "终审驳回");
+        // 归口校领导驳回 → 回退归口负责人
+        rejectWorkflowUseCase.reject(instance, 320L, "校领导驳回");
+        // 归口负责人驳回 → 回退学院审核人
+        AuditInstance saved = rejectWorkflowUseCase.reject(instance, 310L, "归口负责人驳回");
+
+        assertEquals(AuditInstance.STATUS_PENDING, saved.getStatus());
+        assertEquals(8, saved.getStepInstances().size());
+
+        // 回归：归口节点回退后 org 维持归口 44
+        AuditStepInstance vicePresidentReturned = saved.getStepInstances().get(5);
+        assertEquals(104L, vicePresidentReturned.getStepDefId());
+        assertEquals(44L, vicePresidentReturned.getApproverOrgId());
+        AuditStepInstance headReturned = saved.getStepInstances().get(6);
+        assertEquals(103L, headReturned.getStepDefId());
+        assertEquals(44L, headReturned.getApproverOrgId());
+
+        // 修复点：学院审核人节点回退后按席位规则重解为学院 org 57
+        AuditStepInstance collegeReviewerReturned = saved.getStepInstances().get(7);
+        assertEquals(102L, collegeReviewerReturned.getStepDefId());
+        assertEquals(AuditInstance.STEP_STATUS_PENDING, collegeReviewerReturned.getStatus());
+        assertEquals(210L, collegeReviewerReturned.getApproverId());
+        assertEquals(57L, collegeReviewerReturned.getApproverOrgId());
+    }
+
+    /**
+     * 回归（实例 #6 口径）：同部门链内驳回回退，回退步骤 org 维持本部门（37）不变。
+     */
+    @Test
+    void reject_shouldKeepSameDeptOrgWhenRolledBackWithinDeptChain() {
+        AuditFlowDef flowDef = new AuditFlowDef();
+
+        AuditStepDef submit = new AuditStepDef();
+        submit.setId(201L);
+        submit.setStepName("填报人提交");
+        submit.setStepOrder(1);
+        submit.setStepType(AuditStepDef.STEP_TYPE_SUBMIT);
+
+        AuditStepDef deptApprover = new AuditStepDef();
+        deptApprover.setId(202L);
+        deptApprover.setStepName("部门负责人审批");
+        deptApprover.setStepOrder(2);
+        deptApprover.setStepType(AuditStepDef.STEP_TYPE_APPROVAL);
+        deptApprover.setRoleId(2L);
+
+        AuditStepDef strategyFinal = new AuditStepDef();
+        strategyFinal.setId(203L);
+        strategyFinal.setStepName("战略发展部终审人审批");
+        strategyFinal.setStepOrder(3);
+        strategyFinal.setStepType(AuditStepDef.STEP_TYPE_APPROVAL);
+        strategyFinal.setRoleId(3L);
+
+        flowDef.setSteps(List.of(submit, deptApprover, strategyFinal));
+
+        AuditInstance instance = new AuditInstance();
+        instance.setId(20L);
+        instance.setFlowDefId(200L);
+        instance.setRequesterId(400L);
+        instance.setRequesterOrgId(37L);
+        instance.setStatus(AuditInstance.STATUS_PENDING);
+
+        AuditStepInstance submitInstance = new AuditStepInstance();
+        submitInstance.setStepNo(1);
+        submitInstance.setStepDefId(201L);
+        submitInstance.setStepName("填报人提交");
+        submitInstance.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitInstance.setApproverId(400L);
+        submitInstance.setApproverOrgId(37L);
+
+        AuditStepInstance deptApproverInstance = new AuditStepInstance();
+        deptApproverInstance.setStepNo(2);
+        deptApproverInstance.setStepDefId(202L);
+        deptApproverInstance.setStepName("部门负责人审批");
+        deptApproverInstance.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        deptApproverInstance.setApproverId(410L);
+        deptApproverInstance.setApproverOrgId(37L);
+
+        AuditStepInstance strategyFinalInstance = new AuditStepInstance();
+        strategyFinalInstance.setStepNo(3);
+        strategyFinalInstance.setStepDefId(203L);
+        strategyFinalInstance.setStepName("战略发展部终审人审批");
+        strategyFinalInstance.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        strategyFinalInstance.setApproverId(189L);
+        strategyFinalInstance.setApproverOrgId(35L);
+
+        instance.addStepInstance(submitInstance);
+        instance.addStepInstance(deptApproverInstance);
+        instance.addStepInstance(strategyFinalInstance);
+
+        when(workflowDefinitionQueryService.getAuditFlowDefById(200L)).thenReturn(flowDef);
+        when(approverResolver.resolveAssignedApproverId(deptApprover, 400L, 37L, instance)).thenReturn(410L);
+        when(approverResolver.resolveApproverOrgId(deptApprover, 37L, instance)).thenReturn(37L);
+        when(auditInstanceRepository.save(any(AuditInstance.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AuditInstance saved = rejectWorkflowUseCase.reject(instance, 189L, "退回重审");
+
+        assertEquals(AuditInstance.STATUS_PENDING, saved.getStatus());
+        assertEquals(4, saved.getStepInstances().size());
+        AuditStepInstance deptReturned = saved.getStepInstances().get(3);
+        assertEquals(202L, deptReturned.getStepDefId());
+        assertEquals(410L, deptReturned.getApproverId());
+        assertEquals(37L, deptReturned.getApproverOrgId());
+    }
 }
