@@ -733,4 +733,86 @@ class ExcelBusinessImportParserTest {
             throw new AssertionError(ex);
         }
     }
+
+    // ==================== 2026-11-12 权重列头改版（前端方案A）：「权重（纯数字）」别名兼容 ====================
+
+    /**
+     * 2026-11-12 前端模板/导出权重列头改为「权重（纯数字）」（全角括号）：职能部门与学院两条导入链
+     * 的权重别名表都必须识别，否则整列不映射 → weight=null → 预览「-」+ 默认 100 警告。
+     */
+    @Test
+    @DisplayName("新模板权重列头「权重（纯数字）」: 职能部门与学院两条导入链均正确解析数值权重")
+    void shouldParseNumericWeightUnderNewPureNumberHeaderOnBothImportChains() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            // 职能部门链：序号|部门|战略任务|任务类型|核心指标|指标类型|权重（纯数字）|下发备注
+            Sheet strategic = workbook.createSheet("职能部门指标模板");
+            Row strategicHeader = strategic.createRow(0);
+            strategicHeader.createCell(0).setCellValue("序号");
+            strategicHeader.createCell(1).setCellValue("部门");
+            strategicHeader.createCell(2).setCellValue("战略任务");
+            strategicHeader.createCell(3).setCellValue("任务类型");
+            strategicHeader.createCell(4).setCellValue("核心指标");
+            strategicHeader.createCell(5).setCellValue("指标类型");
+            strategicHeader.createCell(6).setCellValue("权重（纯数字）");
+            strategicHeader.createCell(7).setCellValue("下发备注");
+
+            Row strategicRow = strategic.createRow(1);
+            strategicRow.createCell(0).setCellValue(1);
+            strategicRow.createCell(1).setCellValue("教务处");
+            strategicRow.createCell(2).setCellValue("测试任务");
+            strategicRow.createCell(3).setCellValue("发展性");
+            strategicRow.createCell(4).setCellValue("测试核心指标A");
+            strategicRow.createCell(5).setCellValue("定量");
+            strategicRow.createCell(6).setCellValue(40);
+            strategicRow.createCell(7).setCellValue("按季度推进");
+
+            var parsedStrategic = parser.parseSheet(strategic, ImportType.STRATEGIC_TASK);
+
+            assertEquals(1, parsedStrategic.rows().size());
+            var parsedStrategicRow = parsedStrategic.rows().get(0);
+            assertTrue(parsedStrategicRow.errors().isEmpty(),
+                    "新权重表头不应报错: " + parsedStrategicRow.errors());
+            assertTrue(parsedStrategicRow.warnings().stream().noneMatch(msg -> msg.contains("权重为空")),
+                    "权重 40 应正确解析，不应出现默认值警告: " + parsedStrategicRow.warnings());
+            assertEquals(0, new BigDecimal("40").compareTo(parsedStrategicRow.normalized().weight()),
+                    "「权重（纯数字）」表头下数值 40 应解析为 40（而非 null/默认 100）");
+
+            // 学院链：序号|学院|任务类型|核心指标|核心指标类型|子指标名称|指标类型|权重（纯数字）|下发备注
+            Sheet distribution = workbook.createSheet("学院子指标模板");
+            Row distributionHeader = distribution.createRow(0);
+            distributionHeader.createCell(0).setCellValue("序号");
+            distributionHeader.createCell(1).setCellValue("学院");
+            distributionHeader.createCell(2).setCellValue("任务类型");
+            distributionHeader.createCell(3).setCellValue("核心指标");
+            distributionHeader.createCell(4).setCellValue("核心指标类型");
+            distributionHeader.createCell(5).setCellValue("子指标名称");
+            distributionHeader.createCell(6).setCellValue("指标类型");
+            distributionHeader.createCell(7).setCellValue("权重（纯数字）");
+            distributionHeader.createCell(8).setCellValue("下发备注");
+
+            Row distributionRow = distribution.createRow(1);
+            distributionRow.createCell(0).setCellValue(1);
+            distributionRow.createCell(1).setCellValue("计算机学院");
+            distributionRow.createCell(2).setCellValue("定性");
+            distributionRow.createCell(3).setCellValue("完善课程建设与专业评估机制");
+            distributionRow.createCell(4).setCellValue("定性");
+            distributionRow.createCell(5).setCellValue("完成课程质量数据接入");
+            distributionRow.createCell(6).setCellValue("定量");
+            distributionRow.createCell(7).setCellValue(40);
+            distributionRow.createCell(8).setCellValue("按学期推进");
+
+            var parsedDistribution = parser.parseSheet(distribution, ImportType.DISTRIBUTION);
+
+            assertEquals(1, parsedDistribution.rows().size());
+            var parsedDistributionRow = parsedDistribution.rows().get(0);
+            assertTrue(parsedDistributionRow.errors().isEmpty(),
+                    "新权重表头不应报错: " + parsedDistributionRow.errors());
+            assertTrue(parsedDistributionRow.warnings().stream().noneMatch(msg -> msg.contains("权重为空")),
+                    "权重 40 应正确解析，不应出现默认值警告: " + parsedDistributionRow.warnings());
+            assertEquals(0, new BigDecimal("40").compareTo(parsedDistributionRow.normalized().weight()),
+                    "学院链「权重（纯数字）」表头下数值 40 应解析为 40");
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
 }
