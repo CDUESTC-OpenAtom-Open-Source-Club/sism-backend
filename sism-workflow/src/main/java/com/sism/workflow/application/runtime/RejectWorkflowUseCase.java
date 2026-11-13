@@ -91,7 +91,15 @@ public class RejectWorkflowUseCase {
         returnedStep.setStepDefId(returnedStepDef.getId());
         returnedStep.setStepName(returnedStepDef.getStepName());
 
-        Long contextOrgId = resolveContextOrgId(instance, returnedStepDef);
+        // 2026-11-12（HIGH①，实例 #5 实测）：回退节点的席位一律按该节点自身的解析规则重解，
+        // context 一律用实例的请求方组织——与派单 StepInstanceFactory、正常推进共用
+        // ApproverResolver.resolveStepScopeOrgId 同一套口径（学院节点→requesterOrg（学院 org）；
+        // 归口节点→plan.functional_org_id；战略部终审→strategy org；学院下发链→strategy org）。
+        // 此前 context 取「最后一个已批步骤的 approverOrgId」：学院上报链（工学院式五节点）
+        // 从终审逐级驳回回退到学院审核人节点时，会把归口部门 org（44）错继承给学院席位
+        // （应为学院 org 57），学院审核人收不到待办、链卡死。同部门链内回退不受影响
+        // （last approved org == requesterOrg，部门上报实例 #6 org=37 口径不变）。
+        Long contextOrgId = instance.getRequesterOrgId();
         Long approverId = approverResolver.resolveAssignedApproverId(
                 returnedStepDef,
                 instance.getRequesterId(),
@@ -123,18 +131,6 @@ public class RejectWorkflowUseCase {
             instance.setStatus(AuditInstance.STATUS_PENDING);
         }
         instance.setCompletedAt(null);
-    }
-
-    private Long resolveContextOrgId(AuditInstance instance, AuditStepDef targetStepDef) {
-        if (targetStepDef != null && targetStepDef.isSubmitStep()) {
-            return instance.getRequesterOrgId();
-        }
-
-        return instance.getStepInstances().stream()
-                .filter(step -> AuditInstance.STEP_STATUS_APPROVED.equals(step.getStatus()))
-                .max(Comparator.comparing(step -> step.getStepNo() == null ? 0 : step.getStepNo()))
-                .map(AuditStepInstance::getApproverOrgId)
-                .orElse(instance.getRequesterOrgId());
     }
 
     private int findStepIndexByDefinitionId(List<AuditStepDef> orderedSteps, Long stepDefId) {
