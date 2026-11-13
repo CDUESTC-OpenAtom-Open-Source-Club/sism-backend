@@ -48,7 +48,7 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
                    AND i.status = :distributedStatus
             INNER JOIN public.sys_org o
                     ON o.id = i.target_org_id
-                   AND o.type = :academicType
+                   AND CAST(o.type AS varchar) = :academicType
                    AND COALESCE(o.is_deleted, false) = false
             """;
 
