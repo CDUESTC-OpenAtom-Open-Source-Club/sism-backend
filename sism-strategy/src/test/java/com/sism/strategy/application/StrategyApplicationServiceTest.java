@@ -660,8 +660,7 @@ class StrategyApplicationServiceTest {
         when(indicatorRepository.findById(402L)).thenReturn(Optional.of(indicator));
         Map<String, Object> probe = new HashMap<>();
         probe.put("mutation_status", null);
-        probe.put("has_history", false);
-        when(jdbcTemplate.queryForList(contains("has_history"), eq(402L))).thenReturn(List.of(probe));
+        when(jdbcTemplate.queryForList(contains("mutation_status"), eq(402L))).thenReturn(List.of(probe));
 
         service.deleteIndicator(402L);
 
@@ -669,22 +668,28 @@ class StrategyApplicationServiceTest {
         verify(indicatorRepository).save(indicator);
     }
 
+    /**
+     * 2026-11-14（用户拍板：撤回/驳回=内容已保存在 Plan 中，填报人继续编辑；
+     * 只有「取消异动」才回上一版本）：撤回/驳回退回填报人的新增行仍是 DRAFT、
+     * 异动标记已清，但已有异动快照历史——填报人继续编辑的权力包含行内删除，
+     * 守卫必须放行（旧口径「有历史即拦」会让退回行删不掉、合计永远降不回来）。
+     */
     @Test
-    @DisplayName("Should still block revoking a draft indicator that already entered the approval chain")
-    void shouldStillBlockRevokingDraftIndicatorWithMutationHistory() {
+    @DisplayName("2026-11-14 撤回/驳回退回的新增行（有快照历史、不在审）→ 填报人行内删除放行")
+    void shouldAllowDeletingWithdrawnOrRejectedChainDraftRow() {
         StrategyApplicationService service = createService();
         Indicator indicator = buildDraftIndicatorOnDistributedPlan(403L);
         when(indicatorRepository.findById(403L)).thenReturn(Optional.of(indicator));
+        // 撤回/驳回后的形态：异动标记已清（mutation_status=null）；是否有过快照历史
+        // 不再参与判定（新探针 SQL 只查 mutation_status）
         Map<String, Object> probe = new HashMap<>();
         probe.put("mutation_status", null);
-        probe.put("has_history", true);
-        when(jdbcTemplate.queryForList(contains("has_history"), eq(403L))).thenReturn(List.of(probe));
+        when(jdbcTemplate.queryForList(contains("mutation_status"), eq(403L))).thenReturn(List.of(probe));
 
-        assertThrows(
-                DistributedPlanMutationBlockedException.class,
-                () -> service.deleteIndicator(403L)
-        );
-        verify(indicatorRepository, never()).save(any());
+        service.deleteIndicator(403L);
+
+        assertTrue(Boolean.TRUE.equals(indicator.getIsDeleted()));
+        verify(indicatorRepository).save(indicator);
     }
 
     @Test
@@ -695,8 +700,7 @@ class StrategyApplicationServiceTest {
         when(indicatorRepository.findById(404L)).thenReturn(Optional.of(indicator));
         Map<String, Object> probe = new HashMap<>();
         probe.put("mutation_status", "IN_MUTATION");
-        probe.put("has_history", false);
-        when(jdbcTemplate.queryForList(contains("has_history"), eq(404L))).thenReturn(List.of(probe));
+        when(jdbcTemplate.queryForList(contains("mutation_status"), eq(404L))).thenReturn(List.of(probe));
 
         assertThrows(
                 DistributedPlanMutationBlockedException.class,

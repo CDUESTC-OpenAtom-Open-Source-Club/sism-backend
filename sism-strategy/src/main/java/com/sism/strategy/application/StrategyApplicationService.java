@@ -709,9 +709,15 @@ public class StrategyApplicationService {
     /**
      * 2026-10-22：判断指标是否为「可撤销的未提交新增」——同时满足：
      * ① 仍为草稿状态（DRAFT，从未转正/下发）；
-     * ② 当前没有异动标记（不在审批中）；
-     * ③ 从未写过异动快照（audit_log 无记录，即从未提交过异动审批）。
+     * ② 当前没有异动标记（不在审批中）。
      * 用于在「已下发计划禁止直接删除」守卫下放行「撤销一次尚未提交的新增」。
+     *
+     * <p>2026-11-14（用户拍板：撤回/驳回=内容已保存在 Plan 中，填报人继续编辑；
+     * 只有「取消异动」才回上一版本）：不再要求「从未写过异动快照」——撤回/驳回
+     * 退回填报人的新增行仍是 DRAFT、异动标记已清，填报人继续编辑的权力包含
+     * 行内删除；此类行有 audit_log 历史但链已不在审（mutation_status 为空），
+     * 直接删除放行。审批通过的新增行已转 DISTRIBUTED，被 ① 天然排除；
+     * 在审（mutation_status=IN_MUTATION）维持守卫不放行。</p>
      */
     private boolean isRevocablePendingCreate(Indicator indicator) {
         if (indicator.getStatus() != IndicatorStatus.DRAFT || indicator.getId() == null) {
@@ -719,11 +725,7 @@ public class StrategyApplicationService {
         }
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 """
-                SELECT i.mutation_status,
-                       EXISTS (
-                           SELECT 1 FROM public.audit_log a
-                           WHERE a.entity_type = 'INDICATOR' AND a.entity_id = i.id
-                       ) AS has_history
+                SELECT i.mutation_status
                 FROM public.indicator i
                 WHERE i.id = ?
                 """,
@@ -731,8 +733,7 @@ public class StrategyApplicationService {
         if (rows.isEmpty()) {
             return false;
         }
-        Map<String, Object> row = rows.get(0);
-        return row.get("mutation_status") == null && !Boolean.TRUE.equals(row.get("has_history"));
+        return rows.get(0).get("mutation_status") == null;
     }
 
     private Long resolveTaskIdForChildIndicator(
