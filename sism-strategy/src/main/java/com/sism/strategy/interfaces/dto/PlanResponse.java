@@ -82,6 +82,14 @@ public class PlanResponse {
     @Schema(description = "计划层级", example = "STRATEGIC")
     private String planLevel;
 
+    /**
+     * 2026-11-13（学院上报按归口部门分批提交）：计划级归口职能部门。
+     * 仅 FUNC_TO_COLLEGE 计划使用；学院上报按归口部门分批提交，职能部门只看提交给本部门的上报。
+     * 为空时学院上报链审批席位回退到 created_by_org_id（旧口径）。
+     */
+    @Schema(description = "归口职能部门ID（学院计划：上报席位与分批上报依据）", example = "37")
+    private Long functionalOrgId;
+
     @Schema(description = "关联的工作流实例ID")
     private Long workflowInstanceId;
 

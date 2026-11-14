@@ -333,21 +333,38 @@ public class IndicatorMutationService {
      * 2026-10-24 用户定案（上报/异动互斥）：同一目标部门上「上报审批在途」与「异动审批在途」
      * 二选一——上报在审期间该部门的填报内容正在被审批固化，不允许异动改动表内容。
      * 判定口径：该指标所属计划（按 task→plan 回查）存在 PLAN_REPORT 审批实例 IN_REVIEW。
+     *
+     * <p><b>2026-11-13 用户拍板（上报互斥只锁本部门）</b>：学院上报按归口部门分批提交后，
+     * 先反查异动指标自身的归口部门——学院子指标取父级核心指标 target_org_id（单层口径下
+     * 100% 有父级），无父级的部门本级指标取自身 target_org_id——只拦「归口相同」的在审上报；
+     * A 部门报告在审不再拦 B 部门指标异动。反查不到（游离行等）→ 保守全锁（旧口径）。
      */
     private void assertReportApprovalNotInFlightForIndicator(Long indicatorId) {
-        Long planId = jdbcTemplate.query(
+        java.util.List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 """
-                SELECT t.plan_id
+                SELECT t.plan_id, parent.target_org_id AS parent_target_org_id, i.target_org_id AS target_org_id
                 FROM public.indicator i
                 JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.indicator parent ON parent.id = i.parent_indicator_id
                 WHERE i.id = ?
                 """,
-                rs -> rs.next() ? rs.getLong(1) : null,
                 indicatorId);
+        if (rows.isEmpty()) {
+            return;
+        }
+        Map<String, Object> row = rows.get(0);
+        Long planId = row.get("plan_id") == null ? null : ((Number) row.get("plan_id")).longValue();
         if (planId == null) {
             return;
         }
-        assertReportApprovalNotInFlightForPlan(planId);
+        Long parentTargetOrgId = toNullableLong(row.get("parent_target_org_id"));
+        Long selfTargetOrgId = toNullableLong(row.get("target_org_id"));
+        Long functionalDeptOrgId = parentTargetOrgId != null ? parentTargetOrgId : selfTargetOrgId;
+        assertReportApprovalNotInFlightForPlan(planId, functionalDeptOrgId);
+    }
+
+    private static Long toNullableLong(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
     }
 
     /**
@@ -355,21 +372,55 @@ public class IndicatorMutationService {
      * 指标新增/修改/删除三路径均有 assertReportApprovalNotInFlightForIndicator，
      * 实测上报审批在审时任务改名异动仍可发起，同一计划出现「上报在审 + 异动在审」
      * 两条流程并存。互斥按计划维度判定，此处为指标与任务两条入口的共用核心。
+     * 2026-11-13 起为兼容壳：归口未知 → 保守全锁（见重载）。
      */
     private void assertReportApprovalNotInFlightForPlan(Long planId) {
-        Integer inFlight = jdbcTemplate.queryForObject(
-                """
-                SELECT COUNT(*)
-                FROM public.audit_instance ai
-                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
-                    AND f.flow_code IN ('PLAN_APPROVAL_FUNCDEPT', 'PLAN_APPROVAL_COLLEGE')
-                WHERE ai.entity_type = 'PLAN_REPORT'
-                  AND ai.status = 'IN_REVIEW'
-                  AND ai.entity_id IN (
-                      SELECT pr.id FROM public.plan_report pr WHERE pr.plan_id = ?
-                  )
-                """,
-                Integer.class, planId);
+        assertReportApprovalNotInFlightForPlan(planId, null);
+    }
+
+    /**
+     * 2026-11-13 用户拍板（上报互斥只锁本部门）：只拦「与异动归口部门相同」的在审上报。
+     *
+     * <ul>
+     *   <li>functionalOrgId 非空 → 只统计该计划下 functional_org_id 命中归口（或归口未落值的
+     *       存量上报，保守视为相关）的在审 PLAN_REPORT 实例；</li>
+     *   <li>functionalOrgId 为空（反查不到，兼容旧数据）→ 保持旧口径全锁，宁可误拦不可漏锁。</li>
+     * </ul>
+     * SQL 全部参数绑定。
+     */
+    private void assertReportApprovalNotInFlightForPlan(Long planId, Long functionalOrgId) {
+        Integer inFlight;
+        if (functionalOrgId == null) {
+            inFlight = jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM public.audit_instance ai
+                    JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                        AND f.flow_code IN ('PLAN_APPROVAL_FUNCDEPT', 'PLAN_APPROVAL_COLLEGE')
+                    WHERE ai.entity_type = 'PLAN_REPORT'
+                      AND ai.status = 'IN_REVIEW'
+                      AND ai.entity_id IN (
+                          SELECT pr.id FROM public.plan_report pr WHERE pr.plan_id = ?
+                      )
+                    """,
+                    Integer.class, planId);
+        } else {
+            inFlight = jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM public.audit_instance ai
+                    JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                        AND f.flow_code IN ('PLAN_APPROVAL_FUNCDEPT', 'PLAN_APPROVAL_COLLEGE')
+                    WHERE ai.entity_type = 'PLAN_REPORT'
+                      AND ai.status = 'IN_REVIEW'
+                      AND ai.entity_id IN (
+                          SELECT pr.id FROM public.plan_report pr
+                          WHERE pr.plan_id = ?
+                            AND (pr.functional_org_id IS NULL OR pr.functional_org_id = ?)
+                      )
+                    """,
+                    Integer.class, planId, functionalOrgId);
+        }
         if (inFlight != null && inFlight > 0) {
             throw new IllegalStateException(
                     "该计划的上报正在审批中，暂不能发起异动；请等上报审批结束或撤回后再操作");
@@ -485,11 +536,18 @@ public class IndicatorMutationService {
         }
         // 2026-10-27 修复（上报/异动互斥对齐）：任务改名异动补上报在途校验，
         // 与指标三路径（新增/修改/删除）同口径——上报在审期间不允许异动改动表内容。
+        // 2026-11-13 用户拍板（上报互斥只锁本部门）：任务改名不改指标值，归口取计划
+        // functional_org_id（FUNC_TO_COLLEGE 计划由 V102/导入链/提交补写保证落值）；
+        // 取不到时保守全锁。SQL 参数绑定。
         Long planId = current.get("plan_id") == null
                 ? null
                 : ((Number) current.get("plan_id")).longValue();
         if (planId != null) {
-            assertReportApprovalNotInFlightForPlan(planId);
+            Long planFunctionalOrgId = jdbcTemplate.query(
+                    "SELECT functional_org_id FROM public.plan WHERE id = ? AND functional_org_id IS NOT NULL",
+                    (rs, rowNum) -> rs.getLong("functional_org_id"),
+                    planId).stream().findFirst().orElse(null);
+            assertReportApprovalNotInFlightForPlan(planId, planFunctionalOrgId);
         }
         assertNoActiveMutationFlow(TASK_ENTITY_TYPE, taskId, "战略任务");
         String previousName = current.get("name") == null ? null : String.valueOf(current.get("name"));

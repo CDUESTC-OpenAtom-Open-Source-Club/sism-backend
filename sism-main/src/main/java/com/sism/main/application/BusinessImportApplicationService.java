@@ -106,6 +106,11 @@ public class BusinessImportApplicationService {
      * 显式口径（父级核心指标的目标部门），不依赖 created_by_org_id 的语义。
      */
     private final CollegeDispatchGuardService collegeDispatchGuardService;
+    /**
+     * 2026-11-13 用户拍板（学院上报按归口部门分批提交）：归口职能部门解析收口——
+     * 与迁移 V104 存量回填、计划提交补写共用同一实现，避免口径漂移。
+     */
+    private final com.sism.strategy.application.PlanFunctionalOrgResolver planFunctionalOrgResolver;
     private final Map<String, PreviewContext> previews = new ConcurrentHashMap<>();
 
     public ImportPreviewResponse previewStrategicTasks(MultipartFile file,
@@ -1157,21 +1162,19 @@ public class BusinessImportApplicationService {
      *
      * <p><b>多部门的情况</b>：一个学院理论上只归口一个职能部门，但历史数据可能跨多个部门。
      * 这里取 id 最小的作为稳定选择并打 warn，便于运维发现口径分裂，而不是静默随机。
+     *
+     * <p><b>2026-11-13 收口</b>：反查与最小选择逻辑移入
+     * {@link com.sism.strategy.application.PlanFunctionalOrgResolver}（与迁移 V104 存量回填、
+     * 计划提交补写共用同一实现，避免口径漂移）；本批导入收集的父级部门集合作为候选传入，
+     * 候选为空时由 resolver 回退 DB 反查（同口径）。
      */
     private void applyFunctionalOrgFromDispatchChain(Plan plan, Set<Long> functionalOrgIds) {
-        if (plan == null || functionalOrgIds == null || functionalOrgIds.isEmpty()) {
+        if (plan == null || plan.getId() == null) {
             return;
         }
-        Long chosen = functionalOrgIds.stream()
-                .filter(Objects::nonNull)
-                .min(Long::compareTo)
-                .orElse(null);
+        Long chosen = planFunctionalOrgResolver.chooseFunctionalOrgId(plan.getId(), functionalOrgIds);
         if (chosen == null) {
             return;
-        }
-        if (functionalOrgIds.size() > 1) {
-            log.warn("学院计划 {} 的父级核心指标来自多个职能部门 {}，归口部门取 id 最小者 {}；"
-                    + "学院上报审批将派给该部门，请确认数据口径", plan.getId(), functionalOrgIds, chosen);
         }
         if (!Objects.equals(plan.getFunctionalOrgId(), chosen)) {
             plan.setFunctionalOrgId(chosen);

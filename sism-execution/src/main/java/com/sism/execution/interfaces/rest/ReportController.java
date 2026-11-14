@@ -58,7 +58,7 @@ public class ReportController {
     // ==================== Report CRUD Operations ====================
 
     @PostMapping
-    @Operation(summary = "创建月度报告（草稿）", description = "创建一个新的月度进度报告，初始状态为草稿")
+    @Operation(summary = "创建月度报告（草稿）", description = "创建一个新的月度进度报告，初始状态为草稿；可选携带归口职能部门（学院上报按归口部门分批提交）")
     @PreAuthorize(REPORT_FILL_ACCESS)
     public ResponseEntity<ApiResponse<PlanReportResponse>> createReport(
             @Valid @RequestBody CreatePlanReportRequest request,
@@ -69,7 +69,8 @@ public class ReportController {
                 request.getReportOrgId(),
                 request.getReportOrgType(),
                 request.getPlanId(),
-                requireCurrentUserId(currentUser)
+                requireCurrentUserId(currentUser),
+                request.getFunctionalOrgId()
         );
         return ResponseEntity.ok(ApiResponse.success(PlanReportResponse.fromEntity(report)));
     }
@@ -335,14 +336,17 @@ public class ReportController {
     }
 
     @GetMapping("/plan/{planId}")
-    @Operation(summary = "根据计划ID查询报告", description = "获取关联到指定计划的所有报告")
+    @Operation(summary = "根据计划ID查询报告", description = "获取关联到指定计划的所有报告；可选按归口部门过滤（2026-11-13 学院上报按归口部门分批提交，不传=聚合全部）")
     @PreAuthorize(REPORT_WRITE_ACCESS)
     public ResponseEntity<ApiResponse<List<PlanReportSimpleResponse>>> getReportsByPlanId(
             @Parameter(description = "计划ID") @PathVariable Long planId,
+            @Parameter(description = "归口职能部门ID（可选）") @RequestParam(required = false) Long functionalOrgId,
             @AuthenticationPrincipal CurrentUser currentUser) {
         List<PlanReport> reports = isAdmin(currentUser)
-                ? reportApplicationService.findReportsByPlanId(planId)
-                : reportApplicationService.findReportsByPlanIdForOrg(planId, requireCurrentOrgId(currentUser));
+                ? reportApplicationService.findReportsByPlanId(planId, functionalOrgId)
+                : filterByFunctionalOrgId(
+                        reportApplicationService.findReportsByPlanIdForOrg(planId, requireCurrentOrgId(currentUser)),
+                        functionalOrgId);
 
         // 2026-10-27 用户定案：未提交的草稿仅「填报组织自身」可见——
         // 上级/审批链角色（如战略发展部负责人、分管校领导）在草稿提交进入审核之前，
@@ -432,14 +436,15 @@ public class ReportController {
     }
 
     @GetMapping("/month/{month}/org/{orgId}")
-    @Operation(summary = "根据月份和组织ID查询报告", description = "获取指定月份和组织的所有报告")
+    @Operation(summary = "根据月份和组织ID查询报告", description = "获取指定月份和组织的所有报告；可选按归口部门过滤（2026-11-13 起，不传=聚合全部）")
     @PreAuthorize(REPORT_WRITE_ACCESS)
     public ResponseEntity<ApiResponse<List<PlanReportSimpleResponse>>> getReportsByMonthAndOrgId(
             @Parameter(description = "月份，格式：yyyy-MM") @PathVariable String month,
             @Parameter(description = "组织ID") @PathVariable Long orgId,
+            @Parameter(description = "归口职能部门ID（可选）") @RequestParam(required = false) Long functionalOrgId,
             @AuthenticationPrincipal CurrentUser currentUser) {
         ensureCanAccessOrg(currentUser, orgId);
-        List<PlanReport> reports = reportApplicationService.findReportsByMonthAndOrgId(month, orgId);
+        List<PlanReport> reports = reportApplicationService.findReportsByMonthAndOrgId(month, orgId, functionalOrgId);
         List<PlanReportSimpleResponse> responses = reports.stream()
                 .map(PlanReportSimpleResponse::fromEntity)
                 .collect(Collectors.toList());
@@ -451,6 +456,19 @@ public class ReportController {
                 .orElseThrow(() -> new ResourceNotFoundException("Report", id));
         ensureCanAccessReport(currentUser, report);
         return report;
+    }
+
+    /**
+     * 2026-11-13：非管理员路径的归口部门过滤（与 findReportsByPlanId(planId, functionalOrgId)
+     * 同口径：传值=只看该部门，严格等值；不传=旧行为聚合全部）。
+     */
+    private List<PlanReport> filterByFunctionalOrgId(List<PlanReport> reports, Long functionalOrgId) {
+        if (functionalOrgId == null || reports == null || reports.isEmpty()) {
+            return reports;
+        }
+        return reports.stream()
+                .filter(report -> functionalOrgId.equals(report.getFunctionalOrgId()))
+                .toList();
     }
 
     private List<PlanReport> filterReportsByPermission(List<PlanReport> reports, CurrentUser currentUser) {

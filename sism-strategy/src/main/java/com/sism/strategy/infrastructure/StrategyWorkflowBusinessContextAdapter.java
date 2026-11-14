@@ -41,10 +41,25 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
      * 而战略部没有 role2 账号 → 第 3 环直接抛 No available approver candidates。
      * 这是本方法第一版的真实缺陷，必须先把报告映射回计划再查。
      *
+     * <p><b>2026-11-13 用户拍板（学院上报按归口部门分批提交）</b>：同一学院计划同月可并存
+     * 多份报告（学院 × 归口部门 = 一份月报），每份报告自带 functional_org_id
+     * （提交时反查落列）。席位解析改为<b>报告行归口优先</b>，为空回退
+     * plan.functional_org_id（plan 级归口只反映 MIN，多部门并存时会派错人）。
+     *
      * <p>未配置归口部门（存量数据）→ empty，调用方回退 created_by_org_id 原口径。
      */
     @Override
     public Optional<Long> findFunctionalOrgIdByEntity(String entityType, Long entityId) {
+        if (PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType) && entityId != null) {
+            // 2026-11-13：报告行归口优先（SQL 参数绑定，无拼接）
+            Optional<Long> fromReport = jdbcTemplate.query(
+                    "SELECT functional_org_id FROM public.plan_report WHERE id = ? AND functional_org_id IS NOT NULL",
+                    (rs, rowNum) -> rs.getLong("functional_org_id"),
+                    entityId).stream().findFirst();
+            if (fromReport.isPresent()) {
+                return fromReport;
+            }
+        }
         Long planId = resolvePlanIdForContext(entityType, entityId);
         if (planId == null) {
             return Optional.empty();

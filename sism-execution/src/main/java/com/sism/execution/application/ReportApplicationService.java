@@ -56,6 +56,29 @@ public class ReportApplicationService {
     private static final int MAX_PAGE_SIZE = 100;
     private static final Sort DEFAULT_SORT = Sort.by(Sort.Direction.DESC, "createdAt");
 
+    /**
+     * 2026-11-13 用户拍板（学院上报按归口部门分批提交）两条拦截文案：
+     * 报告明细指标的父级核心指标 target_org_id 混跨多个职能部门 / 一条都反查不到。
+     */
+    private static final String MSG_REPORT_MIXED_FUNCTIONAL_ORG =
+            "报告内指标归属多个职能部门，请按归属部门分别提交";
+    private static final String MSG_REPORT_FUNCTIONAL_ORG_UNRESOLVED =
+            "无法确定报告归属部门，请确认报告内指标已归属职能部门核心指标后再提交";
+
+    /**
+     * 2026-11-13：报告归口反查——报告明细指标 → 父级核心指标.target_org_id 全集（去重）。
+     * 与存量回填 V104 / PlanFunctionalOrgResolver 同一父级反查口径。
+     */
+    private static final String SQL_REPORT_PARENT_TARGET_ORGS = """
+            SELECT DISTINCT parent.target_org_id
+            FROM public.plan_report_indicator pri
+            JOIN public.indicator child ON child.id = pri.indicator_id
+                 AND COALESCE(child.is_deleted, false) = false
+            JOIN public.indicator parent ON parent.id = child.parent_indicator_id
+            WHERE pri.report_id = ?
+              AND parent.target_org_id IS NOT NULL
+            """;
+
     private final PlanReportRepository planReportRepository;
     private final PlanReportIndicatorRepository planReportIndicatorRepository;
     private final IndicatorRepository indicatorRepository;
@@ -80,20 +103,44 @@ public class ReportApplicationService {
     @Transactional
     public PlanReport createReport(String reportMonth, Long reportOrgId,
                                    ReportOrgType reportOrgType, Long planId, Long createdBy) {
+        return createReport(reportMonth, reportOrgId, reportOrgType, planId, createdBy, null);
+    }
+
+    /**
+     * 创建报告（草稿，2026-11-13 起支持可选归口职能部门）。
+     *
+     * <p>学院上报按归口部门分批提交：学院 × 归口部门 = 一份月报。唯一性判定从
+     * (plan, report_org, month) 升级为 (plan, report_org, month, functional_org_id) 四元组
+     * （IS NOT DISTINCT FROM 语义：NULL 与 NULL 同组、NULL 与非 NULL 不同组）。
+     *
+     * <p>草稿期 functionalOrgId 由前端选中部门后传入，仅用于隔离；权威归口以提交时反查落列为准。
+     * 不传（null）= 旧行为兼容，但已按部门落值的草稿不会被复用（四元组隔离）。
+     */
+    @Transactional
+    public PlanReport createReport(String reportMonth, Long reportOrgId,
+                                   ReportOrgType reportOrgType, Long planId, Long createdBy,
+                                   Long functionalOrgId) {
         String normalizedMonth = normalizeReportMonth(reportMonth);
-        assertEarliestUnfilledMonth(reportMonth, normalizedMonth, reportOrgId, reportOrgType, planId);
+        assertEarliestUnfilledMonth(reportMonth, normalizedMonth, reportOrgId, reportOrgType, planId, functionalOrgId);
         Optional<PlanReport> existingReport = planReportRepository.findLatestByMonthlyScope(
-                planId, normalizedMonth, reportOrgType, reportOrgId);
+                planId, normalizedMonth, reportOrgType, reportOrgId, functionalOrgId);
         PlanReport previousRound = null;
 
         if (existingReport.isPresent()) {
             PlanReport report = existingReport.get();
+
+            if (!report.isDeleted() && !PlanReport.STATUS_SUBMITTED.equals(report.getStatus())) {
+                // 2026-11-13：传入归口时对已有草稿做反查一致性校验（草稿有明细时），
+                // 防止「选中部门 B 却复用了归属部门 A 的填报内容」的错位草稿。
+                assertDraftDetailsMatchFunctionalOrg(report, functionalOrgId);
+            }
 
             if (report.isDeleted()) {
                 report.setDeleted(false);
                 report.resetToDraft(createdBy);
                 report.setReportMonth(normalizedMonth);
                 report.markCreatedByIfAbsent(createdBy);
+                adoptFunctionalOrgIfAbsent(report, functionalOrgId);
                 report.setUpdatedAt(LocalDateTime.now());
                 report.validate();
                 return enrichReportMetadata(planReportRepository.save(report));
@@ -102,6 +149,7 @@ public class ReportApplicationService {
             if (PlanReport.STATUS_DRAFT.equals(report.getStatus())) {
                 report.markCreatedByIfAbsent(createdBy);
                 report.setReportMonth(normalizedMonth);
+                adoptFunctionalOrgIfAbsent(report, functionalOrgId);
                 report.setUpdatedAt(LocalDateTime.now());
                 report.validate();
                 return enrichReportMetadata(planReportRepository.save(report));
@@ -111,6 +159,7 @@ public class ReportApplicationService {
                 report.resetToDraft(createdBy);
                 report.setReportMonth(normalizedMonth);
                 report.markCreatedByIfAbsent(createdBy);
+                adoptFunctionalOrgIfAbsent(report, functionalOrgId);
                 report.setUpdatedAt(LocalDateTime.now());
                 report.validate();
                 return enrichReportMetadata(planReportRepository.save(report));
@@ -124,7 +173,7 @@ public class ReportApplicationService {
         }
 
         PlanReport report = PlanReport.createDraft(
-                normalizedMonth, reportOrgId, reportOrgType, planId, createdBy);
+                normalizedMonth, reportOrgId, reportOrgType, planId, createdBy, functionalOrgId);
         report.validate();
         PlanReport savedReport = enrichReportMetadata(planReportRepository.save(report));
 
@@ -132,7 +181,7 @@ public class ReportApplicationService {
             String previousStatus = String.valueOf(previousRound.getStatus()).trim().toUpperCase();
             if ("APPROVED".equals(previousStatus) || "REJECTED".equals(previousStatus)) {
                 log.info(
-                        "Created new monthly report round from historical report: previousReportId={}, previousStatus={}, newReportId={}, planId={}, reportMonth={}, reportOrgId={}, reportOrgType={}, createdBy={}",
+                        "Created new monthly report round from historical report: previousReportId={}, previousStatus={}, newReportId={}, planId={}, reportMonth={}, reportOrgId={}, reportOrgType={}, createdBy={}, functionalOrgId={}",
                         previousRound.getId(),
                         previousStatus,
                         savedReport.getId(),
@@ -140,12 +189,39 @@ public class ReportApplicationService {
                         reportMonth,
                         reportOrgId,
                         reportOrgType,
-                        createdBy
+                        createdBy,
+                        functionalOrgId
                 );
             }
         }
 
         return savedReport;
+    }
+
+    /** 2026-11-13：传入归口而草稿未落归口时收编（草稿隔离口径下归一），已有归口则不动。 */
+    private void adoptFunctionalOrgIfAbsent(PlanReport report, Long functionalOrgId) {
+        if (functionalOrgId != null && report.getFunctionalOrgId() == null) {
+            report.setFunctionalOrgId(functionalOrgId);
+        }
+    }
+
+    /**
+     * 2026-11-13：开草稿传入归口时的反查一致性校验——草稿已有填报明细且明细能反查出唯一
+     * 归口部门时，与传入归口不一致即拦（混归口同拦），保证草稿与归口绑定关系不漂移。
+     * 无明细 / 反查不到 → 放行（权威落列在提交时）。
+     */
+    private void assertDraftDetailsMatchFunctionalOrg(PlanReport draft, Long functionalOrgId) {
+        if (functionalOrgId == null) {
+            return;
+        }
+        List<Long> resolved = resolveReportParentTargetOrgs(draft.getId());
+        if (resolved.size() > 1) {
+            throw new ConflictException(MSG_REPORT_MIXED_FUNCTIONAL_ORG);
+        }
+        if (resolved.size() == 1 && !resolved.get(0).equals(functionalOrgId)) {
+            throw new ConflictException(
+                    "该报告的填报内容归属职能部门 " + resolved.get(0) + "，与所选归口部门不一致，请按归属部门分别填报");
+        }
     }
 
     /**
@@ -285,6 +361,15 @@ public class ReportApplicationService {
      * 2026-10-31 修复（重报说明被丢弃，图05）：驳回后重报时前端强制收集的
      * 「重报说明」经 submit 端点透传进 {@link PlanReportSubmittedEvent}，
      * 由工作流监听器写入提交步备注；comment 为空时行为与改前完全一致。
+     *
+     * <p>2026-11-13 用户拍板（学院上报按归口部门分批提交）：提交校验通过后、落库前，
+     * 按「报告明细指标 → 父级核心指标.target_org_id」反查归口部门并落列（权威来源）：
+     * <ul>
+     *   <li>全部一致 → 取该值落 functional_org_id（学院 × 部门 = 一份月报，强制按部门分别提交）；</li>
+     *   <li>混跨多个职能部门 → 拦「报告内指标归属多个职能部门，请按归属部门分别提交」；</li>
+     *   <li>一条都反查不到 → 学院报告拦「无法确定报告归属部门」；职能部门本级报告
+     *       （指标无父级）保持旧口径不落值、不拦（互斥与席位走 plan 回退）。</li>
+     * </ul>
      */
     @Transactional
     public PlanReport submitReport(Long reportId, Long userId, String submitComment) {
@@ -296,14 +381,54 @@ public class ReportApplicationService {
         // （BusinessConflictException 原文透传），进度说明缺口沿用原有兜底校验。
         assertIndicatorDetailsCompleteForSubmit(reportId);
 
+        // 2026-11-13 用户拍板（未来月放填报、拦提交）：草稿允许提前录入未来月内容
+        // （填报不受限），但**提交**必须等到了当月——reportMonth > 当前 yyyyMM 时拒绝。
+        // 历史月/当前月照旧；「跳月」补报仍由既有的最早未填月门禁另行管理。
+        assertReportMonthNotInFuture(report.getReportMonth());
+
+        // 2026-11-13 用户拍板：归口反查落列（权威来源），详见方法注释。
+        Long functionalOrgId = resolveFunctionalOrgIdForSubmit(report);
+        if (functionalOrgId != null) {
+            report.setFunctionalOrgId(functionalOrgId);
+        }
+
         // 2026-10-24 用户定案（上报/异动互斥）：异动审批在途时锁定上报提交——
         // 异动改动的内容正在被审批固化，两者对同一部门二选一。
-        assertMutationApprovalNotInFlight(report.getReportOrgId());
+        // 2026-11-13 用户拍板：互斥收窄——只锁本归口部门；归口未落值时保持旧口径全锁。
+        assertMutationApprovalNotInFlight(report.getReportOrgId(), report.getFunctionalOrgId());
 
         report.submit(userId, submitComment);
         report = planReportRepository.save(report);
         publishAndSaveEvents(report);
         return enrichReportMetadata(report);
+    }
+
+    /**
+     * 2026-11-13：提交时归口反查。规则见 {@link #submitReport}。
+     */
+    private Long resolveFunctionalOrgIdForSubmit(PlanReport report) {
+        List<Long> parentTargetOrgs = resolveReportParentTargetOrgs(report.getId());
+        if (parentTargetOrgs.size() > 1) {
+            throw new BusinessConflictException(MSG_REPORT_MIXED_FUNCTIONAL_ORG);
+        }
+        if (parentTargetOrgs.size() == 1) {
+            return parentTargetOrgs.get(0);
+        }
+        // 反查不到：职能部门本级报告（指标无父级）保持旧口径；学院报告必须能反查（单层口径下
+        // 学院子指标 100% 有父级），反查不到说明数据异常，拦下而不是猜一个归口。
+        if (report.getReportOrgType() == ReportOrgType.COLLEGE) {
+            throw new BusinessConflictException(MSG_REPORT_FUNCTIONAL_ORG_UNRESOLVED);
+        }
+        return report.getFunctionalOrgId();
+    }
+
+    /** 报告明细 → 父级核心指标 target_org_id 全集（去重，参数绑定）。 */
+    private List<Long> resolveReportParentTargetOrgs(Long reportId) {
+        if (reportId == null) {
+            return List.of();
+        }
+        List<Long> orgIds = jdbcTemplate.queryForList(SQL_REPORT_PARENT_TARGET_ORGS, Long.class, reportId);
+        return orgIds == null ? List.of() : orgIds;
     }
 
     /**
@@ -318,13 +443,31 @@ public class ReportApplicationService {
      * （报名不报 ID、20 字截断、超 3 项列前 3 个 +「等 N 项」）。
      * 进度说明缺口的校验保持原样（IllegalStateException 兜底）。
      */
+    /**
+     * 2026-11-13 用户拍板（未来月放填报、拦提交）：草稿允许提前录入未来月内容，
+     * 但提交必须等到了当月——reportMonth > 当前 yyyyMM 时拒绝提交。
+     * 当前月/历史月照旧；「跳月」补报由既有的最早未填月门禁另行管理，不在本校验内。
+     * 与前端入口收敛（一键提交按钮未来月不渲染）同口径，前端隐藏不能替代服务端防线。
+     */
+    private void assertReportMonthNotInFuture(String reportMonth) {
+        // 兼容历史注释里的 yyyy-MM 写法：先归一成纯 6 位 yyyyMM 再比较
+        String month = reportMonth == null ? "" : reportMonth.replaceAll("[^0-9]", "");
+        if (!month.matches("\\d{6}")) {
+            return;
+        }
+        java.time.LocalDate today = java.time.LocalDate.now();
+        String current = String.format("%d%02d", today.getYear(), today.getMonthValue());
+        if (Long.parseLong(month) > Long.parseLong(current)) {
+            throw new BusinessConflictException("未来周期暂不能提交上报，请在当月提交");
+        }
+    }
+
     private void assertIndicatorDetailsCompleteForSubmit(Long reportId) {
         List<PlanReportIndicatorSnapshot> details = planReportIndicatorRepository.findByReportId(reportId);
         if (details.isEmpty()) {
             throw new IllegalStateException("本期还没有任何指标填报内容，请先逐条完成填报后再提交");
         }
         assertSelfRatingCompleteForSubmit(reportId, details);
-
         long missingDescription = details.stream()
                 .filter(detail -> {
                     String description = detail.description() == null ? "" : detail.description().trim();
@@ -371,7 +514,21 @@ public class ReportApplicationService {
      * 2026-10-24 用户定案（上报/异动互斥）：该报告部门存在进行中的异动审批（INDICATOR/TASK，
      * PLAN_MUTATION_STRATEGY 链）时拒绝提交上报。异动锁在该部门的指标上，按部门维度判定：
      * 异动实例的 approver_org 或指标 target_org 命中报告部门即在途。
+     *
+     * <p>2026-11-13 用户拍板（上报互斥只锁本部门）：学院上报按归口部门分批提交后，
+     * 互斥收窄为「与该报告归口部门相关的异动在审才拦」。判定基准=异动指标的归口部门
+     * （父级核心指标 target_org_id；无父级的部门本级指标取自身 target_org_id）
+     * 或异动所属计划的 functional_org_id。报告归口=null（兼容旧数据）时保持现行为（全锁，保守）。
      */
+    private void assertMutationApprovalNotInFlight(Long reportOrgId, Long functionalOrgId) {
+        if (functionalOrgId != null) {
+            assertMutationApprovalNotInFlightForFunctionalOrg(functionalOrgId);
+            return;
+        }
+        assertMutationApprovalNotInFlight(reportOrgId);
+    }
+
+    /** 旧口径（全锁）：报告归口未落值时的保守行为，与 2026-10-24 版本逐字一致。 */
     private void assertMutationApprovalNotInFlight(Long reportOrgId) {
         if (reportOrgId == null) {
             return;
@@ -399,6 +556,45 @@ public class ReportApplicationService {
         if (inFlight != null && inFlight > 0) {
             throw new IllegalStateException(
                     "当前部门存在进行中的异动审批，暂不能提交上报；请等异动审批结束或撤回后再操作");
+        }
+    }
+
+    /**
+     * 2026-11-13 用户拍板（上报互斥只锁本部门）：只统计与本报告归口部门相关的异动——
+     * ① 异动指标：父级核心指标 target_org_id 或指标自身 target_org_id 命中归口
+     * （学院子指标走父级反查，职能部门本级指标走自身 target_org）；
+     * ② 异动指标/任务所属计划的 functional_org_id 命中归口；
+     * ③ 任务改名异动：任务所属计划的 functional_org_id 命中归口。
+     * 全部参数绑定，无字符串拼接。
+     */
+    private void assertMutationApprovalNotInFlightForFunctionalOrg(Long functionalOrgId) {
+        Integer inFlight = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_instance ai
+                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                    AND f.flow_code = 'PLAN_MUTATION_STRATEGY'
+                WHERE ai.status = 'IN_REVIEW'
+                  AND (
+                        EXISTS (SELECT 1 FROM public.indicator i
+                                LEFT JOIN public.indicator fi ON fi.id = i.parent_indicator_id
+                                WHERE i.id = ai.entity_id AND ai.entity_type = 'INDICATOR'
+                                  AND (fi.target_org_id = ? OR i.target_org_id = ?))
+                     OR EXISTS (SELECT 1 FROM public.indicator i2
+                                JOIN public.sys_task t ON t.task_id = i2.task_id
+                                JOIN public.plan p ON p.id = t.plan_id
+                                WHERE i2.id = ai.entity_id AND ai.entity_type = 'INDICATOR'
+                                  AND p.functional_org_id = ?)
+                     OR EXISTS (SELECT 1 FROM public.sys_task t2
+                                JOIN public.plan p2 ON p2.id = t2.plan_id
+                                WHERE t2.task_id = ai.entity_id AND ai.entity_type = 'TASK'
+                                  AND p2.functional_org_id = ?)
+                  )
+                """,
+                Integer.class, functionalOrgId, functionalOrgId, functionalOrgId, functionalOrgId);
+        if (inFlight != null && inFlight > 0) {
+            throw new IllegalStateException(
+                    "当前归口部门存在进行中的异动审批，暂不能提交上报；请等异动审批结束或撤回后再操作");
         }
     }
 
@@ -823,6 +1019,20 @@ public class ReportApplicationService {
     }
 
     /**
+     * 2026-11-13：按计划查询报告，可选按归口部门过滤（学院上报按归口部门分批提交）。
+     * functionalOrgId=null = 旧行为（聚合全部部门）；传值=只看该部门（严格等值）。
+     */
+    public List<PlanReport> findReportsByPlanId(Long planId, Long functionalOrgId) {
+        List<PlanReport> reports = findReportsByPlanId(planId);
+        if (functionalOrgId == null) {
+            return reports;
+        }
+        return reports.stream()
+                .filter(report -> functionalOrgId.equals(report.getFunctionalOrgId()))
+                .toList();
+    }
+
+    /**
      * 统计指定状态的报告数量
      */
     public long countReportsByStatus(String status) {
@@ -838,6 +1048,19 @@ public class ReportApplicationService {
      */
     public List<PlanReport> findReportsByMonthAndOrgId(String month, Long orgId) {
         return enrichReportList(planReportRepository.findByMonthAndOrgId(normalizeReportMonth(month), orgId));
+    }
+
+    /**
+     * 2026-11-13：按月份+组织查询报告，可选按归口部门过滤（不传=旧行为聚合全部）。
+     */
+    public List<PlanReport> findReportsByMonthAndOrgId(String month, Long orgId, Long functionalOrgId) {
+        List<PlanReport> reports = findReportsByMonthAndOrgId(month, orgId);
+        if (functionalOrgId == null) {
+            return reports;
+        }
+        return reports.stream()
+                .filter(report -> functionalOrgId.equals(report.getFunctionalOrgId()))
+                .toList();
     }
 
     public List<PlanReport> findReportsByPlanIdForOrg(Long planId, Long reportOrgId) {
@@ -1061,7 +1284,8 @@ public class ReportApplicationService {
                                              String normalizedMonth,
                                              Long reportOrgId,
                                              ReportOrgType reportOrgType,
-                                             Long planId) {
+                                             Long planId,
+                                             Long functionalOrgId) {
         if (normalizedMonth == null || planId == null || reportOrgId == null) {
             return;
         }
@@ -1070,6 +1294,11 @@ public class ReportApplicationService {
                 .filter(report -> report.getPlanId() != null && report.getPlanId().equals(planId))
                 .filter(report -> report.getReportOrgType() == reportOrgType)
                 .filter(report -> report.getReportMonth() != null)
+                // 2026-11-13：按部门分批提交后，跳月守卫只看本部门（+ 归口未知的旧数据，
+                // 保守视为欠账）；其他部门的未结清月份不再阻塞本部门按月推进。
+                .filter(report -> functionalOrgId == null
+                        || report.getFunctionalOrgId() == null
+                        || report.getFunctionalOrgId().equals(functionalOrgId))
                 .toList();
         // 已批准（APPROVED）的月份视为已结清，不再参与「最早未填报月」比较——
         // 否则已批准月份会永远占据「最早」，月度上报整条链无法推进到下一个月。

@@ -150,4 +150,28 @@ public interface JpaPlanReportRepository extends JpaRepository<PlanReport, Long>
                 .stream()
                 .findFirst();
     }
+
+    /**
+     * 2026-11-13（学院上报按归口部门分批提交）：四元组查找。
+     * functional_org_id 用 IS NOT DISTINCT FROM 做 NULL 安全等值（NULL 与 NULL 同组、
+     * NULL 与非 NULL 不同组），PostgreSQL / H2（PostgreSQL mode）均原生支持。
+     */
+    @Override
+    @Query(value = """
+            SELECT * FROM plan_report pr
+            WHERE pr.plan_id = CAST(:planId AS bigint)
+              AND pr.report_month = CAST(:reportMonth AS text)
+              AND pr.report_org_type = CAST(:reportOrgType AS text)
+              AND pr.report_org_id = CAST(:reportOrgId AS bigint)
+              AND pr.functional_org_id IS NOT DISTINCT FROM CAST(:functionalOrgId AS bigint)
+              AND pr.is_deleted = false
+            ORDER BY pr.submitted_at DESC, pr.id DESC
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<PlanReport> findLatestByMonthlyScope(
+            @Param("planId") Long planId,
+            @Param("reportMonth") String reportMonth,
+            @Param("reportOrgType") ReportOrgType reportOrgType,
+            @Param("reportOrgId") Long reportOrgId,
+            @Param("functionalOrgId") Long functionalOrgId);
 }

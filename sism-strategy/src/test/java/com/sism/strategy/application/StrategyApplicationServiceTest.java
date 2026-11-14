@@ -19,6 +19,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
@@ -37,6 +38,8 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -828,6 +831,52 @@ class StrategyApplicationServiceTest {
         assertNotNull(created);
         // DRAFT 计划不触发合计校验（导入是批量逐条建指标，中间态合计必然≠100）
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(any(), any());
+    }
+
+    // 2026-11-13 用户拍板（编辑/发起两级校验语义）：DISTRIBUTED 计划下表单保存入口
+    // （skipDistributedWeightValidation=true）跳过单条落库即校验——新增随便填（哪怕合计
+    // 已 100 再加 10 落成 110 的中间态），真正的限制拦截在「发起异动」闭合校验。
+    @Test
+    @DisplayName("两级校验: DISTRIBUTED 计划 skip=true 跳过单条即校验（保存不拦, 发起才拦）")
+    void shouldSkipDistributedWeightValidationWhenFlagSet() {
+        StrategyApplicationService service = createService();
+
+        SysOrg ownerOrg = SysOrg.create("战略发展部", OrgType.admin);
+        ownerOrg.setId(35L);
+        SysOrg targetOrg = SysOrg.create("计算机学院", OrgType.academic);
+        targetOrg.setId(57L);
+
+        StrategicTask task = createTask(41023L, 403757L, targetOrg, ownerOrg);
+        Plan distributedPlan = createPlan(403757L, PlanStatus.DISTRIBUTED);
+
+        when(taskRepository.findById(41023L)).thenReturn(Optional.of(task));
+        when(planRepository.findById(403757L)).thenReturn(Optional.of(distributedPlan));
+        when(indicatorRepository.save(any(Indicator.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        // 即便校验服务会拦 110（与既有 D10 用例同款 stub），skip 开关下也不应触达——
+        // lenient：stub 未被消费本身就是断言目标（never() verify）
+        lenient().doThrow(new IllegalStateException("基础性任务指标权重合计必须为100，当前为110"))
+                .when(basicTaskWeightValidationService)
+                .validatePlanBasicWeight(403757L, 57L);
+
+        Indicator created = service.createIndicator(
+                "新增指标-保存不校验权重",
+                ownerOrg,
+                targetOrg,
+                41023L,
+                null,
+                "定量",
+                BigDecimal.valueOf(10),
+                1,
+                "备注",
+                0,
+                null,
+                true
+        );
+
+        assertNotNull(created);
+        verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(any(), any());
+        verify(eventStore, times(1)).save(any());
     }
 
     private StrategyApplicationService createService() {

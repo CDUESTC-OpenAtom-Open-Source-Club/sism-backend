@@ -118,7 +118,11 @@ class BusinessImportApplicationServiceTest {
                 transactionTemplate,
                 importBatchJdbcTemplate,
                 new StrategyOrgProperties(),
-                collegeDispatchGuardService);
+                collegeDispatchGuardService,
+                // 2026-11-13：归口反查收口到共享 Resolver（真实实例——候选集合来自导入批内，
+                // 不依赖 jdbcTemplate 打桩；回退 DB 反查时才落到 importBatchJdbcTemplate 上）
+                new com.sism.strategy.application.PlanFunctionalOrgResolver(
+                        importBatchJdbcTemplate, planRepository));
     }
 
     @Test

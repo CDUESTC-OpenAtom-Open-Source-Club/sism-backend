@@ -1,5 +1,6 @@
 package com.sism.execution.application;
 
+import com.sism.exception.BusinessConflictException;
 import com.sism.exception.ConflictException;
 import com.sism.exception.ResourceNotFoundException;
 import com.sism.execution.domain.report.PlanReport;
@@ -34,6 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -91,7 +94,7 @@ class ReportApplicationServiceTest {
         deletedReport.setDeleted(true);
         deletedReport.setStatus(PlanReport.STATUS_REJECTED);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
                 .thenReturn(Optional.of(deletedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -111,7 +114,7 @@ class ReportApplicationServiceTest {
         activeReport.setId(7L);
         activeReport.setDeleted(false);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
                 .thenReturn(Optional.of(activeReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -123,7 +126,7 @@ class ReportApplicationServiceTest {
 
     @Test
     void createReport_shouldPersistFirstFiller() {
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
                 .thenReturn(Optional.empty());
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -169,7 +172,7 @@ class ReportApplicationServiceTest {
         approvedReport.setId(17L);
         approvedReport.setStatus(PlanReport.STATUS_APPROVED);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
                 .thenReturn(Optional.of(approvedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> {
             PlanReport report = invocation.getArgument(0);
@@ -194,7 +197,7 @@ class ReportApplicationServiceTest {
         rejectedReport.setAuditInstanceId(919L);
         rejectedReport.setSubmittedAt(java.time.LocalDateTime.now());
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
                 .thenReturn(Optional.of(rejectedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -213,7 +216,7 @@ class ReportApplicationServiceTest {
         inReviewReport.setId(18L);
         inReviewReport.setStatus(PlanReport.STATUS_SUBMITTED);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
                 .thenReturn(Optional.of(inReviewReport));
 
         assertThatThrownBy(() -> reportApplicationService.createReport("202603", 39L, ReportOrgType.FUNC_DEPT, 111L))
@@ -230,7 +233,7 @@ class ReportApplicationServiceTest {
         approvedJanuary.setStatus(PlanReport.STATUS_APPROVED);
 
         when(planReportRepository.findByReportOrgId(39L)).thenReturn(List.of(approvedJanuary));
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202602", ReportOrgType.FUNC_DEPT, 39L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202602", ReportOrgType.FUNC_DEPT, 39L, null))
                 .thenReturn(Optional.empty());
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -278,6 +281,58 @@ class ReportApplicationServiceTest {
         assertThatThrownBy(() -> reportApplicationService.submitReport(404L, 7001L))
                 .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessage("Report not found with id: 404");
+    }
+
+    // 2026-11-13 用户拍板（未来月放填报、拦提交）：reportMonth > 当前 yyyyMM 的报告
+    // 提交必须被拦（填报存草稿不受限）；当前/历史月不受影响。门禁在自评校验之后。
+    @Test
+    void submitReport_shouldRejectFutureMonthWithFriendlyMessage() {
+        PlanReport future = PlanReport.createDraft("209912", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        future.setId(70L);
+
+        when(planReportRepository.findById(70L)).thenReturn(Optional.of(future));
+        when(planReportIndicatorRepository.findByReportId(70L)).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(2001L, 80, "content", "DELAYED", null, "说明", List.of())
+        ));
+
+        assertThatThrownBy(() -> reportApplicationService.submitReport(70L, 7001L))
+                .isInstanceOf(BusinessConflictException.class)
+                .hasMessageContaining("未来周期暂不能提交上报，请在当月提交");
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    @Test
+    void submitReport_shouldNotBlockCurrentOrPastMonthOnFutureMonthGate() {
+        PlanReport current = PlanReport.createDraft("202601", 39L, ReportOrgType.FUNC_DEPT, 111L);
+        current.setId(71L);
+
+        when(planReportRepository.findById(71L)).thenReturn(Optional.of(current));
+        when(planReportIndicatorRepository.findByReportId(71L)).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(2001L, 80, "content", "DELAYED", null, "说明", List.of())
+        ));
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        // 职能部门本级报告（核心指标无父级）→ 归口反查返回空 → 不落值不拦（旧口径）
+        org.springframework.jdbc.core.JdbcTemplate jdbcTemplate =
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        when(jdbcTemplate.queryForList(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(Long.class),
+                org.mockito.ArgumentMatchers.any(Object[].class)))
+                .thenReturn(java.util.Collections.emptyList());
+        ReportApplicationService service = new ReportApplicationService(
+                planReportRepository,
+                planReportIndicatorRepository,
+                indicatorRepository,
+                eventPublisher,
+                workflowApprovalMetadataQuery,
+                workflowAuditSyncGateway,
+                jdbcTemplate,
+                java.util.List.of());
+
+        // 未来月门禁对 202601（远早于当前）放行；后续互斥（无归口→全锁口径空列表）走既有 mock
+        PlanReport updated = service.submitReport(71L, 7001L, "说明");
+
+        assertThat(updated.getStatus()).isEqualTo(PlanReport.STATUS_SUBMITTED);
     }
 
     @Test
@@ -346,7 +401,7 @@ class ReportApplicationServiceTest {
         // 只有状态回写这一次 save，不再预建第二个轮次；
         // 预建逻辑删除后不应再查询同月范围（findLatestByMonthlyScope）来决定是否建轮次
         verify(planReportRepository, times(1)).save(any(PlanReport.class));
-        verify(planReportRepository, never()).findLatestByMonthlyScope(any(), any(), any(), any());
+        verify(planReportRepository, never()).findLatestByMonthlyScope(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -1101,5 +1156,178 @@ class ReportApplicationServiceTest {
         var event = captureSubmittedEvent();
         assertThat(event.getSubmitComment()).isNull();
         assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_SUBMITTED);
+    }
+
+    // ==================== 2026-11-13 用户拍板（学院上报按归口部门分批提交） ====================
+    //
+    // 口径：学院 × 归口部门 = 一份月报 + 一条审批链。唯一性从 (plan, report_org, month)
+    // 升级为 (plan, report_org, month, functional_org_id) 四元组（IS NOT DISTINCT FROM 语义）；
+    // 提交时按「明细指标 → 父级核心指标.target_org_id」反查落列（权威来源）；
+    // 互斥收窄为只锁本归口部门。
+
+    @Test
+    void createReport_sameMonthSameOrgDifferentFunctionalOrgsProduceSeparateDrafts() {
+        // 同月同组织下 37 部门草稿已存在，开 38 部门草稿 → 四元组隔离，新建而不是复用
+        PlanReport dept37Draft = PlanReport.createDraft("202610", 57L, ReportOrgType.COLLEGE, 111L, 8001L, 37L);
+        dept37Draft.setId(81L);
+
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", ReportOrgType.COLLEGE, 57L, 38L))
+                .thenReturn(Optional.empty());
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> {
+            PlanReport saved = invocation.getArgument(0);
+            if (saved.getId() == null) {
+                saved.setId(99L);
+            }
+            return saved;
+        });
+
+        PlanReport dept38Draft = reportApplicationService.createReport(
+                "202610", 57L, ReportOrgType.COLLEGE, 111L, 8002L, 38L);
+
+        assertThat(dept38Draft.getId()).isEqualTo(99L);
+        assertThat(dept38Draft.getFunctionalOrgId()).isEqualTo(38L);
+        verify(planReportRepository).save(dept38Draft);
+        verify(planReportRepository, never()).save(dept37Draft);
+    }
+
+    @Test
+    void createReport_reusesOnlySameFunctionalOrgDraft() {
+        // 同归口部门重复开草稿 → 复用同一份（四元组同组）；
+        // 复用带明细的草稿会触发反查一致性校验（jdbcTemplate 反查为空 → 放行）
+        PlanReport dept37Draft = PlanReport.createDraft("202610", 57L, ReportOrgType.COLLEGE, 111L, 8001L, 37L);
+        dept37Draft.setId(82L);
+
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", ReportOrgType.COLLEGE, 57L, 37L))
+                .thenReturn(Optional.of(dept37Draft));
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ReportApplicationService service = serviceWithJdbcTemplate(
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class));
+
+        PlanReport reused = service.createReport(
+                "202610", 57L, ReportOrgType.COLLEGE, 111L, 8001L, 37L);
+
+        assertThat(reused.getId()).isEqualTo(82L);
+        assertThat(reused.getFunctionalOrgId()).isEqualTo(37L);
+        verify(planReportRepository).save(dept37Draft);
+    }
+
+    @Test
+    void createReport_withoutFunctionalOrgDoesNotReuseDeptScopedDraft() {
+        // 兼容口径：不传归口（NULL 分组）不会复用已按部门落值的草稿（NULL 与非 NULL 不同组）
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", ReportOrgType.COLLEGE, 57L, null))
+                .thenReturn(Optional.empty());
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PlanReport created = reportApplicationService.createReport(
+                "202610", 57L, ReportOrgType.COLLEGE, 111L, 8001L);
+
+        assertThat(created.getFunctionalOrgId()).isNull();
+    }
+
+    @Test
+    void submitReport_shouldResolveFunctionalOrgFromParentIndicatorsAndPersistIt() {
+        // 提交反查落列：学院报告全部明细归属 37 部门 → functional_org_id=37 落列；
+        // 互斥按 37 部门收窄（4 参 SQL），无相关在审异动 → 放行
+        PlanReport report = collegeDraft(83L);
+        stubCompleteCollegeDetails(report);
+        stubSaveAndHydration();
+        org.springframework.jdbc.core.JdbcTemplate jdbcTemplate =
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class), eq(83L))).thenReturn(List.of(37L));
+        when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class),
+                eq(37L), eq(37L), eq(37L), eq(37L))).thenReturn(0);
+        ReportApplicationService service = serviceWithJdbcTemplate(jdbcTemplate);
+
+        service.submitReport(83L, 8001L);
+
+        assertThat(report.getFunctionalOrgId()).isEqualTo(37L);
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_SUBMITTED);
+        verify(planReportRepository).save(report);
+    }
+
+    @Test
+    void submitReport_shouldBlockMixedFunctionalDeptReport() {
+        // 混归口：明细父级核心指标 target_org 混跨 37/38 两个部门 → 拦「请按归属部门分别提交」
+        PlanReport report = collegeDraft(84L);
+        stubCompleteCollegeDetails(report);
+        org.springframework.jdbc.core.JdbcTemplate jdbcTemplate =
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class), eq(84L))).thenReturn(List.of(37L, 38L));
+        ReportApplicationService service = serviceWithJdbcTemplate(jdbcTemplate);
+
+        assertThatThrownBy(() -> service.submitReport(84L, 8001L))
+                .isInstanceOf(com.sism.exception.BusinessConflictException.class)
+                .hasMessage("报告内指标归属多个职能部门，请按归属部门分别提交");
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_DRAFT);
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    @Test
+    void submitReport_shouldBlockCollegeReportWhenFunctionalOrgUnresolvable() {
+        // 学院报告反查不到任何父级归口（数据异常）→ 拦「无法确定报告归属部门」，
+        // 不猜归口（职能部门本级报告不受此限，保持旧口径不落值）
+        PlanReport report = collegeDraft(85L);
+        stubCompleteCollegeDetails(report);
+        org.springframework.jdbc.core.JdbcTemplate jdbcTemplate =
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        // 反查为空：queryForList 未打桩（Mockito 默认空集合），即「一条父级归口都取不到」
+        ReportApplicationService service = serviceWithJdbcTemplate(jdbcTemplate);
+
+        assertThatThrownBy(() -> service.submitReport(85L, 8001L))
+                .isInstanceOf(com.sism.exception.BusinessConflictException.class)
+                .hasMessageContaining("无法确定报告归属部门");
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_DRAFT);
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    @Test
+    void submitReport_shouldBlockWhenSameFunctionalDeptMutationInFlight() {
+        // 互斥收窄回归：37 部门归口的报告提交时，37 部门相关异动在审（4 参 SQL 命中 1 条）→ 拦
+        PlanReport report = collegeDraft(86L);
+        stubCompleteCollegeDetails(report);
+        org.springframework.jdbc.core.JdbcTemplate jdbcTemplate =
+                org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class), eq(86L))).thenReturn(List.of(37L));
+        when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class),
+                eq(37L), eq(37L), eq(37L), eq(37L))).thenReturn(1);
+        ReportApplicationService service = serviceWithJdbcTemplate(jdbcTemplate);
+
+        assertThatThrownBy(() -> service.submitReport(86L, 8001L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("存在进行中的异动审批");
+        assertThat(report.getStatus()).isEqualTo(PlanReport.STATUS_DRAFT);
+        verify(planReportRepository, never()).save(any(PlanReport.class));
+    }
+
+    private PlanReport collegeDraft(long reportId) {
+        PlanReport report = PlanReport.createDraft("202610", 57L, ReportOrgType.COLLEGE, 111L);
+        report.setId(reportId);
+        return report;
+    }
+
+    private void stubCompleteCollegeDetails(PlanReport report) {
+        // 报告可加载 + 明细完整（自评+说明齐全），让流程推进到归口反查与互斥环节
+        when(planReportRepository.findById(report.getId())).thenReturn(Optional.of(report));
+        when(planReportIndicatorRepository.findByReportId(report.getId())).thenReturn(List.of(
+                new PlanReportIndicatorSnapshot(2001L, 50, "内容", "NORMAL", "说明", null, List.of())
+        ));
+    }
+
+    /** 仅放行型用例需要：落库 + 提交后元数据水合（被拦用例打桩不触发会报 UnnecessaryStubbing）。 */
+    private void stubSaveAndHydration() {
+        when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(planReportIndicatorRepository.findByReportIds(any())).thenReturn(Map.of());
+    }
+
+    private ReportApplicationService serviceWithJdbcTemplate(org.springframework.jdbc.core.JdbcTemplate jdbcTemplate) {
+        return new ReportApplicationService(
+                planReportRepository,
+                planReportIndicatorRepository,
+                indicatorRepository,
+                eventPublisher,
+                workflowApprovalMetadataQuery,
+                workflowAuditSyncGateway,
+                jdbcTemplate,
+                java.util.List.of());
     }
 }
