@@ -80,6 +80,30 @@ public class IndicatorMutationService {
     private final com.sism.workflow.application.support.ApproverResolver approverResolver;
     private final com.sism.workflow.application.definition.WorkflowDefinitionQueryService workflowDefinitionQueryService;
     private final com.sism.workflow.application.query.WorkflowReadModelService workflowReadModelService;
+    /**
+     * 2026-11-14（新增行不落库改造）：学院页签「新增行」在点「发起异动」前是纯前端内存
+     * 草稿（刷新即丢、不进数据库）。发起异动时前端把新增行的完整创建字段放进 create 条目，
+     * 本服务在同一事务内先经 {@link StrategyApplicationService#createIndicator} 落库
+     * （skipDistributedWeightValidation=true——单条即校验跳过，闭合校验由批次末尾
+     * assertPlanBasicWeightStillClosed 统一做），再走既有 markCreatedIndicatorInMutation
+     * 打 IN_MUTATION 标记 + 写「(新增)」快照。
+     */
+    private final StrategyApplicationService strategyApplicationService;
+    /**
+     * 2026-11-14（新增行不落库改造）：同事务创建分支需要以 SysOrg 实体调用
+     * createIndicator——归属组织=发起人组织（canInitiate 已保证=战略发展部），
+     * 目标组织=父级核心指标的 target_org_id。
+     */
+    private final com.sism.organization.domain.OrganizationRepository organizationRepository;
+    /**
+     * 2026-11-14（新增行不落库改造）：createIndicator 走 JPA persist（SEQUENCE 主键，
+     * INSERT 延迟到 flush 才发到连接上），而同一事务内紧随其后的
+     * markCreatedIndicatorInMutation 与 assertPlanBasicWeightStillClosed 用
+     * JdbcTemplate 原生 SQL 读回新行——原生查询不经过 Hibernate、不会触发自动 flush，
+     * 不显式 flush 读回必然查不到（EmptyResultDataAccessException）。落库后必须先
+     * flush 把 indicator/sys_task/plan 新行推到当前事务连接上。
+     */
+    private final jakarta.persistence.EntityManager entityManager;
 
     /**
      * 异动发起权只属于填报人（2026-10-21 用户定案）。
@@ -197,6 +221,31 @@ public class IndicatorMutationService {
      * item 结构：{id: 指标ID, create?: true 表示新增指标,
      *           indicator_desc?/weight_percent?/remark?: 变更值}
      * 任务改名条目：{id: 任务ID, entity_type: 'TASK', name: 新任务名}
+     *
+     * <p><b>2026-11-14（新增行不落库改造）前端契约——带完整创建字段的 create 条目：</b>
+     * 学院页签「新增行」在点「发起异动」前是纯前端内存草稿（刷新即丢、不落库），
+     * 发起异动时新增行按以下结构整行提交（键名定死，camelCase，与既有 batch 条目的
+     * snake_case 变更字段并存不冲突）：
+     * <pre>
+     * { create: true, indicatorDesc, weightPercent, indicatorType,
+     *   parentIndicatorId, taskId?, remark? }
+     * </pre>
+     * <ul>
+     *   <li>indicatorDesc（必填，空抛「新增指标内容不能为空」）；</li>
+     *   <li>weightPercent（可省，缺省落库为 100，由闭合校验把关）；</li>
+     *   <li>indicatorType（定量/定性；与父级一致由前端保证，后端不做强校验）；</li>
+     *   <li>parentIndicatorId（必填，父级核心指标，缺失抛「新增指标缺少关联的核心指标」）；</li>
+     *   <li>taskId（可省略——后端按父级所属 FUNC_TO_COLLEGE 计划解析/创建任务行）；</li>
+     *   <li>remark（可省略）。</li>
+     * </ul>
+     * 该条目<b>不需要 id</b>（新增行还没有数据库 id）；即使带了 id 也按新建处理、原值忽略。
+     * 后端在同一事务内：创建指标落库 → 打 mutation_status=IN_MUTATION → 快照 audit_log
+     * （before 全 "(新增)"）→ 批次闭合权重校验 → 启动 PLAN_MUTATION_STRATEGY 审批链。
+     * 分流识别：create=true 且（带创建字段 indicatorDesc/indicator_desc，或无有效实体 id）
+     * → 同事务创建分支——无 id 的 create 意图条目即使漏带字段也在此分支拿到
+     * 「新增指标内容不能为空」/「新增指标缺少关联的核心指标」的明确报错；
+     * 仅 {@code {id, create:true}} 无创建字段 = 旧格式（行已落库），走既有按 id 读回分支，
+     * 向后兼容。同批同父级多条 create 各自独立创建（SEQUENCE 主键自然递增去重）。
      */
     @Transactional
     public List<String> initiateBatch(List<Map<String, Object>> items, Long operatorUserId) {
@@ -216,6 +265,17 @@ public class IndicatorMutationService {
         // 2026-10-23：发起不再原地落库后，修改条目的拟变更权重以 override 参与闭合校验
         Map<Long, java.math.BigDecimal> proposedWeights = new LinkedHashMap<>();
         for (Map<String, Object> item : items) {
+            // 2026-11-14（新增行不落库改造）：create 条目分流——带创建字段（或没有有效实体
+            // id 的 create 意图条目，即前端内存草稿行）走同事务创建分支，先创建落库再打异动
+            // 标记；必须放在「缺少有效实体 ID」守卫之前，否则无 id 的新增行会被误拦。
+            // 仅 {id, create:true}（行已落库）= 旧格式，落到下方既有读回分支，向后兼容。
+            if (Boolean.TRUE.equals(item.get("create"))
+                    && (hasCreateDraftFields(item) || isMissingValidEntityId(item))) {
+                Long newIndicatorId = createAndMarkNewIndicatorInMutation(item, operatorUserId, batchId);
+                applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, newIndicatorId, "CREATE"));
+                touchedIndicatorIds.add(newIndicatorId);
+                continue;
+            }
             Long entityId = toLongId(item.get("id"));
             if (entityId == null || entityId <= 0) {
                 throw new IllegalArgumentException("异动条目缺少有效实体 ID");
@@ -230,6 +290,7 @@ public class IndicatorMutationService {
             touchedIndicatorIds.add(entityId);
             boolean create = Boolean.TRUE.equals(item.get("create"));
             if (create) {
+                // 2026-11-14：无创建字段的 {id, create:true} = 旧格式（行已落库），保持原分支
                 markCreatedIndicatorInMutation(entityId, operatorUserId, batchId);
                 applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, entityId, "CREATE"));
                 continue;
@@ -281,6 +342,145 @@ public class IndicatorMutationService {
     private boolean isTaskItem(Map<String, Object> item) {
         Object raw = item.get("entity_type");
         return raw != null && TASK_ENTITY_TYPE.equalsIgnoreCase(String.valueOf(raw).trim());
+    }
+
+    // ==================== 2026-11-14（新增行不落库改造）：同事务创建分支 ====================
+
+    /**
+     * create 条目是否携带完整创建字段（= 前端内存草稿行，后端需同事务落库）。
+     *
+     * <p>识别以指标内容字段为准：{@code indicatorDesc}（前端契约主键）或旧别名
+     * {@code indicator_desc}。<b>不认 {@code name}</b>——那是任务改名条目的键，
+     * 纳入识别会让未来任务/指标键位冲突时误判成新增。
+     */
+    private boolean hasCreateDraftFields(Map<String, Object> item) {
+        return textOf(item, "indicatorDesc", "indicator_desc") != null;
+    }
+
+    /**
+     * 条目是否缺少有效实体 id。create=true 且无有效 id 的条目只能是前端内存草稿
+     * （新口径下新增行没有数据库 id）——即使漏带创建字段也必须进同事务创建分支，
+     * 让缺失的 indicatorDesc/parentIndicatorId 拿到「新增指标内容不能为空」/
+     * 「新增指标缺少关联的核心指标」的明确报错，而不是笼统的「缺少有效实体 ID」。
+     * 带有效 id 且无创建字段的 {id, create:true} = 旧格式（行已落库），不受影响。
+     */
+    private boolean isMissingValidEntityId(Map<String, Object> item) {
+        Long id = toLongId(item.get("id"));
+        return id == null || id <= 0;
+    }
+
+    /**
+     * 同事务「创建指标 → 打异动标记」：
+     *
+     * <ol>
+     *   <li>解析创建字段（indicatorDesc/parentIndicatorId 必填，缺失明确报错；其余可省）；</li>
+     *   <li>组织与周期锚点：归属组织=发起人组织（{@link #canInitiate} 已保证=战略发展部）、
+     *       目标组织=父级核心指标 target_org_id、周期=父级所属计划 cycle_id；</li>
+     *   <li>复用 {@link StrategyApplicationService#createIndicator} 12 参重载
+     *       （skipDistributedWeightValidation=true——单条即校验跳过，闭合校验由批次末尾
+     *       assertPlanBasicWeightStillClosed 统一做）。已下发 FUNC_TO_COLLEGE 计划场景，
+     *       createIndicator 内部经 findOrCreatePlan 命中既有 DISTRIBUTED 计划、走
+     *       「转入异动审批口径」分支（既有 log.info 那条），随后新指标挂到该计划的任务行上，
+     *       与 markCreatedIndicatorInMutation 的前置校验（计划须 DISTRIBUTED）兼容；</li>
+     *   <li>显式 flush（JPA INSERT 延迟到 flush，原生 SQL 读回前必须推到事务连接，
+     *       见字段 entityManager 的注释）；</li>
+     *   <li>复用 {@link #markCreatedIndicatorInMutation}：前置校验（计划已下发/无在审异动/
+     *       上报与下发不在途）+「(新增)」快照 + IN_MUTATION 标记。</li>
+     * </ol>
+     *
+     * <p>同批同父级多条 create 各自独立调用本方法（SEQUENCE 主键自然递增去重）；
+     * 任一条失败整批回滚（{@link #initiateBatch} 的 @Transactional）。
+     *
+     * @return 新建指标的数据库 id（作为本条目的异动实体 id）
+     */
+    private Long createAndMarkNewIndicatorInMutation(Map<String, Object> item,
+                                                     Long operatorUserId, String batchId) {
+        String indicatorDesc = textOf(item, "indicatorDesc", "indicator_desc");
+        if (indicatorDesc == null || indicatorDesc.isBlank()) {
+            throw new IllegalArgumentException("新增指标内容不能为空");
+        }
+        Long parentIndicatorId = toLongId(valueOf(item, "parentIndicatorId", "parent_indicator_id"));
+        if (parentIndicatorId == null || parentIndicatorId <= 0) {
+            throw new IllegalArgumentException("新增指标缺少关联的核心指标");
+        }
+        // 父级核心指标锚点：目标组织（学院）与所属周期都从父级行读——前端内存草稿行
+        // 没有这些落库信息，不能信条目自带值（防串周期/串部门）
+        Map<String, Object> parent = jdbcTemplate.query(
+                """
+                SELECT i.target_org_id, p.cycle_id
+                FROM public.indicator i
+                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                """,
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("target_org_id", rs.getObject("target_org_id"));
+                    row.put("cycle_id", rs.getObject("cycle_id"));
+                    return row;
+                },
+                parentIndicatorId);
+        if (parent == null) {
+            throw new IllegalArgumentException("父级核心指标不存在: " + parentIndicatorId);
+        }
+        Long ownerOrgId = userProvider.getUserOrgId(operatorUserId).orElse(null);
+        if (ownerOrgId == null) {
+            throw new IllegalArgumentException("责任组织不能为空");
+        }
+        com.sism.organization.domain.SysOrg ownerOrg = organizationRepository.findById(ownerOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("责任组织未找到: " + ownerOrgId));
+        Long targetOrgId = toNullableLong(parent.get("target_org_id"));
+        // targetOrg 为空时不在此拦——交给 createIndicator/resolveTaskIdForChildIndicator
+        // 的既有「目标组织不能为空」口径，报错文案全局一致
+        com.sism.organization.domain.SysOrg targetOrg = targetOrgId == null
+                ? null
+                : organizationRepository.findById(targetOrgId)
+                        .orElseThrow(() -> new IllegalArgumentException("目标组织未找到: " + targetOrgId));
+        Long cycleId = toNullableLong(parent.get("cycle_id"));
+        Long taskId = toLongId(valueOf(item, "taskId", "task_id"));
+        Object weightRaw = item.containsKey("weightPercent")
+                ? item.get("weightPercent")
+                : item.get("weight_percent");
+        java.math.BigDecimal weightPercent = weightRaw == null ? null : toBigDecimal(weightRaw);
+        String indicatorType = textOf(item, "indicatorType", "indicator_type");
+        String remark = textOf(item, "remark");
+
+        var created = strategyApplicationService.createIndicator(
+                indicatorDesc, ownerOrg, targetOrg, taskId, parentIndicatorId,
+                indicatorType, weightPercent, null, remark, 0, cycleId, true);
+        // JPA INSERT 延迟到 flush——原生 SQL 读回（异动标记/闭合校验/审批链）前必须显式 flush
+        entityManager.flush();
+
+        // 复用既有「新增进入异动」逻辑：前置校验 + (新增) 快照 + IN_MUTATION 标记
+        markCreatedIndicatorInMutation(created.getId(), operatorUserId, batchId);
+        log.info("[IndicatorMutation] 前端内存草稿新增行已同事务落库并进入异动: indicatorId={}, parentIndicatorId={}, batchId={}",
+                created.getId(), parentIndicatorId, batchId);
+        return created.getId();
+    }
+
+    /** 按给定键序取第一个非空白文本值（trim 后返回；全缺/空白返回 null）。 */
+    private String textOf(Map<String, Object> item, String... keys) {
+        for (String key : keys) {
+            Object value = item.get(key);
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return String.valueOf(value).trim();
+            }
+        }
+        return null;
+    }
+
+    /** 按给定键序取第一个非 null 原始值（数字/文本字段统一入口，缺省返回 null）。 */
+    private Object valueOf(Map<String, Object> item, String... keys) {
+        for (String key : keys) {
+            Object value = item.get(key);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /**

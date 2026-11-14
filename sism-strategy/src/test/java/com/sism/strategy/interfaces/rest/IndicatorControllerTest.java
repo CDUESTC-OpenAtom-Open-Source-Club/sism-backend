@@ -307,6 +307,10 @@ class IndicatorControllerTest {
                             null,
                             null,
                             null,
+                            null,
+                            // 2026-11-14（新增行不落库）：同事务创建分支依赖（本测试不触发异动，传 null）
+                            null,
+                            null,
                             null),
                     // 取消异动依赖（本测试不触发取消，传 null）
                     null,
