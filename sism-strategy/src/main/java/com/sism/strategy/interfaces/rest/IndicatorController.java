@@ -275,6 +275,10 @@ public class IndicatorController {
         assertStrategyOwnedWrite(currentUser, ownerOrgId);
 
         try {
+            // 2026-11-13 用户拍板（编辑/发起两级校验语义）：表单保存入口跳过单条落库即校验——
+            // 新增/编辑随便填随便改（右上角权重合计只做实时展示），真正的限制拦截在
+            // 「发起异动/发起审批」（前端 submitMutationDraft 门禁 + initiateBatch 闭合校验）。
+            // 导入链（service 内部调用）保持单条即校验不受影响。
             Indicator created = strategyApplicationService.createIndicator(
                     description,
                     ownerOrg,
@@ -286,7 +290,8 @@ public class IndicatorController {
                     request.getSortOrder(),
                     request.getRemark(),
                     request.getProgress(),
-                    request.getCycleId()
+                    request.getCycleId(),
+                    true
             );
             dataChangeBroadcaster.publishDataChanged("INDICATOR", created.getId());
             return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(created)));

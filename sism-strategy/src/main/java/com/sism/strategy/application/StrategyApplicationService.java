@@ -99,6 +99,45 @@ public class StrategyApplicationService {
             String remark,
             Integer progress,
             Long cycleId) {
+        return createIndicator(
+                indicatorDesc,
+                ownerOrg,
+                targetOrg,
+                taskId,
+                parentIndicatorId,
+                indicatorType,
+                weightPercent,
+                sortOrder,
+                remark,
+                progress,
+                cycleId,
+                false
+        );
+    }
+
+    /**
+     * 2026-11-13 用户拍板（编辑/发起两级校验语义）：新增/编辑保存时<b>不校验</b>基础性权重合计
+     * （随便填随便改，右上角合计只做实时展示）；真正的限制拦截在「发起异动/发起审批」时
+     * （前端 submitMutationDraft 门禁 + 后端 initiateBatch assertPlanBasicWeightStillClosed）。
+     *
+     * @param skipDistributedWeightValidation true = 跳过单条落库即校验（前端表单保存入口
+     *        POST /indicators 传 true）；false = 保持 10-30 D10 定案的单条即校验
+     *        （导入 commit 链传 false——导入的权重闭合由自动下发闭合校验+覆盖勾选兜底）。
+     */
+    @Transactional
+    public Indicator createIndicator(
+            String indicatorDesc,
+            SysOrg ownerOrg,
+            SysOrg targetOrg,
+            Long taskId,
+            Long parentIndicatorId,
+            String indicatorType,
+            BigDecimal weightPercent,
+            Integer sortOrder,
+            String remark,
+            Integer progress,
+            Long cycleId,
+            boolean skipDistributedWeightValidation) {
         // 2026-11-05（学院指标直发改造）：「职能部门 → 学院」链路已取消，统一由战略部下发。
         // 在最前面拦截，避免旧旁路（直接建指标 / 批量分发）把这条链路复活且前端不留痕迹。
         assertDispatchScopeAllowed(ownerOrg, targetOrg);
@@ -148,7 +187,11 @@ public class StrategyApplicationService {
         // 2026-10-30（D10）：基础性权重合计校验前移到单条新增指标。
         // 校验放在 save 之后、发布事件之前：新指标的权重必须计入合计才有意义；
         // 校验不通过时抛异常，@Transactional 会把本次插入整体回滚（等于「没落库」）。
-        validateBasicWeightForDistributedPlan(resolvedTaskId, targetOrg);
+        // 2026-11-13 用户拍板（编辑/发起两级校验）：前端表单保存入口跳过本条即校验
+        // （新增随便填，发起异动时由前端门禁+initiateBatch 闭合校验统一拦截）。
+        if (!skipDistributedWeightValidation) {
+            validateBasicWeightForDistributedPlan(resolvedTaskId, targetOrg);
+        }
         publishAndSaveEvents(indicator);
         return indicator;
     }

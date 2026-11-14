@@ -300,4 +300,76 @@ class StrategyWorkflowBusinessContextAdapterTest {
         Optional<BusinessSummary> withoutRow = adapter.getBusinessSummary("PLAN_REPORT", 913L);
         assertFalse(withoutRow.isPresent());
     }
+
+    // ==================== 2026-11-13 用户拍板（学院上报按归口部门分批提交） ====================
+    //
+    // 席位解析升级：报告行归口优先（同月多部门并存时 plan 级归口只反映 MIN，会派错人），
+    // 为空回退 plan.functional_org_id（存量报告兼容）。
+
+    @Test
+    @DisplayName("2026-11-13：PLAN_REPORT 归口解析优先读报告行 functional_org_id，不再直查 plan")
+    void findFunctionalOrgIdByEntity_reportRowTakesPriorityOverPlan() {
+        when(jdbcTemplate.query(
+                contains("plan_report WHERE id = ? AND functional_org_id IS NOT NULL"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L)))
+                .thenReturn(java.util.List.of(37L));
+
+        Optional<Long> functionalOrgId = adapter.findFunctionalOrgIdByEntity("PLAN_REPORT", 9L);
+
+        assertTrue(functionalOrgId.isPresent());
+        assertEquals(37L, functionalOrgId.get());
+        // 报告行已命中：不应再反查报告所属计划，更不应读 plan 级归口
+        verify(jdbcTemplate, never()).query(
+                contains("SELECT plan_id FROM public.plan_report"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L));
+        verify(jdbcTemplate, never()).query(
+                contains("SELECT functional_org_id FROM public.plan WHERE id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(111L));
+    }
+
+    @Test
+    @DisplayName("2026-11-13：报告行归口为空回退 plan.functional_org_id（存量报告兼容）")
+    void findFunctionalOrgIdByEntity_fallsBackToPlanWhenReportRowHasNoFunctionalOrg() {
+        // ① 报告行归口为空（存量报告 / V104 之前提交）
+        when(jdbcTemplate.query(
+                contains("plan_report WHERE id = ? AND functional_org_id IS NOT NULL"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L)))
+                .thenReturn(java.util.List.of());
+        // ② 报告映射回计划 111
+        when(jdbcTemplate.query(
+                contains("SELECT plan_id FROM public.plan_report"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L)))
+                .thenReturn(java.util.List.of(111L));
+        // ③ 计划级归口 38 兜底
+        when(jdbcTemplate.query(
+                contains("SELECT functional_org_id FROM public.plan WHERE id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(111L)))
+                .thenReturn(java.util.List.of(38L));
+
+        Optional<Long> functionalOrgId = adapter.findFunctionalOrgIdByEntity("PLAN_REPORT", 9L);
+
+        assertTrue(functionalOrgId.isPresent());
+        assertEquals(38L, functionalOrgId.get());
+    }
+
+    @Test
+    @DisplayName("2026-11-13：PLAN 实体归口解析口径不变（直接读 plan.functional_org_id）")
+    void findFunctionalOrgIdByEntity_planEntityStillReadsPlanRow() {
+        when(jdbcTemplate.query(
+                contains("SELECT functional_org_id FROM public.plan WHERE id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(111L)))
+                .thenReturn(java.util.List.of(38L));
+
+        Optional<Long> functionalOrgId = adapter.findFunctionalOrgIdByEntity("PLAN", 111L);
+
+        assertTrue(functionalOrgId.isPresent());
+        assertEquals(38L, functionalOrgId.get());
+    }
 }

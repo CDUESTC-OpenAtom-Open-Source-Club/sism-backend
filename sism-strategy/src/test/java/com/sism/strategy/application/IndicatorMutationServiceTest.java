@@ -142,6 +142,11 @@ class IndicatorMutationServiceTest {
         when(jdbcTemplate.queryForList(
                 contains("SELECT i.target_org_id, p.cycle_id"), eq(INDICATOR_ID)))
                 .thenReturn(List.of(Map.of("target_org_id", TARGET_ORG_ID, "cycle_id", 2026L)));
+        // 2026-11-13：上报互斥先反查异动指标归口（返回空 → 无相关在审上报，互斥放行），
+        // 本测试的拦截点落在下发审批守卫
+        when(jdbcTemplate.queryForList(
+                contains("parent_indicator_id"), eq(INDICATOR_ID)))
+                .thenReturn(List.of());
         // 2026-11-05：该职能部门正在被下发到学院（下发审批在途）
         when(collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(TARGET_ORG_ID, 2026L))
                 .thenReturn(true);
@@ -1099,5 +1104,134 @@ class IndicatorMutationServiceTest {
         for (WorkflowInstanceResponse response : responses) {
             ongoing = ongoing.thenReturn(response);
         }
+    }
+
+    // ==================== 2026-11-13 用户拍板（上报互斥只锁本部门） ====================
+    //
+    // 口径：学院上报按归口部门分批提交后，上报/异动互斥收窄——
+    // 异动先反查自身归口部门（学院子指标=父级核心指标 target_org_id，部门本级指标=自身 target_org_id），
+    // 只拦「归口相同」的在审上报；A 部门报告在审不再拦 B 部门指标异动。
+
+    /** 打桩：异动指标归口反查（plan=4040，父级核心指标 target_org=38，自身 target=TARGET_ORG_ID）。 */
+    private void stubIndicatorFunctionalDept(Long functionalDeptOrgId) {
+        when(jdbcTemplate.queryForList(contains("parent_indicator_id"), eq(INDICATOR_ID)))
+                .thenReturn(List.of(Map.of(
+                        "plan_id", 4040L,
+                        "parent_target_org_id", functionalDeptOrgId,
+                        "target_org_id", TARGET_ORG_ID)));
+    }
+
+    @Test
+    @DisplayName("2026-11-13 用户拍板：A 部门上报在审不再拦 B 部门指标异动（互斥只锁本部门）")
+    void initiateBatch_shouldAllowMutationWhenInFlightReportBelongsToOtherFunctionalDept() {
+        stubReporter();
+        stubIndicatorRow("DISTRIBUTED", "DISTRIBUTED");
+        // 异动指标归口 = 38 部门（父级核心指标 target_org_id）
+        stubIndicatorFunctionalDept(38L);
+        // 收窄后的互斥口径：按 (planId=4040, functionalOrgId=38) 查在审上报——
+        // 在审的是 37 部门报告 → 计 0 条 → 放行
+        when(jdbcTemplate.queryForObject(
+                contains("pr.functional_org_id = ?"), eq(Integer.class), eq(4040L), eq(38L)))
+                .thenReturn(0);
+        stubWorkflowStart("701");
+
+        service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述")),
+                OPERATOR_ID);
+
+        // 放行：异动链正常启动、异动标记正常写入
+        verify(businessWorkflowApplicationService).startWorkflow(
+                any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+    }
+
+    @Test
+    @DisplayName("2026-11-13 回归：同归口部门（38）报告在审仍拦 38 部门指标异动")
+    void initiateBatch_shouldRejectMutationWhenSameFunctionalDeptReportInFlight() {
+        stubReporter();
+        stubIndicatorRow("DISTRIBUTED", "DISTRIBUTED");
+        stubIndicatorFunctionalDept(38L);
+        // 同归口部门有在审上报 → 计 1 条 → 拦
+        when(jdbcTemplate.queryForObject(
+                contains("pr.functional_org_id = ?"), eq(Integer.class), eq(4040L), eq(38L)))
+                .thenReturn(1);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述")),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("上报正在审批中"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+        verify(jdbcTemplate, never()).update(
+                contains("SET mutation_status = ?"), any(Object[].class));
+    }
+
+    @Test
+    @DisplayName("2026-11-13：任务改名异动按计划归口收窄——同归口报告在审被拦")
+    void initiateBatch_shouldRejectTaskMutationWhenSameFunctionalDeptReportInFlight() {
+        stubReporter();
+        Map<String, Object> taskRow = new HashMap<>();
+        taskRow.put("task_id", TASK_ID);
+        taskRow.put("name", "旧任务名");
+        taskRow.put("plan_id", 4040L);
+        taskRow.put("mutation_status", null);
+        taskRow.put("plan_status", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.sys_task t"), eq(TASK_ID)))
+                .thenReturn(taskRow);
+        // 计划级归口 = 38（FUNC_TO_COLLEGE 计划由导入链/提交补写保证落值）
+        when(jdbcTemplate.query(
+                contains("FROM public.plan WHERE id = ? AND functional_org_id IS NOT NULL"),
+                org.mockito.ArgumentMatchers.<RowMapper<Long>>any(),
+                eq(4040L)))
+                .thenReturn(List.of(38L));
+        // 38 部门报告在审 → 拦
+        when(jdbcTemplate.queryForObject(
+                contains("pr.functional_org_id = ?"), eq(Integer.class), eq(4040L), eq(38L)))
+                .thenReturn(1);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("id", TASK_ID, "entity_type", "TASK", "name", "新任务名")),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("上报正在审批中"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("2026-11-13：任务改名异动在审上报属于其他部门 → 不拦，正常发起")
+    void initiateBatch_shouldAllowTaskMutationWhenInFlightReportBelongsToOtherFunctionalDept() {
+        stubReporter();
+        Map<String, Object> taskRow = new HashMap<>();
+        taskRow.put("task_id", TASK_ID);
+        taskRow.put("name", "旧任务名");
+        taskRow.put("plan_id", 4040L);
+        taskRow.put("mutation_status", null);
+        taskRow.put("plan_status", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.sys_task t"), eq(TASK_ID)))
+                .thenReturn(taskRow);
+        when(jdbcTemplate.query(
+                contains("FROM public.plan WHERE id = ? AND functional_org_id IS NOT NULL"),
+                org.mockito.ArgumentMatchers.<RowMapper<Long>>any(),
+                eq(4040L)))
+                .thenReturn(List.of(38L));
+        // 在审的是 37 部门报告 → 按 38 查计 0 条 → 放行
+        when(jdbcTemplate.queryForObject(
+                contains("pr.functional_org_id = ?"), eq(Integer.class), eq(4040L), eq(38L)))
+                .thenReturn(0);
+        stubWorkflowStart("702");
+
+        service.initiateBatch(
+                List.of(Map.of("id", TASK_ID, "entity_type", "TASK", "name", "新任务名")),
+                OPERATOR_ID);
+
+        verify(businessWorkflowApplicationService).startWorkflow(
+                any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(TASK_ID));
     }
 }

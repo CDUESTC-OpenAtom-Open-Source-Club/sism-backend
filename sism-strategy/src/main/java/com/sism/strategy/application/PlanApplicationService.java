@@ -95,6 +95,11 @@ public class PlanApplicationService {
     private final ObjectProvider<PlanApplicationService> selfProvider;
     /** 2026-11-05（学院指标直发改造）：学院下发的「异动在途」守卫（显式口径） */
     private final CollegeDispatchGuardService collegeDispatchGuardService;
+    /**
+     * 2026-11-13 用户拍板（学院上报按归口部门分批提交）：归口职能部门解析/补写
+     * （与迁移 V104、导入链共用同一反查口径）。
+     */
+    private final PlanFunctionalOrgResolver planFunctionalOrgResolver;
 
     @Autowired
     public PlanApplicationService(
@@ -111,7 +116,8 @@ public class PlanApplicationService {
             StrategyOrgProperties strategyOrgProperties,
             PlanWorkflowRuntimeService planWorkflowRuntimeService,
             ObjectProvider<PlanApplicationService> selfProvider,
-            CollegeDispatchGuardService collegeDispatchGuardService
+            CollegeDispatchGuardService collegeDispatchGuardService,
+            PlanFunctionalOrgResolver planFunctionalOrgResolver
     ) {
         this.planRepository = planRepository;
         this.cycleRepository = cycleRepository;
@@ -127,6 +133,7 @@ public class PlanApplicationService {
         this.planWorkflowRuntimeService = planWorkflowRuntimeService;
         this.selfProvider = selfProvider;
         this.collegeDispatchGuardService = collegeDispatchGuardService;
+        this.planFunctionalOrgResolver = planFunctionalOrgResolver;
     }
 
     public PlanApplicationService(PlanRepository planRepository,
@@ -160,6 +167,7 @@ public class PlanApplicationService {
                 strategyOrgProperties,
                 eventPublisher
         );
+        this.planFunctionalOrgResolver = new PlanFunctionalOrgResolver(jdbcTemplate, planRepository);
         this.selfProvider = new ObjectProvider<>() {
             @Override
             public PlanApplicationService getObject(Object... args) {
@@ -364,6 +372,11 @@ public class PlanApplicationService {
         // （前端传 PLAN_APPROVAL_* 就能把异动在途守卫整段跳过）。
         assertCollegeDispatchWorkflowCode(plan, request == null ? null : request.getWorkflowCode());
         assertFunctionalDeptMutationNotInFlight(plan);
+        // 2026-11-13 用户拍板（学院上报按归口部门分批提交）：FUNC_TO_COLLEGE 计划提交下发审批前，
+        // functional_org_id 为空的（如「新增行+发起审批」路径此前不写），按父级核心指标反查落值。
+        // 与迁移 V104 存量回填、导入链 applyFunctionalOrgFromDispatchChain 共用同一实现
+        // （PlanFunctionalOrgResolver），事务内完成，席位解析不再依赖事后补救。
+        planFunctionalOrgResolver.backfillFunctionalOrgIfAbsent(plan);
         PlanWorkflowSnapshotQueryService.WorkflowSnapshot existingSnapshot =
                 planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(id);
 
@@ -1109,6 +1122,8 @@ public class PlanApplicationService {
                 .createdByOrgId(plan.getCreatedByOrgId())
                 .createdByOrgName(createdByOrgName)
                 .planLevel(plan.getPlanLevel() != null ? plan.getPlanLevel().name() : null)
+                // 2026-11-13（学院上报按归口部门分批提交）：暴露计划级归口，前端按部门分批入口用
+                .functionalOrgId(plan.getFunctionalOrgId())
                 .canEdit(plan.isEditable())
                 .canResubmit(plan.isEditable())
                 .workflowStatus(null)

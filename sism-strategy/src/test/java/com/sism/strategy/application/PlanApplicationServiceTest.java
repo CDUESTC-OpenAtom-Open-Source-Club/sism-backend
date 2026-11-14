@@ -45,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
@@ -1398,5 +1399,53 @@ class PlanApplicationServiceTest {
         when(indicator.getCreatedAt()).thenReturn(java.time.LocalDateTime.now());
         when(indicator.getUpdatedAt()).thenReturn(java.time.LocalDateTime.now());
         return indicator;
+    }
+
+    // ==================== 2026-11-13 用户拍板（学院上报按归口部门分批提交） ====================
+
+    @Test
+    @DisplayName("2026-11-13：FUNC_TO_COLLEGE 计划提交下发前按父级核心指标回填归口职能部门（新增行+发起审批路径漏写补齐）")
+    void submitPlanForApproval_shouldBackfillFunctionalOrgForCollegeDispatchPlan() {
+        Long cycleId = 2026L;
+        // 学院下发计划：创建组织=战略发展部（35），归口职能部门未落值
+        Plan plan = Plan.create(cycleId, 36L, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9109L);
+        assertNull(plan.getFunctionalOrgId());
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
+
+        when(planRepository.findById(9109L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(same(plan))).thenReturn(plan);
+        // 归口反查（PlanFunctionalOrgResolver，与迁移 V104 同口径）：父级核心指标 target_org=44
+        when(jdbcTemplate.queryForList(
+                contains("parent_indicator_id"), eq(Long.class), eq(9109L)))
+                .thenReturn(List.of(44L));
+
+        service.submitPlanForApproval(9109L, request, 188L, 35L);
+
+        assertEquals(44L, plan.getFunctionalOrgId());
+        assertEquals(PlanStatus.PENDING.value(), plan.getStatus());
+        verify(planRepository, org.mockito.Mockito.atLeastOnce()).save(same(plan));
+    }
+
+    @Test
+    @DisplayName("2026-11-13：非 FUNC_TO_COLLEGE 计划提交不做归口回填（口径只作用于学院下发计划）")
+    void submitPlanForApproval_shouldNotBackfillFunctionalOrgForNonCollegePlan() {
+        Plan plan = Plan.create(2026L, 35L, 35L, PlanLevel.STRATEGIC);
+        plan.setId(9110L);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_STRATEGY");
+
+        when(planRepository.findById(9110L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(same(plan))).thenReturn(plan);
+
+        service.submitPlanForApproval(9110L, request, 188L, 35L);
+
+        assertNull(plan.getFunctionalOrgId());
+        // 不触发归口反查（计划级反查 SQL 不会被调用）
+        verify(jdbcTemplate, never()).queryForList(
+                contains("parent_indicator_id"), eq(Long.class), eq(9110L));
     }
 }
