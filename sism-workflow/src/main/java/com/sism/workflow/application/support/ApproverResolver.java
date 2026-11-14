@@ -14,6 +14,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Component
 @Slf4j
@@ -28,6 +29,13 @@ public class ApproverResolver {
     /** 2026-10-26 用户定案：学院链第 4 环「分管职能部门校领导审批」——席位归职能部门本级 */
     private static final String FUNCTIONAL_VICE_PRESIDENT_STEP_NAME = "分管职能部门校领导";
     private static final String COLLEGE_APPROVAL_FLOW_CODE = "PLAN_APPROVAL_COLLEGE";
+    /**
+     * 2026-11-10（学院下发审批独立流程）：学院下发审批链的流程码。
+     *
+     * <p>该链的三步与 flow 1（PLAN_DISPATCH_STRATEGY）同构：
+     * 填报人提交 → 战略发展部负责人审批（role 3）→ 分管校领导审批（role 4，终）。
+     */
+    private static final String COLLEGE_DISPATCH_FLOW_CODE = "PLAN_DISPATCH_COLLEGE";
 
     private final UserProvider userProvider;
     private final List<WorkflowBusinessContextPort> workflowBusinessContextPorts;
@@ -276,7 +284,18 @@ public class ApproverResolver {
      * @param requesterOrgId 请求方组织兜底值（实例缺失时用它；实例存在时以实例为准）
      */
     public Long resolveStepScopeOrgId(AuditStepDef stepDef, Long requesterOrgId, AuditInstance instance) {
-        if (!isFunctionalDeptScopedStep(stepDef, instance)) {
+        // 流程码只查一次：学院下发链与学院上报链的判定都用它。
+        String flowCode = resolveFlowCode(instance);
+
+        // 2026-11-10（学院下发审批独立流程）：学院下发链（PLAN_DISPATCH_COLLEGE）的席位固定在
+        // 提交方组织（战略发展部 org35），与 flow 1（PLAN_DISPATCH_STRATEGY）同构——
+        // 步骤2 = 战略发展部负责人（role 3）、步骤3 = 分管校领导（role 4）。
+        // 之所以显式钉住：flow 1 靠「请求方组织」推导，提交方一旦不是战略部就会把席位甩到别的组织；
+        // 新链的流程定义写死了「席位全部在战略部」，解析必须与定义一致。
+        if (COLLEGE_DISPATCH_FLOW_CODE.equalsIgnoreCase(flowCode)) {
+            return getStrategyOrgId();
+        }
+        if (!isFunctionalDeptScopedStep(stepDef, instance, flowCode)) {
             return requesterOrgId;
         }
         return resolveFunctionalDeptOrgId(instance, requesterOrgId);
@@ -284,10 +303,26 @@ public class ApproverResolver {
 
     /**
      * 职能部门本级组织 = 业务摘要里的 sourceOrgId（= plan.createdByOrgId）。
+     *
+     * <p>2026-11-08（学院指标单层口径）：优先用计划的<b>归口职能部门</b>
+     * （{@code plan.functional_org_id}）。学院指标改成「战略部 → 学院」直接下发后没有父级，
+     * 而 created_by_org_id 固定是战略部（35）——继续拿它当席位会落到战略部，
+     * 与「职能部门审批学院上报」冲突，且组织内没有对应角色时直接抛
+     * No available approver candidates 让派单失败。
+     * 归口部门为空（存量数据 / 非学院链）时回退到 sourceOrgId，行为与改造前一致。
      */
     private Long resolveFunctionalDeptOrgId(AuditInstance instance, Long fallbackOrgId) {
         if (instance == null) {
             return fallbackOrgId;
+        }
+        Optional<Long> functionalOrgId = workflowBusinessContextPorts.stream()
+                .map(port -> port.findFunctionalOrgIdByEntity(
+                        instance.getEntityType(), instance.getEntityId()))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .findFirst();
+        if (functionalOrgId.isPresent()) {
+            return functionalOrgId.get();
         }
         return resolveBusinessSummary(instance.getEntityType(), instance.getEntityId())
                 .map(summary -> summary.sourceOrgId() != null ? summary.sourceOrgId() : fallbackOrgId)
@@ -299,10 +334,10 @@ public class ApproverResolver {
      * 保留既有两个特判（学院终审步 / 分管职能部门校领导步），
      * 再叠加一条不依赖 roleId 的兜底：学院上报链里步骤名含「职能部门」的席位节点。
      */
-    private boolean isFunctionalDeptScopedStep(AuditStepDef stepDef, AuditInstance instance) {
-        return isCollegeFinalApprovalStep(stepDef, instance)
-                || isCollegeFunctionalVicePresidentStep(stepDef, instance)
-                || isCollegeFunctionalDeptApprovalStep(stepDef, instance);
+    private boolean isFunctionalDeptScopedStep(AuditStepDef stepDef, AuditInstance instance, String flowCode) {
+        return isCollegeFinalApprovalStep(stepDef, instance, flowCode)
+                || isCollegeFunctionalVicePresidentStep(stepDef, instance, flowCode)
+                || isCollegeFunctionalDeptApprovalStep(stepDef, instance, flowCode);
     }
 
     /**
@@ -319,14 +354,14 @@ public class ApproverResolver {
      * 判定只依赖「学院上报链 + 步骤名含职能部门」，学院本级席位
      * （学院审核人审批 / 二级学院审批人审批）不含该关键字，不会被误伤。
      */
-    private boolean isCollegeFunctionalDeptApprovalStep(AuditStepDef stepDef, AuditInstance instance) {
+    private boolean isCollegeFunctionalDeptApprovalStep(AuditStepDef stepDef, AuditInstance instance, String flowCode) {
         if (stepDef == null || instance == null) {
             return false;
         }
         if (!isPlanOrPlanReportEntityType(instance.getEntityType())) {
             return false;
         }
-        if (!isCollegeApprovalFlow(instance)) {
+        if (!COLLEGE_APPROVAL_FLOW_CODE.equalsIgnoreCase(flowCode)) {
             return false;
         }
         String stepName = stepDef.getStepName();
@@ -347,7 +382,7 @@ public class ApproverResolver {
      * 解析出的 scopeOrgId 会被 matchesRoleScope 的 vice-president 分支
      * 再经 functional-vice-president-scope-by-org 归一，确保命中该职能部门的 leader 席位。
      */
-    private boolean isCollegeFunctionalVicePresidentStep(AuditStepDef stepDef, AuditInstance instance) {
+    private boolean isCollegeFunctionalVicePresidentStep(AuditStepDef stepDef, AuditInstance instance, String flowCode) {
         if (stepDef == null || instance == null) {
             return false;
         }
@@ -357,7 +392,7 @@ public class ApproverResolver {
         if (!getVicePresidentRoleId().equals(stepDef.getRoleId())) {
             return false;
         }
-        if (!isCollegeApprovalFlow(instance)) {
+        if (!COLLEGE_APPROVAL_FLOW_CODE.equalsIgnoreCase(flowCode)) {
             return false;
         }
         String stepName = stepDef.getStepName();
@@ -378,7 +413,7 @@ public class ApproverResolver {
         return java.util.Optional.empty();
     }
 
-    private boolean isCollegeFinalApprovalStep(AuditStepDef stepDef, AuditInstance instance) {
+    private boolean isCollegeFinalApprovalStep(AuditStepDef stepDef, AuditInstance instance, String flowCode) {
         if (stepDef == null || instance == null) {
             return false;
         }
@@ -393,7 +428,7 @@ public class ApproverResolver {
         // 仅学院审批流（PLAN_APPROVAL_COLLEGE）中的「职能部门」节点需要把审批范围
         // 指到职能部门（sourceOrgId）；职能部门自身链（PLAN_APPROVAL_FUNCDEPT）里
         // 同名步骤的 requesterOrgId 本就是职能部门，不适用。
-        if (!isCollegeApprovalFlow(instance)) {
+        if (!COLLEGE_APPROVAL_FLOW_CODE.equalsIgnoreCase(flowCode)) {
             return false;
         }
 
@@ -413,13 +448,25 @@ public class ApproverResolver {
         return matched;
     }
 
-    private boolean isCollegeApprovalFlow(AuditInstance instance) {
+    /**
+     * 实例所属流程码（实例缺失 / flowDefId 缺失 / 流程定义不存在时返回 null）。
+     *
+     * <p>2026-11-10（学院下发审批独立流程）：{@link #resolveStepScopeOrgId} 一次取出流程码后
+     * 在同一调用链内复用——学院下发链（PLAN_DISPATCH_COLLEGE）与学院上报链
+     * （PLAN_APPROVAL_COLLEGE）的判定共用同一次查询，取代原先每个判定方法各查一次
+     * {@code flowDefinitionRepository} 的模式（单次派单最多 4 次重复查询）。
+     *
+     * <p>学院下发链的流程定义写死了「席位全部在战略发展部」（步骤2 = 战略发展部负责人
+     * role 3、步骤3 = 分管校领导 role 4）。flow 1（PLAN_DISPATCH_STRATEGY）没有专属分支，
+     * 席位靠「请求方组织」推导——请求方一旦不是战略发展部，席位就会被甩到别的组织。
+     */
+    private String resolveFlowCode(AuditInstance instance) {
         if (instance == null || instance.getFlowDefId() == null) {
-            return false;
+            return null;
         }
         return flowDefinitionRepository.findById(instance.getFlowDefId())
-                .map(flowDef -> COLLEGE_APPROVAL_FLOW_CODE.equalsIgnoreCase(flowDef.getFlowCode()))
-                .orElse(false);
+                .map(flowDef -> flowDef.getFlowCode())
+                .orElse(null);
     }
 
     private boolean matchesRoleScope(UserIdentity user, Long roleId, Long requesterOrgId) {

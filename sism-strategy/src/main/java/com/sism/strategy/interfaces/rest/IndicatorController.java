@@ -60,10 +60,7 @@ import java.util.stream.Stream;
 @Tag(name = "指标管理", description = "指标管理相关接口")
 public class IndicatorController {
 
-    /** 2026-10-26 数据隔离（R13）：战略发展部保留全量指标视图 */
-    private static final Long STRATEGY_ORG_ID = 35L;
-
-
+    /** 2026-11-05（minor 口径统一）：战略发展部 org id 不再在本类硬编码，统一走 StrategyOrgProperties 的兜底取法 */
     private static final String INDICATOR_WRITE_ACCESS =
             "hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT')";
     private static final String INDICATOR_DELETE_ACCESS =
@@ -87,6 +84,16 @@ public class IndicatorController {
     private final UserNotificationService userNotificationService;
     /** 2026-10-24 跨窗口数据同步：草稿态指标直接增删改不走审批流、无审批通知可搭车，成功后广播。 */
     private final com.sism.shared.domain.notification.DataChangeBroadcaster dataChangeBroadcaster;
+    /**
+     * 2026-11-05（学院指标直发改造）：战略发展部 org id。
+     * 指标写入接口补组织维度校验时使用（与 IndicatorMutationService.canInitiate 同一范式）。
+     */
+    private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
+    /**
+     * 2026-11-05（R6/R7/R8/R9）：指标写入的组织维度授权守卫。
+     * 判定基准是「指标当前的归属组织」，不是角色码——职能部门维护本部门指标不受影响。
+     */
+    private final com.sism.strategy.application.StrategyOrgWriteGuard strategyOrgWriteGuard;
 
     @GetMapping
     @Operation(summary = "分页获取所有指标")
@@ -103,7 +110,9 @@ public class IndicatorController {
         // 2026-10-26 数据隔离（R13）：部门账号只能看到归属本部门的指标；
         // 战略发展部保留全量视图。
         Long callerOrgId = currentUser == null ? null : currentUser.getOrgId();
-        boolean fullAccess = callerOrgId == null || STRATEGY_ORG_ID.equals(callerOrgId);
+        // 2026-11-05（minor 口径统一）：战略部 org id 走统一兜底取法，不再硬编码 35
+        boolean fullAccess = callerOrgId == null
+                || Objects.equals(callerOrgId, strategyOrgProperties.resolveStrategyOrgId());
 
         if (!fullAccess) {
             indicatorPage = strategyApplicationService.getIndicatorsByVisibleOrg(year, callerOrgId, false, pageable);
@@ -232,7 +241,8 @@ public class IndicatorController {
     @PreAuthorize(INDICATOR_WRITE_ACCESS)
     @Operation(summary = "创建新指标")
     public ResponseEntity<ApiResponse<IndicatorResponse>> createIndicator(
-            @Valid @RequestBody CreateIndicatorRequest request) {
+            @Valid @RequestBody CreateIndicatorRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
         // 兼容两种请求格式：
         // 1) 旧格式：indicatorName + departmentId
         // 2) 新格式：indicatorDesc + taskId + ownerOrgId + targetOrgId + parentIndicatorId
@@ -261,7 +271,14 @@ public class IndicatorController {
         SysOrg targetOrg = organizationRepository.findById(targetOrgId)
                 .orElseThrow(() -> new IllegalArgumentException("目标组织未找到: " + targetOrgId));
 
+        // 2026-11-05（学院指标直发改造）：补组织维度校验（见 assertStrategyOwnedWrite 的说明）
+        assertStrategyOwnedWrite(currentUser, ownerOrgId);
+
         try {
+            // 2026-11-13 用户拍板（编辑/发起两级校验语义）：表单保存入口跳过单条落库即校验——
+            // 新增/编辑随便填随便改（右上角权重合计只做实时展示），真正的限制拦截在
+            // 「发起异动/发起审批」（前端 submitMutationDraft 门禁 + initiateBatch 闭合校验）。
+            // 导入链（service 内部调用）保持单条即校验不受影响。
             Indicator created = strategyApplicationService.createIndicator(
                     description,
                     ownerOrg,
@@ -273,7 +290,8 @@ public class IndicatorController {
                     request.getSortOrder(),
                     request.getRemark(),
                     request.getProgress(),
-                    request.getCycleId()
+                    request.getCycleId(),
+                    true
             );
             dataChangeBroadcaster.publishDataChanged("INDICATOR", created.getId());
             return ResponseEntity.ok(ApiResponse.success(toIndicatorResponse(created)));
@@ -287,13 +305,19 @@ public class IndicatorController {
     @Operation(summary = "更新指标")
     public ResponseEntity<ApiResponse<IndicatorResponse>> updateIndicator(
             @PathVariable Long id,
-            @Valid @RequestBody UpdateIndicatorRequest request) {
+            @Valid @RequestBody UpdateIndicatorRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
         // 2026-10-31（P-02 后端兜底）用户面直改守卫：已下发/审批中计划的指标修改
         // 必须走异动审批（在审异动时文案区分）。BusinessConflictException 由全局
         // 处理器原文透传（HTTP 409），此处无需捕获。守卫只挂在用户面入口——
         // service.updateIndicator 同是 Excel 导入覆盖更新与内部落库的共用通道，
         // 不能在服务层拦（层级理由见守卫方法 Javadoc）。
         strategyApplicationService.assertIndicatorEditableFromUserInterface(id);
+        // 2026-11-05（R8）：组织维度校验以「指标真实归属组织」为基准。
+        // 需求 3：战略部下发的数据在职能部门只读 —— 归属组织是战略部的指标，
+        // 只允许战略部成员改写（系统管理员豁免）。归属组织是本部门的指标照旧放行，
+        // 职能部门维护本部门指标是正常业务（本次改造不扩大改动面）。
+        assertStrategyOwnedWrite(currentUser, resolveRealOwnerOrgId(id));
         SysOrg ownerOrg = request.getOwnerOrgId() != null
                 ? organizationRepository.findById(request.getOwnerOrgId())
                     .orElseThrow(() -> new IllegalArgumentException("责任组织未找到: " + request.getOwnerOrgId()))
@@ -427,7 +451,12 @@ public class IndicatorController {
             @PathVariable Long id,
             @RequestParam(required = false) Long targetOrgId,
             @RequestParam(required = false) String customDesc,
-            @RequestBody(required = false) DistributeIndicatorRequest request) {
+            @RequestBody(required = false) DistributeIndicatorRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        // 2026-11-05（R7）：组织维度校验以「指标真实归属组织」为基准 ——
+        // 战略部下发的核心指标（owner=战略部）只允许战略部成员改投；
+        // 归属组织是本部门的指标照旧放行（职能部门维护本部门指标不受影响）。
+        assertStrategyOwnedWrite(currentUser, resolveRealOwnerOrgId(id));
         Long resolvedTargetOrgId = targetOrgId;
         String resolvedCustomDesc = customDesc;
 
@@ -461,7 +490,12 @@ public class IndicatorController {
     @Operation(summary = "撤回已分发的指标")
     public ResponseEntity<ApiResponse<IndicatorResponse>> withdrawIndicator(
             @PathVariable Long id,
-            @RequestBody(required = false) WithdrawRequest request) {
+            @RequestBody(required = false) WithdrawRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        // 2026-11-05（R9）：撤回同样按「指标真实归属组织」判定 ——
+        // 战略部下发给职能部门的核心指标（owner=战略部），职能部门不得擅自撤回；
+        // 撤回本部门指标不受影响。
+        assertStrategyOwnedWrite(currentUser, resolveRealOwnerOrgId(id));
         Indicator withdrawn = strategyApplicationService.withdrawIndicator(
                 id,
                 request != null ? request.getReason() : null
@@ -473,7 +507,13 @@ public class IndicatorController {
     @PreAuthorize(INDICATOR_WRITE_ACCESS)
     @Operation(summary = "批量撤回指标(按所属和目标组织)")
     public ResponseEntity<ApiResponse<BatchWithdrawResponse>> batchWithdrawIndicators(
-            @RequestBody @Valid BatchWithdrawRequest request) {
+            @RequestBody @Valid BatchWithdrawRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        // 2026-11-05（R9）：批量撤回原先完全信任请求里的 ownerOrgId，
+        // 职能部门可传 ownerOrgId=35 把战略部下发的核心指标退回 DRAFT。
+        // 这里按「请求声明的归属组织」先做一次组织维度判定：
+        // 若声称要撤回战略部名下指标，操作者必须在战略部。
+        assertStrategyOwnedWrite(currentUser, request.getOwnerOrgId());
         BatchWithdrawResponse result = strategyApplicationService.batchWithdrawIndicators(
                 request.getOwnerOrgId(),
                 request.getTargetOrgId(),
@@ -486,7 +526,21 @@ public class IndicatorController {
     @PreAuthorize(INDICATOR_WRITE_ACCESS)
     @Operation(summary = "批量分发指标(分发页面专用)")
     public ResponseEntity<ApiResponse<BatchDistributeIndicatorsResponse>> batchDistributeIndicators(
-            @RequestBody @Valid BatchDistributeIndicatorsRequest request) {
+            @RequestBody @Valid BatchDistributeIndicatorsRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        // 2026-11-05（R6）：组织维度校验必须以「指标真实归属组织」为基准。
+        //
+        // 原实现用请求里声明的 ownerOrgId 作判据，而「复用已有指标」分支（indicatorId != null）
+        // 允许不传 ownerOrgId —— 此时判据为 null → 校验直接 return → 组织维度整体失效。
+        // 后果：职能部门账号可把 owner=战略部的核心指标直接下发到学院，
+        // 既绕过「职能部门不得再向学院分发」，也违反「子指标必须 parent=核心指标」。
+        // 故：indicatorId 分支一律回查指标自身落库的归属组织再判定。
+        request.getIndicators().forEach(item -> {
+            Long realOwnerOrgId = item.getIndicatorId() != null
+                    ? resolveRealOwnerOrgId(item.getIndicatorId())
+                    : item.getOwnerOrgId();
+            assertStrategyOwnedWrite(currentUser, realOwnerOrgId);
+        });
         List<BatchIndicatorDistributionApplicationService.ItemCommand> commands = request.getIndicators().stream()
                 .map(this::toBatchDistributionCommand)
                 .toList();
@@ -501,6 +555,40 @@ public class IndicatorController {
         return ResponseEntity.ok(ApiResponse.success(
                 new BatchDistributeIndicatorsResponse(items.size(), items)
         ));
+    }
+
+    /**
+     * 2026-11-05（学院指标直发改造 / R6-R9）：指标写入补<b>组织维度</b>校验。
+     *
+     * <p>为什么不能只看角色码：仓库里存在 27 个 {@code *_demo} 账号持有
+     * {@code ROLE_STRATEGY_DEPT_HEAD} 但并不在战略发展部，只靠 {@code @PreAuthorize} 的角色码，
+     * 它们仍能以战略部的名义写指标、发起分发。
+     *
+     * <p>口径：写入「战略发展部名下」的指标时，操作者必须也在战略发展部；
+     * 其它归属组织不受影响（职能部门维护本部门指标是正常业务，不在本次改造范围）。
+     *
+     * <p>判定基准必须是指标<b>真实</b>的归属组织：请求里可空的 {@code ownerOrgId}
+     * 不能当判据（批量分发的「复用已有指标」分支就是不传 ownerOrgId 的，
+     * 拿它当判据等于组织维度校验直接失效）。
+     */
+    private void assertStrategyOwnedWrite(CurrentUser currentUser, Long ownerOrgId) {
+        strategyOrgWriteGuard.assertOwnerOrgWriteAllowed(currentUser, ownerOrgId);
+    }
+
+    /**
+     * 2026-11-05（R6/R7/R8/R9）：回查指标<b>真实</b>的归属组织 id。
+     *
+     * <p>用途：各写入口做组织维度授权判定前，必须先拿到指标自身落库的归属组织，
+     * 而不是用请求里的归属/目标参数代替——否则调用方可以自己声明归属组织绕过校验。
+     */
+    private Long resolveRealOwnerOrgId(Long indicatorId) {
+        if (indicatorId == null) {
+            return null;
+        }
+        // getIndicatorById 在指标不存在时抛 IllegalArgumentException —— 这是对的：
+        // 拿不到指标就谈不上判定归属组织，不应静默放行。
+        Indicator indicator = strategyApplicationService.getIndicatorById(indicatorId);
+        return indicator.getOwnerOrg() == null ? null : indicator.getOwnerOrg().getId();
     }
 
     private BatchIndicatorDistributionApplicationService.ItemCommand toBatchDistributionCommand(
@@ -1027,14 +1115,24 @@ public class IndicatorController {
     }
 
     /**
-     * 2026-10-21 用户定案：一次异动可同时调整多条指标——多条字段攒改与新增指标
+     * 2026-10-21 用户定案：一次异动可同时调整多条指标——多条指标攒改与新增指标
      * 整批一次提交；后端先全部应用再统一校验权重合计，任一失败整批回滚。
      * item 结构：{id, create?, indicator_desc?, weight_percent?, remark?}
+     *
+     * <p><b>2026-11-14（新增行不落库改造）前端契约</b>：create 条目支持带完整创建字段的
+     * 「前端内存草稿行」——{@code {create: true, indicatorDesc, weightPercent,
+     * indicatorType, parentIndicatorId, taskId?, remark?}}（<b>无需 id</b>），后端在同一
+     * 事务内创建指标落库 → 打 IN_MUTATION 标记 → 快照 audit_log → 批次闭合权重校验 →
+     * 启动审批链；仅 {@code {id, create:true}} 的旧格式（行已落库）继续兼容，向后不炸。
+     * 请求体为裸数组 {@code List<Map<String,Object>>}，条目多带字段自然透传，
+     * 无 DTO 反序列化拦截（签名无需改动）。
      */
     @org.springframework.transaction.annotation.Transactional
     @org.springframework.web.bind.annotation.PostMapping("/mutations/batch")
     @Operation(summary = "批量发起指标异动",
-            description = "仅战略发展部；多条指标攒改与新增指标整批提交，权重合计校验整批一次，任一失败整批回滚")
+            description = "仅战略发展部；多条指标攒改与新增指标整批提交，权重合计校验整批一次，任一失败整批回滚。"
+                    + "create 条目可带完整创建字段（indicatorDesc/weightPercent/indicatorType/parentIndicatorId/taskId?/remark?，无需 id）"
+                    + "——前端内存草稿行同事务落库并进入异动；仅 {id, create:true} 旧格式继续兼容")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<java.util.List<String>>> initiateMutationBatch(
             @org.springframework.web.bind.annotation.RequestBody

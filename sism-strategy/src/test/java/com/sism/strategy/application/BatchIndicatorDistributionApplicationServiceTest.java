@@ -3,12 +3,14 @@ package com.sism.strategy.application;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
 import com.sism.strategy.domain.indicator.Indicator;
+import com.sism.strategy.domain.repository.IndicatorRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -24,13 +26,20 @@ class BatchIndicatorDistributionApplicationServiceTest {
     void shouldLoadOrganizationsOnceAndPreserveCommandOrder() {
         StrategyApplicationService strategyService = mock(StrategyApplicationService.class);
         OrganizationRepository organizationRepository = mock(OrganizationRepository.class);
+        IndicatorRepository indicatorRepository = mock(IndicatorRepository.class);
         BatchIndicatorDistributionApplicationService service =
-                new BatchIndicatorDistributionApplicationService(strategyService, organizationRepository);
+                new BatchIndicatorDistributionApplicationService(strategyService, organizationRepository, indicatorRepository);
 
         SysOrg ownerOrg = organization(10L);
         SysOrg targetOrg = organization(20L);
         when(organizationRepository.findAllByIds(List.of(20L, 10L)))
                 .thenReturn(List.of(targetOrg, ownerOrg));
+
+        // 2026-11-05（学院指标直发改造）：已有指标分支的归属组织改为回查指标本身
+        Indicator existing = new Indicator();
+        existing.setId(100L);
+        existing.setOwnerOrg(ownerOrg);
+        when(indicatorRepository.findById(100L)).thenReturn(Optional.of(existing));
 
         Indicator existingDistributed = new Indicator();
         existingDistributed.setId(101L);
@@ -69,6 +78,8 @@ class BatchIndicatorDistributionApplicationServiceTest {
                 .toList());
         verify(organizationRepository).findAllByIds(List.of(20L, 10L));
         verify(organizationRepository, never()).findById(any());
+        // 2026-11-05（学院指标直发改造）：已有指标分支的归属组织必须回查指标本身
+        verify(indicatorRepository).findById(100L);
     }
 
     @Test

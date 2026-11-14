@@ -25,6 +25,9 @@ public class PlanReportSimpleResponse {
     private String reportMonth;
     private Long reportOrgId;
     private ReportOrgType reportOrgType;
+    private Long planId;
+    /** 2026-11-13：报告归口职能部门（学院上报按归口部门分批提交；空=旧口径） */
+    private Long functionalOrgId;
     private Long auditInstanceId;
     private String title;
     private Integer progress;
@@ -52,6 +55,8 @@ public class PlanReportSimpleResponse {
                 .reportMonth(report.getReportMonth())
                 .reportOrgId(report.getReportOrgId())
                 .reportOrgType(report.getReportOrgType())
+                .planId(report.getPlanId())
+                .functionalOrgId(report.getFunctionalOrgId())
                 .auditInstanceId(report.getAuditInstanceId())
                 .title(report.getTitle())
                 .progress(report.getProgress())

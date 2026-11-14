@@ -12,13 +12,17 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
  * Validates the "basic task indicators must sum to 100" rule for a plan + target organization.
+ *
+ * <p>2026-11-08（学院指标单层口径）：{@code FUNC_TO_COLLEGE} 计划（战略部 → 二级学院直发）
+ * 的合计口径从「同一父级核心指标下的子指标合计 100」改为
+ * <b>该学院该计划下全部基础性指标合计 100</b>——学院指标不再有父级，
+ * 「按父级分组」这个维度随之消失，只能按学院整体合计。
+ * 本服务对外的调用签名与报错类型不变，只有筛选条件与文案调整。
  */
 @Service
 @RequiredArgsConstructor
@@ -63,7 +67,57 @@ public class BasicTaskWeightValidationService {
             return;
         }
 
-        Set<Long> basicTaskIds = jdbcTemplate.queryForList("""
+        Set<Long> basicTaskIds = loadBasicTaskIds(planId);
+
+        if (basicTaskIds.isEmpty()) {
+            throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
+        }
+
+        BigDecimal totalWeight = sumStrategicBasicWeight(basicTaskIds, targetOrgId, excluded, overrides);
+
+        if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
+            throw new IllegalStateException(
+                    "基础性任务指标权重合计必须为100，当前为" + totalWeight.stripTrailingZeros().toPlainString()
+            );
+        }
+    }
+
+    /**
+     * 2026-11-12（HIGH④，A1 实测）：现存基础性指标权重合计——导入预览「新旧数据叠加」预警用。
+     *
+     * <p>口径与 {@link #validatePlanBasicWeight} 完全一致（复用同一套私有合计实现：
+     * 同一基础任务查询 {@link #loadBasicTaskIds}、同一指标过滤（未删 / 目标组织匹配 /
+     * 战略链要求父级核心指标、学院链按学院整体不分组）、同一权重来源（表值））。
+     * 与校验的唯一差异是<b>不抛异常</b>：计划缺失、无基础任务、无可计入指标一律返回 0，
+     * 由调用方（导入预览）拿它与本次导入有效行合并后再判断是否违反「合计 100」。
+     */
+    public BigDecimal sumExistingBasicWeight(Long planId, Long targetOrgId) {
+        if (planId == null || targetOrgId == null) {
+            return BigDecimal.ZERO;
+        }
+        java.util.Optional<Plan> plan = planRepository.findById(planId);
+        Set<Long> basicTaskIds = loadBasicTaskIds(planId);
+        if (basicTaskIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        if (plan.map(Plan::getPlanLevel).filter(PlanLevel.FUNC_TO_COLLEGE::equals).isPresent()) {
+            return sumCollegeBasicWeight(basicTaskIds, targetOrgId, Set.of(), java.util.Map.of());
+        }
+        return sumStrategicBasicWeight(basicTaskIds, targetOrgId, Set.of(), java.util.Map.of());
+    }
+
+    /** 拟变更权重优先（异动快照口径），未覆盖的取表值。 */
+    private BigDecimal resolveEffectiveWeight(Indicator indicator, java.util.Map<Long, BigDecimal> overrides) {
+        BigDecimal overridden = overrides.get(indicator.getId());
+        return overridden != null ? overridden : indicator.getWeightPercent();
+    }
+
+    /**
+     * 基础性任务 ID 查询（validatePlanBasicWeight / validateFuncToCollegeIndicators /
+     * sumExistingBasicWeight 三处共用的唯一口径）。
+     */
+    private Set<Long> loadBasicTaskIds(Long planId) {
+        return jdbcTemplate.queryForList("""
                         SELECT t.task_id
                         FROM public.sys_task t
                         WHERE t.plan_id = ?
@@ -73,12 +127,15 @@ public class BasicTaskWeightValidationService {
                 Long.class,
                 planId
         ).stream().collect(Collectors.toSet());
+    }
 
-        if (basicTaskIds.isEmpty()) {
-            throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
-        }
-
-        BigDecimal totalWeight = indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
+    /**
+     * 战略→职能部门链（STRAT_TO_FUNC）基础性合计：父级核心指标（parent 为空）、目标 = 该职能部门。
+     * 2026-11-12 抽出为共享实现——校验（抛异常）与导入预览预警（sumExistingBasicWeight）用同一套过滤。
+     */
+    private BigDecimal sumStrategicBasicWeight(Set<Long> basicTaskIds, Long targetOrgId,
+                                               Set<Long> excluded, java.util.Map<Long, BigDecimal> overrides) {
+        return indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
                 .filter(indicator -> !excluded.contains(indicator.getId()))
                 .filter(indicator -> indicator.getParentIndicatorId() == null)
@@ -87,18 +144,23 @@ public class BasicTaskWeightValidationService {
                 .map(indicator -> resolveEffectiveWeight(indicator, overrides))
                 .filter(weight -> weight != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
-            throw new IllegalStateException(
-                    "基础性任务指标权重合计必须为100，当前为" + totalWeight.stripTrailingZeros().toPlainString()
-            );
-        }
     }
 
-    /** 拟变更权重优先（异动快照口径），未覆盖的取表值。 */
-    private BigDecimal resolveEffectiveWeight(Indicator indicator, java.util.Map<Long, BigDecimal> overrides) {
-        BigDecimal overridden = overrides.get(indicator.getId());
-        return overridden != null ? overridden : indicator.getWeightPercent();
+    /**
+     * 学院链（FUNC_TO_COLLEGE）基础性合计：按学院整体、不按父级分组（2026-11-08 单层口径），
+     * 合计范围由「本计划 BASIC 任务 + 目标为该学院」显式限定（2026-11-05 B8 口径注释见
+     * validateFuncToCollegeIndicators）。2026-11-12 抽出为共享实现——校验与预览预警同源。
+     */
+    private BigDecimal sumCollegeBasicWeight(Set<Long> basicTaskIds, Long targetOrgId,
+                                             Set<Long> excluded, java.util.Map<Long, BigDecimal> overrides) {
+        return indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
+                .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
+                .filter(indicator -> !excluded.contains(indicator.getId()))
+                .filter(indicator -> indicator.getTargetOrg() != null)
+                .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
+                .map(indicator -> resolveEffectiveWeight(indicator, overrides))
+                .filter(weight -> weight != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private void validateFuncToCollegeIndicators(Long planId, Long targetOrgId, Set<Long> excluded) {
@@ -118,41 +180,22 @@ public class BasicTaskWeightValidationService {
             throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
         }
 
-        Set<Long> basicTaskIds = jdbcTemplate.queryForList("""
-                        SELECT t.task_id
-                        FROM public.sys_task t
-                        WHERE t.plan_id = ?
-                          AND COALESCE(t.is_deleted, false) = false
-                          AND t.task_type = 'BASIC'
-                        """,
-                Long.class,
-                plan.getId()
-        ).stream().collect(Collectors.toSet());
+        Set<Long> basicTaskIds = loadBasicTaskIds(plan.getId());
 
         if (basicTaskIds.isEmpty()) {
-            // 2026-10-31 用户拍板：被拦文案点名「无法计入基础性权重合计」的父级核心指标
-            String parentHint = describeNonBasicParentIndicators(plan, targetOrgId, excluded, basicTaskIds);
+            // 2026-10-31 用户拍板：被拦文案点名「无法计入基础性权重合计」的指标
+            String parentHint = describeNonBasicIndicators(plan, targetOrgId, excluded, basicTaskIds);
             if (parentHint != null) {
                 throw new IllegalStateException(parentHint);
             }
             throw new IllegalStateException("当前计划不存在基础性任务，不能下发");
         }
 
-        BigDecimal totalWeight = indicatorRepository.findByTaskIds(List.copyOf(basicTaskIds)).stream()
-                .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
-                .filter(indicator -> !excluded.contains(indicator.getId()))
-                .filter(indicator -> indicator.getParentIndicatorId() != null)
-                .filter(indicator -> indicator.getOwnerOrg() != null)
-                .filter(indicator -> plan.getCreatedByOrgId().equals(indicator.getOwnerOrg().getId()))
-                .filter(indicator -> indicator.getTargetOrg() != null)
-                .filter(indicator -> targetOrgId.equals(indicator.getTargetOrg().getId()))
-                .map(indicator -> resolveEffectiveWeight(indicator, weightOverrides))
-                .filter(weight -> weight != null)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalWeight = sumCollegeBasicWeight(basicTaskIds, targetOrgId, excluded, weightOverrides);
 
         if (totalWeight.compareTo(BigDecimal.ZERO) == 0) {
-            // 2026-10-31 用户拍板：被拦文案点名「无法计入基础性权重合计」的父级核心指标
-            String parentHint = describeNonBasicParentIndicators(plan, targetOrgId, excluded, basicTaskIds);
+            // 2026-10-31 用户拍板：被拦文案点名「无法计入基础性权重合计」的指标
+            String parentHint = describeNonBasicIndicators(plan, targetOrgId, excluded, basicTaskIds);
             if (parentHint != null) {
                 throw new IllegalStateException(parentHint);
             }
@@ -160,29 +203,36 @@ public class BasicTaskWeightValidationService {
         }
 
         if (totalWeight.compareTo(REQUIRED_TOTAL_WEIGHT) != 0) {
-            // 2026-10-31 用户拍板：被拦文案点名「无法计入基础性权重合计」的父级核心指标
-            String parentHint = describeNonBasicParentIndicators(plan, targetOrgId, excluded, basicTaskIds);
+            // 2026-10-31 用户拍板：被拦文案点名「无法计入基础性权重合计」的指标
+            String parentHint = describeNonBasicIndicators(plan, targetOrgId, excluded, basicTaskIds);
             if (parentHint != null) {
                 throw new IllegalStateException(parentHint);
             }
+            // 2026-11-08（学院指标单层口径）：文案点明「按学院整体合计」——
+            // 旧口径是「同一父级核心指标下的子指标合计」，用户看到「不分组」才知道
+            // 不需要再按父级分别凑 100。
             throw new IllegalStateException(
-                    "学院指标权重合计必须为100，当前为" + totalWeight.stripTrailingZeros().toPlainString()
+                    "学院指标权重合计必须为100（按学院整体合计，不按父级分组），当前为"
+                            + totalWeight.stripTrailingZeros().toPlainString()
             );
         }
     }
 
     /**
-     * 2026-10-31 用户拍板（学院导入下发被拦点名父级）：找出「所属任务非基础性」的父级核心指标——
-     * 这些父级下的学院子指标不在基础性权重合计范围内，是「不存在基础性任务/权重不满足」被拦的根因。
-     * 文案：父级核心指标『A』『B』 等 N 项所属任务为“发展性”，无法计入基础性权重合计；
-     * 基础性指标权重全计划合计须为 100（点名风格跟随 IndicatorGateMessages：只报名称、
-     * 超 20 字截断、前 3 个 + 等 N 项）。找不到此类父级时返回 null，调用方回退原有文案。
+     * 2026-10-31 用户拍板（学院导入下发被拦点名）：找出「所属任务非基础性」的学院指标——
+     * 这些指标落在发展性任务上，不在基础性权重合计范围内，是「不存在基础性任务/权重不满足」被拦的根因。
+     *
+     * <p>2026-11-08（学院指标单层口径）：点名的对象从「父级核心指标」改为<b>指标自身</b>——
+     * 学院指标已经没有父级，再按父级点名等于对着一个不存在的层级说话。
+     * 文案：学院指标『A』『B』 等 N 项所属任务为“发展性”，无法计入基础性权重合计；
+     * 该学院基础性指标权重合计须为 100（点名风格跟随 IndicatorGateMessages：只报名称、
+     * 超 20 字截断、前 3 个 + 等 N 项）。找不到此类指标时返回 null，调用方回退原有文案。
      */
-    private String describeNonBasicParentIndicators(Plan plan,
-                                                    Long targetOrgId,
-                                                    Set<Long> excluded,
-                                                    Set<Long> basicTaskIds) {
-        // 该学院计划下全部任务（含非基础性）——用于圈定落位在这些任务上的学院子指标
+    private String describeNonBasicIndicators(Plan plan,
+                                              Long targetOrgId,
+                                              Set<Long> excluded,
+                                              Set<Long> basicTaskIds) {
+        // 该学院计划下全部任务（含非基础性）——用于圈定落位在这些任务上的学院指标
         List<java.util.Map<String, Object>> planTaskRows = jdbcTemplate.queryForList(
                 """
                 SELECT t.task_id, t.task_type
@@ -197,47 +247,34 @@ public class BasicTaskWeightValidationService {
         if (planTaskIds.isEmpty()) {
             return null;
         }
-        List<Indicator> scopedChildren = indicatorRepository.findByTaskIds(planTaskIds).stream()
+        List<Indicator> scopedIndicators = indicatorRepository.findByTaskIds(planTaskIds).stream()
                 .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
                 .filter(indicator -> !excluded.contains(indicator.getId()))
-                .filter(indicator -> indicator.getParentIndicatorId() != null)
-                .filter(indicator -> indicator.getOwnerOrg() != null
-                        && plan.getCreatedByOrgId() != null
-                        && plan.getCreatedByOrgId().equals(indicator.getOwnerOrg().getId()))
+                // 2026-11-08（学院指标单层口径）：不再要求 parent != null ——
+                // 学院指标没有父级，保留该条件会让点名永远找不到任何指标，回退成笼统文案。
+                // 2026-11-05（B8）：同上——去掉依赖「归属组织 == 计划创建组织」的隐含前提，
+                // 范围由「本计划任务 + 目标为该学院」显式限定。
                 .filter(indicator -> indicator.getTargetOrg() != null
                         && targetOrgId.equals(indicator.getTargetOrg().getId()))
                 .toList();
-        // 落位在非基础性任务上的子指标：其父级核心指标无法计入基础性权重合计
-        List<Long> nonBasicParentIds = scopedChildren.stream()
+        // 落位在非基础性任务上的指标：无法计入基础性权重合计
+        List<Indicator> nonBasicIndicators = scopedIndicators.stream()
                 .filter(indicator -> indicator.getTaskId() == null
                         || !basicTaskIds.contains(indicator.getTaskId()))
-                .map(Indicator::getParentIndicatorId)
-                .filter(Objects::nonNull)
-                .distinct()
                 .toList();
-        if (nonBasicParentIds.isEmpty()) {
-            return null;
-        }
-        java.util.Map<Long, Indicator> parentById = indicatorRepository.findByIds(nonBasicParentIds).stream()
-                .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
-                .collect(Collectors.toMap(Indicator::getId, Function.identity(), (left, right) -> left));
-        List<Indicator> parents = nonBasicParentIds.stream()
-                .map(parentById::get)
-                .filter(Objects::nonNull)
-                .toList();
-        if (parents.isEmpty()) {
+        if (nonBasicIndicators.isEmpty()) {
             return null;
         }
         // 非基础性任务的类型只有 DEVELOPMENT（TaskType 仅 BASIC/DEVELOPMENT 两种），
         // 任务类别缺失时导入链同样按「发展性」兜底，故文案固定为「发展性」
-        String preview = parents.stream()
+        String preview = nonBasicIndicators.stream()
                 .limit(IndicatorGateMessages.NAME_PREVIEW_LIMIT)
                 .map(indicator -> "『" + IndicatorGateMessages.truncateIndicatorName(indicator.getIndicatorDesc())
                         + "』")
                 .collect(Collectors.joining());
-        if (parents.size() > IndicatorGateMessages.NAME_PREVIEW_LIMIT) {
-            preview += " 等 " + parents.size() + " 项";
+        if (nonBasicIndicators.size() > IndicatorGateMessages.NAME_PREVIEW_LIMIT) {
+            preview += " 等 " + nonBasicIndicators.size() + " 项";
         }
-        return "父级核心指标" + preview + "所属任务为“发展性”，无法计入基础性权重合计；基础性指标权重全计划合计须为 100";
+        return "学院指标" + preview + "所属任务为“发展性”，无法计入基础性权重合计；按学院整体合计须为 100";
     }
 }

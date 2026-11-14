@@ -24,5 +24,12 @@ public class CreatePlanReportRequest {
     @NotNull(message = "计划ID不能为空")
     private Long planId;
 
+    /**
+     * 2026-11-13（学院上报按归口部门分批提交）：可选归口职能部门。
+     * 前端选中部门后开草稿时传入，用于「同月同组织多部门」草稿隔离；
+     * 不传=旧行为。权威归口仍以提交时反查落列为准。
+     */
+    private Long functionalOrgId;
+
     private Long createdBy;
 }

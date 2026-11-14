@@ -188,9 +188,16 @@ public class PlanWorkflowSnapshotQueryService {
         boolean previousSubmitApproved = currentPendingStepNo != null
                 && currentPendingStepNo > 1
                 && hasApprovedSubmitStep(instance.getInstanceId(), currentPendingStepNo - 1);
+        // 2026-11-11（驳回退回态撤回放行）：审批人驳回后实例生成「退回待重报」PENDING 步骤，
+        // 其前一步（pendingNo-1）是 REJECTED 的 APPROVAL 步骤——原口径只认「前一步 APPROVED
+        // 且为 SUBMIT」，驳回退回后 canWithdraw 恒 false，发起人被永久锁死在退回态。
+        // 补第四条通路：前一步 REJECTED 即退回待重报，发起人放弃重来的撤回应放行。
+        boolean returnedForResubmit = currentPendingStepNo != null
+                && currentPendingStepNo > 1
+                && hasRejectedPreviousStep(instance.getInstanceId(), currentPendingStepNo - 1);
         boolean canWithdraw = "IN_REVIEW".equalsIgnoreCase(snapshot.getWorkflowStatus())
                 && hasCurrentPendingStep
-                && previousSubmitApproved;
+                && (previousSubmitApproved || returnedForResubmit);
         snapshot.setCanWithdraw(canWithdraw);
         snapshot.setLastRejectReason(findLastRejectReason(instance.getInstanceId()));
         return snapshot;
@@ -276,9 +283,14 @@ public class PlanWorkflowSnapshotQueryService {
             boolean previousSubmitApproved = currentPendingStepNo != null
                     && currentPendingStepNo > 1
                     && hasApprovedSubmitStep(instanceId, currentPendingStepNo - 1);
+            // 2026-11-11（驳回退回态撤回放行）：与单实例路径同口径，补「前一步 REJECTED」
+            // 退回待重报通路——否则列表页驳回退回的单据永远不显示可撤回。
+            boolean returnedForResubmit = currentPendingStepNo != null
+                    && currentPendingStepNo > 1
+                    && hasRejectedPreviousStep(instanceId, currentPendingStepNo - 1);
             boolean canWithdraw = "IN_REVIEW".equalsIgnoreCase(snapshot.getWorkflowStatus())
                     && hasCurrentPendingStep
-                    && previousSubmitApproved;
+                    && (previousSubmitApproved || returnedForResubmit);
             snapshot.setCanWithdraw(canWithdraw);
         });
     }
@@ -305,6 +317,37 @@ public class PlanWorkflowSnapshotQueryService {
                   AND asi.step_no = :stepNo
                   AND asi.status = 'APPROVED'
                   AND asi.step_name LIKE '%提交%'
+                """)
+                .setParameter("instanceId", instanceId)
+                .setParameter("stepNo", stepNo)
+                .getResultList();
+        long count = rows.isEmpty() ? 0L : ((Number) rows.get(0)).longValue();
+        return count > 0L;
+    }
+
+    /**
+     * 2026-11-11（驳回退回态撤回放行）：pending 步骤的前一相邻步骤（pendingNo-1）
+     * 是否为 REJECTED。
+     *
+     * <p>驳回续链语义：审批人驳回后流程不终止，而是在 REJECTED 步骤之后生成新的
+     * 「退回待重报」PENDING 步骤（step_no 顺延），实例保持 IN_REVIEW。此时
+     * {@link #hasApprovedSubmitStep} 的「前一步 APPROVED 且为 SUBMIT」恒 false，
+     * 发起人撤回被 400 拦截、永久锁死在退回态。该判定补上这条通路：
+     * 仅当 pending 的<b>直接前一步</b>是 REJECTED 时放行——
+     * <ul>
+     *   <li>首步 PENDING（pendingNo=1）无前一步，不命中；</li>
+     *   <li>正常审批中（前一步 APPROVED，无论 SUBMIT 还是 APPROVAL），不命中；</li>
+     *   <li>历史 REJECTED 行不在 pendingNo-1 位置（如退回重报后已重新通过），
+     *       不命中——只认相邻步骤，避免历史驳回误放行。</li>
+     * </ul>
+     */
+    private boolean hasRejectedPreviousStep(Long instanceId, int stepNo) {
+        List<?> rows = entityManager.createNativeQuery("""
+                SELECT COUNT(1)
+                FROM audit_step_instance asi
+                WHERE asi.instance_id = :instanceId
+                  AND asi.step_no = :stepNo
+                  AND asi.status = 'REJECTED'
                 """)
                 .setParameter("instanceId", instanceId)
                 .setParameter("stepNo", stepNo)

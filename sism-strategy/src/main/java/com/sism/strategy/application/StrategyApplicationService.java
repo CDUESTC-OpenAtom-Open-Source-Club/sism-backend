@@ -1,5 +1,6 @@
 package com.sism.strategy.application;
 
+import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.SysOrg;
 import com.sism.shared.domain.model.base.DomainEvent;
 import com.sism.shared.infrastructure.event.DomainEventPublisher;
@@ -50,6 +51,7 @@ public class StrategyApplicationService {
 
     @Transactional
     public Indicator createIndicator(String indicatorDesc, SysOrg ownerOrg, SysOrg targetOrg, String indicatorType) {
+        assertDispatchScopeAllowed(ownerOrg, targetOrg);
         Indicator indicator = Indicator.create(indicatorDesc, ownerOrg, targetOrg, indicatorType);
         indicator.validate();
         indicator = indicatorRepository.save(indicator);
@@ -97,6 +99,48 @@ public class StrategyApplicationService {
             String remark,
             Integer progress,
             Long cycleId) {
+        return createIndicator(
+                indicatorDesc,
+                ownerOrg,
+                targetOrg,
+                taskId,
+                parentIndicatorId,
+                indicatorType,
+                weightPercent,
+                sortOrder,
+                remark,
+                progress,
+                cycleId,
+                false
+        );
+    }
+
+    /**
+     * 2026-11-13 用户拍板（编辑/发起两级校验语义）：新增/编辑保存时<b>不校验</b>基础性权重合计
+     * （随便填随便改，右上角合计只做实时展示）；真正的限制拦截在「发起异动/发起审批」时
+     * （前端 submitMutationDraft 门禁 + 后端 initiateBatch assertPlanBasicWeightStillClosed）。
+     *
+     * @param skipDistributedWeightValidation true = 跳过单条落库即校验（前端表单保存入口
+     *        POST /indicators 传 true）；false = 保持 10-30 D10 定案的单条即校验
+     *        （导入 commit 链传 false——导入的权重闭合由自动下发闭合校验+覆盖勾选兜底）。
+     */
+    @Transactional
+    public Indicator createIndicator(
+            String indicatorDesc,
+            SysOrg ownerOrg,
+            SysOrg targetOrg,
+            Long taskId,
+            Long parentIndicatorId,
+            String indicatorType,
+            BigDecimal weightPercent,
+            Integer sortOrder,
+            String remark,
+            Integer progress,
+            Long cycleId,
+            boolean skipDistributedWeightValidation) {
+        // 2026-11-05（学院指标直发改造）：「职能部门 → 学院」链路已取消，统一由战略部下发。
+        // 在最前面拦截，避免旧旁路（直接建指标 / 批量分发）把这条链路复活且前端不留痕迹。
+        assertDispatchScopeAllowed(ownerOrg, targetOrg);
         Indicator parent = null;
         Long resolvedTaskId = taskId;
 
@@ -143,9 +187,49 @@ public class StrategyApplicationService {
         // 2026-10-30（D10）：基础性权重合计校验前移到单条新增指标。
         // 校验放在 save 之后、发布事件之前：新指标的权重必须计入合计才有意义；
         // 校验不通过时抛异常，@Transactional 会把本次插入整体回滚（等于「没落库」）。
-        validateBasicWeightForDistributedPlan(resolvedTaskId, targetOrg);
+        // 2026-11-13 用户拍板（编辑/发起两级校验）：前端表单保存入口跳过本条即校验
+        // （新增随便填，发起异动时由前端门禁+initiateBatch 闭合校验统一拦截）。
+        if (!skipDistributedWeightValidation) {
+            validateBasicWeightForDistributedPlan(resolvedTaskId, targetOrg);
+        }
         publishAndSaveEvents(indicator);
         return indicator;
+    }
+
+    /**
+     * 2026-11-05（学院指标直发改造）：「职能部门 → 二级学院」的分发链路已整体取消，
+     * 学院子指标统一由战略发展部（org 35）直接下发。
+     *
+     * <p>判定特征就是<b>归属组织是职能部门 + 目标组织是二级学院</b>——这是旧链路的唯一指纹。
+     * 所有写入/下发入口都过这一道，避免旧旁路（手工建指标、批量分发、复用已有指标改投）
+     * 把链路复活；复活后前端没有任何入口能撤回，用户也无从察觉。
+     *
+     * <p>注意：战略部 → 职能部门、战略部 → 学院都<b>不</b>命中该判定，不受影响。
+     *
+     * <p>2026-11-05（minor 口径核对）：这里只按<b>组织类型</b>判定，不绑定具体 org id 是有意的——
+     * 本守卫要禁的是「职能部门 → 学院」这一<b>类关系</b>（所有职能部门都禁），而不是「只有 org 35
+     * 能下发」。「只有战略部能向学院下发」是另一条规则，由计划级闸门兜底
+     * （{@code PlanApplicationService.assertCollegeDispatchCreatedByStrategyOrg}：
+     * FUNC_TO_COLLEGE 计划的创建组织必须是战略发展部），不依赖这里的类型判定。
+     *
+     * <p>2026-11-05（MA4）：归属组织缺失一律拒绝。原口径是「ownerOrg 为 null 就放行」，
+     * 与批量分发侧既有口径（{@code BatchIndicatorDistributionApplicationService}：
+     * 查不到归属组织一律拒绝）相反；而且归属缺失时根本无法判断这是不是旧链路，
+     * 静默放行等于把守卫开了一个口子。目标组织缺失则无法判断是否指向学院，
+     * 保留放行（不是旧链路的指纹），真正的兜底由生效目标判定（distributeIndicator）承担。
+     */
+    public void assertDispatchScopeAllowed(SysOrg ownerOrg, SysOrg targetOrg) {
+        if (ownerOrg == null) {
+            throw new IllegalArgumentException(
+                    "指标归属组织缺失，无法判定下发范围；请检查指标归属组织后重试");
+        }
+        if (targetOrg == null) {
+            return;
+        }
+        if (ownerOrg.getType() == OrgType.functional && targetOrg.getType() == OrgType.academic) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标");
+        }
     }
 
     /**
@@ -206,6 +290,36 @@ public class StrategyApplicationService {
     public Indicator distributeIndicator(Long id, SysOrg targetOrg, String customDesc) {
         Indicator indicator = indicatorRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Indicator not found: " + id));
+
+        // 2026-11-05（学院指标直发改造）：把已有指标改投到学院，同样属于「向学院分发」。
+        // 归属组织是职能部门 + 目标组织是学院 = 旧链路特征，拒绝。
+        // 2026-11-05（BL2 修复）：判定必须用「生效目标」而不是入参——targetOrg 为 null 时
+        // （POST /indicators/{id}/distribute 的 targetOrgId 可选、distributeIndicator(id) 重载）
+        // 生效目标会回落到指标自身的 target_org_id；旧口径拿入参判定，null 直接放行 →
+        // 存量「职能部门 → 学院」指标仍能照旧下发给学院，守卫等于失效。
+        SysOrg effectiveTargetOrg = targetOrg != null ? targetOrg : indicator.getTargetOrg();
+        assertDispatchScopeAllowed(indicator.getOwnerOrg(), effectiveTargetOrg);
+
+        // 2026-11-05（R7）：禁止把「战略部下发的核心指标」本身改投到学院。
+        //
+        // 核心指标是「战略部下发给职能部门」的一级指标（owner=战略部、target=职能部门、
+        // 无父级）。把它直接搬到学院名下会破坏需求「学院指标由战略部按学院直发」的结构，
+        // 也破坏权重合计口径。正确做法是产生一条新的学院指标（owner=战略部、target=学院）。
+        //
+        // 2026-11-08（学院指标单层口径）：判定特征<b>不能再只看 parent == null</b>——
+        // 学院指标现在也没有父级（单层直发），只用 parent 判定会把「对一条学院指标再次下发」
+        // 误拦成「核心指标改投」，新口径下这条路会 100% 失败。
+        // 真正的核心指标特征是「当前目标不是学院（战略部 → 职能部门）」，
+        // 已经是学院指标的记录（target = 学院）不属于此处要拦的情况。
+        boolean currentTargetIsCollege = indicator.getTargetOrg() != null
+                && indicator.getTargetOrg().getType() == OrgType.academic;
+        if (effectiveTargetOrg != null
+                && effectiveTargetOrg.getType() == OrgType.academic
+                && !currentTargetIsCollege
+                && indicator.getParentIndicatorId() == null) {
+            throw new IllegalArgumentException(
+                    "核心指标不能直接改投到二级学院，请基于该核心指标新增学院指标");
+        }
 
         Long resolvedTargetOrgId = targetOrg != null
                 ? targetOrg.getId()
@@ -490,6 +604,10 @@ public class StrategyApplicationService {
             indicator.setTargetOrg(targetOrg);
         }
 
+        // 2026-11-05（学院指标直发改造）：本接口可改归属组织与目标组织，
+        // 也能把职能部门指标改投到学院——与新建指标同属旧链路的复活入口，必须拦。
+        assertDispatchScopeAllowed(indicator.getOwnerOrg(), indicator.getTargetOrg());
+
         indicator.setLevel(indicator.calculateLevel());
         indicator.setUpdatedAt(LocalDateTime.now());
         indicator = indicatorRepository.save(indicator);
@@ -591,9 +709,15 @@ public class StrategyApplicationService {
     /**
      * 2026-10-22：判断指标是否为「可撤销的未提交新增」——同时满足：
      * ① 仍为草稿状态（DRAFT，从未转正/下发）；
-     * ② 当前没有异动标记（不在审批中）；
-     * ③ 从未写过异动快照（audit_log 无记录，即从未提交过异动审批）。
+     * ② 当前没有异动标记（不在审批中）。
      * 用于在「已下发计划禁止直接删除」守卫下放行「撤销一次尚未提交的新增」。
+     *
+     * <p>2026-11-14（用户拍板：撤回/驳回=内容已保存在 Plan 中，填报人继续编辑；
+     * 只有「取消异动」才回上一版本）：不再要求「从未写过异动快照」——撤回/驳回
+     * 退回填报人的新增行仍是 DRAFT、异动标记已清，填报人继续编辑的权力包含
+     * 行内删除；此类行有 audit_log 历史但链已不在审（mutation_status 为空），
+     * 直接删除放行。审批通过的新增行已转 DISTRIBUTED，被 ① 天然排除；
+     * 在审（mutation_status=IN_MUTATION）维持守卫不放行。</p>
      */
     private boolean isRevocablePendingCreate(Indicator indicator) {
         if (indicator.getStatus() != IndicatorStatus.DRAFT || indicator.getId() == null) {
@@ -601,11 +725,7 @@ public class StrategyApplicationService {
         }
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 """
-                SELECT i.mutation_status,
-                       EXISTS (
-                           SELECT 1 FROM public.audit_log a
-                           WHERE a.entity_type = 'INDICATOR' AND a.entity_id = i.id
-                       ) AS has_history
+                SELECT i.mutation_status
                 FROM public.indicator i
                 WHERE i.id = ?
                 """,
@@ -613,8 +733,7 @@ public class StrategyApplicationService {
         if (rows.isEmpty()) {
             return false;
         }
-        Map<String, Object> row = rows.get(0);
-        return row.get("mutation_status") == null && !Boolean.TRUE.equals(row.get("has_history"));
+        return rows.get(0).get("mutation_status") == null;
     }
 
     private Long resolveTaskIdForChildIndicator(
@@ -623,6 +742,18 @@ public class StrategyApplicationService {
             Indicator parent,
             SysOrg ownerOrg,
             SysOrg targetOrg) {
+        // 2026-11-05（学院指标直发改造）：本方法会按「归属组织 + 目标组织」创建 FUNC_TO_COLLEGE
+        // 下游计划，是旧「职能部门向学院分发」链路的自动复活入口。归属组织是职能部门、
+        // 目标组织是学院时必须拒绝——否则计划会被建出来，指标也会落到学院名下。
+        // 2026-11-05（MA4）：归属/目标缺失的校验提前到守卫之前，保持既有报错文案
+        // （守卫现在对归属缺失直接拒绝，先报「责任组织不能为空」更贴近调用方预期）。
+        if (ownerOrg == null || ownerOrg.getId() == null) {
+            throw new IllegalArgumentException("责任组织不能为空");
+        }
+        if (targetOrg == null || targetOrg.getId() == null) {
+            throw new IllegalArgumentException("目标组织不能为空");
+        }
+        assertDispatchScopeAllowed(ownerOrg, targetOrg);
         StrategicTask requestedTask = null;
         Plan requestedPlan = null;
 
@@ -656,12 +787,7 @@ public class StrategyApplicationService {
         if (cycleId == null) {
             throw new IllegalArgumentException("周期ID不能为空");
         }
-        if (ownerOrg == null || ownerOrg.getId() == null) {
-            throw new IllegalArgumentException("责任组织不能为空");
-        }
-        if (targetOrg == null || targetOrg.getId() == null) {
-            throw new IllegalArgumentException("目标组织不能为空");
-        }
+        // 2026-11-05（MA4）：归属/目标组织的空值校验已前移到方法入口（守卫之前），此处不再重复。
 
         Plan downstreamPlan = findOrCreatePlan(
                 cycleId,

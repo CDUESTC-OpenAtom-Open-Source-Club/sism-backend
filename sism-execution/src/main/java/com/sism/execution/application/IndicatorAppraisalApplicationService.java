@@ -101,6 +101,19 @@ public class IndicatorAppraisalApplicationService {
             ReportRow row = rows.get(indicatorId);
             if (row != null) {
                 result.add(toContext(row, userId, roleCodes));
+            } else {
+                // 2026-11-14 提示语统一（用户实测：学院页签点「未下发/未上报」指标弹前端兜底句
+                // 「非上报审批期间」，而 /distribution 同类格子弹后端原文，两视图提示语观感不一致）：
+                // 无上报记录的指标不再静默省略——同源返回 canAppraise=false + 权威 lockHint，
+                // 三视图（战略任务页/指标填报页/指标分发页）点击同一格子得到同一提示。
+                // 门禁判定规则本身不动：canAppraise 恒为 false，写入端 setLevel 的 404 拦截不变。
+                AppraisalPermission permission = resolvePermission(null, userId, roleCodes);
+                result.add(IndicatorAppraisalContextResponse.builder()
+                        .indicatorId(indicatorId)
+                        .canAppraise(false)
+                        .currentStepName(permission.stepName())
+                        .lockHint(permission.lockHint())
+                        .build());
             }
         }
         return result;
@@ -301,25 +314,28 @@ public class IndicatorAppraisalApplicationService {
     private AppraisalPermission resolvePermission(
             ReportRow row, Long userId, Collection<String> roleCodes) {
         if (row == null) {
-            return new AppraisalPermission(false, null, "未找到该指标的上报记录");
+            // 2026-11-14 文案对齐：指标从未上报（未下发/草稿期）时，用户视角是「还没到上报环节」，
+            // 统一为「尚未发起上报」，与前端兜底文案表 NO_REPORT_RECORD 同语义。
+            return new AppraisalPermission(false, null, "该指标尚未发起上报，暂不能评定审核进度");
         }
         if (row.auditInstanceId() == null) {
-            return new AppraisalPermission(false, null, "上报审批尚未启动，暂不能调整审核进度");
+            return new AppraisalPermission(false, null, "上报审批尚未启动，暂不能评定审核进度");
         }
 
         AuditInstance instance = auditInstanceRepository.findById(row.auditInstanceId()).orElse(null);
         if (instance == null) {
-            return new AppraisalPermission(false, null, "上报审批实例不存在，暂不能调整审核进度");
+            return new AppraisalPermission(false, null, "上报审批实例不存在，暂不能评定审核进度");
         }
         if (!AuditInstance.STATUS_PENDING.equalsIgnoreCase(String.valueOf(instance.getStatus()))) {
             return new AppraisalPermission(
                     false,
                     null,
-                    "本轮上报审批已结束（当前状态：" + instance.getStatus() + "），暂不能调整审核进度"
+                    "本轮上报审批已结束（当前状态：" + describeInstanceStatus(instance.getStatus())
+                            + "），暂不能评定审核进度；如需调整请联系管理员"
             );
         }
         if (!isReportStatus(row.status(), PlanReportStatus.SUBMITTED)) {
-            return new AppraisalPermission(false, null, "上报尚未提交或已重置，暂不能调整审核进度");
+            return new AppraisalPermission(false, null, "上报尚未提交或已重置，暂不能评定审核进度");
         }
 
         // 原因②：无任一审批席角色——在任何节点级判定之前先拦
@@ -329,7 +345,7 @@ public class IndicatorAppraisalApplicationService {
 
         AuditStepInstance pendingStep = instance.resolveCurrentPendingStep().orElse(null);
         if (pendingStep == null) {
-            return new AppraisalPermission(false, null, "审批在途但没有待审节点，暂不能调整审核进度");
+            return new AppraisalPermission(false, null, "审批在途但没有待审节点，暂不能评定审核进度");
         }
 
         AuditFlowDef flowDef = workflowDefinitionQueryService.getAuditFlowDefById(instance.getFlowDefId());
@@ -363,6 +379,25 @@ public class IndicatorAppraisalApplicationService {
                 .filter(Objects::nonNull)
                 .map(code -> code.trim().toUpperCase())
                 .anyMatch(APPRAISAL_SEAT_ROLES::contains);
+    }
+
+    /**
+     * 2026-11-14 提示语统一：审批实例终态翻译成用户可读词，
+     * 不再向用户透出英文枚举（APPROVED → 已归档）；未知码原样透出兜底。
+     */
+    private String describeInstanceStatus(String status) {
+        if (status == null || status.isBlank()) {
+            return "未知";
+        }
+        return switch (status.trim().toUpperCase()) {
+            case AuditInstance.STATUS_APPROVED -> "已归档";
+            case AuditInstance.STATUS_REJECTED -> "已驳回";
+            case AuditInstance.STATUS_WITHDRAWN -> "已撤回";
+            case AuditInstance.STATUS_RETURNED -> "已退回";
+            case AuditInstance.STATUS_CANCELLED -> "已作废";
+            case AuditInstance.STATUS_PENDING -> "审批中";
+            default -> status;
+        };
     }
 
     private List<Long> normalizeIds(List<Long> indicatorIds) {

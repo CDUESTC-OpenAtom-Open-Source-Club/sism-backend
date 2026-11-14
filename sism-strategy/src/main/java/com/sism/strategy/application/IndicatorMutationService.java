@@ -41,7 +41,8 @@ public class IndicatorMutationService {
     private static final String INDICATOR_ENTITY_TYPE = "INDICATOR";
     /** 2026-10-21：战略任务改名异动与指标异动同链，实体类型为 TASK。 */
     private static final String TASK_ENTITY_TYPE = "TASK";
-    private static final long STRATEGY_ORG_ID = 35L;
+    // 2026-11-05：原 STRATEGY_ORG_ID = 35L 常量已无引用点（战略部 org id 统一走
+    // StrategyOrgProperties#getStrategyOrgId），移除以免与配置项脱钩后成为「假口径」。
 
     // 2026-10-30：随单条异动入口 initiate 一并移除 A3 锁死主动通知的文案常量
     // （notifyLockedOrgUsers 本就无调用点，锁死提示改由审批中心整体流程承载）。
@@ -52,6 +53,11 @@ public class IndicatorMutationService {
     private final BusinessWorkflowApplicationService businessWorkflowApplicationService;
     private final com.sism.shared.domain.user.UserProvider userProvider;
     private final com.sism.strategy.infrastructure.StrategyOrgProperties strategyOrgProperties;
+    /**
+     * 2026-11-05（学院指标直发改造）：下发/异动互斥守卫的显式口径实现。
+     * 原实现内联在本类里、且依赖 {@code plan.created_by_org_id} 的旧语义，改造后会静默失效。
+     */
+    private final CollegeDispatchGuardService collegeDispatchGuardService;
     /** 2026-10-21：任务改名异动复用任务变更留痕（audit_log entity_type=TASK）。 */
     private final com.sism.task.application.TaskMutationHistoryService taskMutationHistoryService;
     /**
@@ -74,6 +80,30 @@ public class IndicatorMutationService {
     private final com.sism.workflow.application.support.ApproverResolver approverResolver;
     private final com.sism.workflow.application.definition.WorkflowDefinitionQueryService workflowDefinitionQueryService;
     private final com.sism.workflow.application.query.WorkflowReadModelService workflowReadModelService;
+    /**
+     * 2026-11-14（新增行不落库改造）：学院页签「新增行」在点「发起异动」前是纯前端内存
+     * 草稿（刷新即丢、不进数据库）。发起异动时前端把新增行的完整创建字段放进 create 条目，
+     * 本服务在同一事务内先经 {@link StrategyApplicationService#createIndicator} 落库
+     * （skipDistributedWeightValidation=true——单条即校验跳过，闭合校验由批次末尾
+     * assertPlanBasicWeightStillClosed 统一做），再走既有 markCreatedIndicatorInMutation
+     * 打 IN_MUTATION 标记 + 写「(新增)」快照。
+     */
+    private final StrategyApplicationService strategyApplicationService;
+    /**
+     * 2026-11-14（新增行不落库改造）：同事务创建分支需要以 SysOrg 实体调用
+     * createIndicator——归属组织=发起人组织（canInitiate 已保证=战略发展部），
+     * 目标组织=父级核心指标的 target_org_id。
+     */
+    private final com.sism.organization.domain.OrganizationRepository organizationRepository;
+    /**
+     * 2026-11-14（新增行不落库改造）：createIndicator 走 JPA persist（SEQUENCE 主键，
+     * INSERT 延迟到 flush 才发到连接上），而同一事务内紧随其后的
+     * markCreatedIndicatorInMutation 与 assertPlanBasicWeightStillClosed 用
+     * JdbcTemplate 原生 SQL 读回新行——原生查询不经过 Hibernate、不会触发自动 flush，
+     * 不显式 flush 读回必然查不到（EmptyResultDataAccessException）。落库后必须先
+     * flush 把 indicator/sys_task/plan 新行推到当前事务连接上。
+     */
+    private final jakarta.persistence.EntityManager entityManager;
 
     /**
      * 异动发起权只属于填报人（2026-10-21 用户定案）。
@@ -191,6 +221,31 @@ public class IndicatorMutationService {
      * item 结构：{id: 指标ID, create?: true 表示新增指标,
      *           indicator_desc?/weight_percent?/remark?: 变更值}
      * 任务改名条目：{id: 任务ID, entity_type: 'TASK', name: 新任务名}
+     *
+     * <p><b>2026-11-14（新增行不落库改造）前端契约——带完整创建字段的 create 条目：</b>
+     * 学院页签「新增行」在点「发起异动」前是纯前端内存草稿（刷新即丢、不落库），
+     * 发起异动时新增行按以下结构整行提交（键名定死，camelCase，与既有 batch 条目的
+     * snake_case 变更字段并存不冲突）：
+     * <pre>
+     * { create: true, indicatorDesc, weightPercent, indicatorType,
+     *   parentIndicatorId, taskId?, remark? }
+     * </pre>
+     * <ul>
+     *   <li>indicatorDesc（必填，空抛「新增指标内容不能为空」）；</li>
+     *   <li>weightPercent（可省，缺省落库为 100，由闭合校验把关）；</li>
+     *   <li>indicatorType（定量/定性；与父级一致由前端保证，后端不做强校验）；</li>
+     *   <li>parentIndicatorId（必填，父级核心指标，缺失抛「新增指标缺少关联的核心指标」）；</li>
+     *   <li>taskId（可省略——后端按父级所属 FUNC_TO_COLLEGE 计划解析/创建任务行）；</li>
+     *   <li>remark（可省略）。</li>
+     * </ul>
+     * 该条目<b>不需要 id</b>（新增行还没有数据库 id）；即使带了 id 也按新建处理、原值忽略。
+     * 后端在同一事务内：创建指标落库 → 打 mutation_status=IN_MUTATION → 快照 audit_log
+     * （before 全 "(新增)"）→ 批次闭合权重校验 → 启动 PLAN_MUTATION_STRATEGY 审批链。
+     * 分流识别：create=true 且（带创建字段 indicatorDesc/indicator_desc，或无有效实体 id）
+     * → 同事务创建分支——无 id 的 create 意图条目即使漏带字段也在此分支拿到
+     * 「新增指标内容不能为空」/「新增指标缺少关联的核心指标」的明确报错；
+     * 仅 {@code {id, create:true}} 无创建字段 = 旧格式（行已落库），走既有按 id 读回分支，
+     * 向后兼容。同批同父级多条 create 各自独立创建（SEQUENCE 主键自然递增去重）。
      */
     @Transactional
     public List<String> initiateBatch(List<Map<String, Object>> items, Long operatorUserId) {
@@ -210,6 +265,17 @@ public class IndicatorMutationService {
         // 2026-10-23：发起不再原地落库后，修改条目的拟变更权重以 override 参与闭合校验
         Map<Long, java.math.BigDecimal> proposedWeights = new LinkedHashMap<>();
         for (Map<String, Object> item : items) {
+            // 2026-11-14（新增行不落库改造）：create 条目分流——带创建字段（或没有有效实体
+            // id 的 create 意图条目，即前端内存草稿行）走同事务创建分支，先创建落库再打异动
+            // 标记；必须放在「缺少有效实体 ID」守卫之前，否则无 id 的新增行会被误拦。
+            // 仅 {id, create:true}（行已落库）= 旧格式，落到下方既有读回分支，向后兼容。
+            if (Boolean.TRUE.equals(item.get("create"))
+                    && (hasCreateDraftFields(item) || isMissingValidEntityId(item))) {
+                Long newIndicatorId = createAndMarkNewIndicatorInMutation(item, operatorUserId, batchId);
+                applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, newIndicatorId, "CREATE"));
+                touchedIndicatorIds.add(newIndicatorId);
+                continue;
+            }
             Long entityId = toLongId(item.get("id"));
             if (entityId == null || entityId <= 0) {
                 throw new IllegalArgumentException("异动条目缺少有效实体 ID");
@@ -224,6 +290,7 @@ public class IndicatorMutationService {
             touchedIndicatorIds.add(entityId);
             boolean create = Boolean.TRUE.equals(item.get("create"));
             if (create) {
+                // 2026-11-14：无创建字段的 {id, create:true} = 旧格式（行已落库），保持原分支
                 markCreatedIndicatorInMutation(entityId, operatorUserId, batchId);
                 applied.add(new MutationTarget(INDICATOR_ENTITY_TYPE, entityId, "CREATE"));
                 continue;
@@ -277,6 +344,275 @@ public class IndicatorMutationService {
         return raw != null && TASK_ENTITY_TYPE.equalsIgnoreCase(String.valueOf(raw).trim());
     }
 
+    // ==================== 2026-11-14（新增行不落库改造）：同事务创建分支 ====================
+
+    /**
+     * create 条目是否携带完整创建字段（= 前端内存草稿行，后端需同事务落库）。
+     *
+     * <p>识别以指标内容字段为准：{@code indicatorDesc}（前端契约主键）或旧别名
+     * {@code indicator_desc}。<b>不认 {@code name}</b>——那是任务改名条目的键，
+     * 纳入识别会让未来任务/指标键位冲突时误判成新增。
+     */
+    private boolean hasCreateDraftFields(Map<String, Object> item) {
+        return textOf(item, "indicatorDesc", "indicator_desc") != null;
+    }
+
+    /**
+     * 条目是否缺少有效实体 id。create=true 且无有效 id 的条目只能是前端内存草稿
+     * （新口径下新增行没有数据库 id）——即使漏带创建字段也必须进同事务创建分支，
+     * 让缺失的 indicatorDesc/parentIndicatorId 拿到「新增指标内容不能为空」/
+     * 「新增指标缺少关联的核心指标」的明确报错，而不是笼统的「缺少有效实体 ID」。
+     * 带有效 id 且无创建字段的 {id, create:true} = 旧格式（行已落库），不受影响。
+     */
+    private boolean isMissingValidEntityId(Map<String, Object> item) {
+        Long id = toLongId(item.get("id"));
+        return id == null || id <= 0;
+    }
+
+    /**
+     * 同事务「创建指标 → 打异动标记」：
+     *
+     * <ol>
+     *   <li>解析创建字段（indicatorDesc/parentIndicatorId 必填，缺失明确报错；其余可省）；</li>
+     *   <li>组织与周期锚点：归属组织=发起人组织（{@link #canInitiate} 已保证=战略发展部）、
+     *       目标组织=父级核心指标 target_org_id、周期=父级所属计划 cycle_id；</li>
+     *   <li>复用 {@link StrategyApplicationService#createIndicator} 12 参重载
+     *       （skipDistributedWeightValidation=true——单条即校验跳过，闭合校验由批次末尾
+     *       assertPlanBasicWeightStillClosed 统一做）。已下发 FUNC_TO_COLLEGE 计划场景，
+     *       createIndicator 内部经 findOrCreatePlan 命中既有 DISTRIBUTED 计划、走
+     *       「转入异动审批口径」分支（既有 log.info 那条），随后新指标挂到该计划的任务行上，
+     *       与 markCreatedIndicatorInMutation 的前置校验（计划须 DISTRIBUTED）兼容；</li>
+     *   <li>显式 flush（JPA INSERT 延迟到 flush，原生 SQL 读回前必须推到事务连接，
+     *       见字段 entityManager 的注释）；</li>
+     *   <li>复用 {@link #markCreatedIndicatorInMutation}：前置校验（计划已下发/无在审异动/
+     *       上报与下发不在途）+「(新增)」快照 + IN_MUTATION 标记。</li>
+     * </ol>
+     *
+     * <p>同批同父级多条 create 各自独立调用本方法（SEQUENCE 主键自然递增去重）；
+     * 任一条失败整批回滚（{@link #initiateBatch} 的 @Transactional）。
+     *
+     * @return 新建指标的数据库 id（作为本条目的异动实体 id）
+     */
+    private Long createAndMarkNewIndicatorInMutation(Map<String, Object> item,
+                                                     Long operatorUserId, String batchId) {
+        String indicatorDesc = textOf(item, "indicatorDesc", "indicator_desc");
+        if (indicatorDesc == null || indicatorDesc.isBlank()) {
+            throw new IllegalArgumentException("新增指标内容不能为空");
+        }
+        Long parentIndicatorId = toLongId(valueOf(item, "parentIndicatorId", "parent_indicator_id"));
+        if (parentIndicatorId == null || parentIndicatorId <= 0) {
+            throw new IllegalArgumentException("新增指标缺少关联的核心指标");
+        }
+        // 父级核心指标锚点：目标组织（学院）与所属周期都从父级行读——前端内存草稿行
+        // 没有这些落库信息，不能信条目自带值（防串周期/串部门）
+        Map<String, Object> parent = jdbcTemplate.query(
+                """
+                SELECT i.target_org_id, p.cycle_id
+                FROM public.indicator i
+                LEFT JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.plan p ON p.id = t.plan_id
+                WHERE i.id = ? AND COALESCE(i.is_deleted, false) = false
+                """,
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("target_org_id", rs.getObject("target_org_id"));
+                    row.put("cycle_id", rs.getObject("cycle_id"));
+                    return row;
+                },
+                parentIndicatorId);
+        if (parent == null) {
+            throw new IllegalArgumentException("父级核心指标不存在: " + parentIndicatorId);
+        }
+        Long ownerOrgId = userProvider.getUserOrgId(operatorUserId).orElse(null);
+        if (ownerOrgId == null) {
+            throw new IllegalArgumentException("责任组织不能为空");
+        }
+        com.sism.organization.domain.SysOrg ownerOrg = organizationRepository.findById(ownerOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("责任组织未找到: " + ownerOrgId));
+        // 学院新增行的目标组织不能从父级核心指标直接继承：父级 target_org_id 是归口职能部门，
+        // 新指标必须落到父级对应的下游学院。解析器只接受已验证的学院目标，无法确定时拒绝。
+        Long targetOrgId = resolveNewIndicatorTargetOrgId(
+                item, parentIndicatorId, parent, ownerOrgId);
+        com.sism.organization.domain.SysOrg targetOrg = organizationRepository.findById(targetOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("目标学院未找到: " + targetOrgId));
+        if (targetOrg.getType() != com.sism.organization.domain.OrgType.academic) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
+        Long cycleId = toNullableLong(parent.get("cycle_id"));
+        Long taskId = toLongId(valueOf(item, "taskId", "task_id"));
+        Object weightRaw = item.containsKey("weightPercent")
+                ? item.get("weightPercent")
+                : item.get("weight_percent");
+        java.math.BigDecimal weightPercent = weightRaw == null ? null : toBigDecimal(weightRaw);
+        String indicatorType = textOf(item, "indicatorType", "indicator_type");
+        String remark = textOf(item, "remark");
+
+        var created = strategyApplicationService.createIndicator(
+                indicatorDesc, ownerOrg, targetOrg, taskId, parentIndicatorId,
+                indicatorType, weightPercent, null, remark, 0, cycleId, true);
+        // JPA INSERT 延迟到 flush——原生 SQL 读回（异动标记/闭合校验/审批链）前必须显式 flush
+        entityManager.flush();
+
+        // 复用既有「新增进入异动」逻辑：前置校验 + (新增) 快照 + IN_MUTATION 标记
+        markCreatedIndicatorInMutation(created.getId(), operatorUserId, batchId);
+        log.info("[IndicatorMutation] 前端内存草稿新增行已同事务落库并进入异动: indicatorId={}, parentIndicatorId={}, targetOrgId={}, batchId={}",
+                created.getId(), parentIndicatorId, targetOrgId, batchId);
+        return created.getId();
+    }
+
+    /**
+     * 解析新增学院子指标的目标学院。
+     *
+     * <p>父级核心指标的 target_org_id 是归口职能部门，不能作为学院子指标的目标组织。
+     * 解析顺序为：显式 targetOrgId（前端所选学院）→ 父级现有未删除子指标的唯一目标 →
+     * 父级归口职能部门对应的 FUNC_TO_COLLEGE 计划唯一目标。</p>
+     *
+     * <p>2026-11-14（用户定案「一个归口可下发多个学院」）显式档放宽：目标学院只要
+     * 已有该父级的子指标 → 计划必然存在，直接通过（同一父级在多个学院各有子指标
+     * 是生产既有形态，如党委办 36 → 工学院 403656 + 计算机学院 403657）；不在
+     * 子指标学院集合里时按该学院精确核对下游 FUNC_TO_COLLEGE 计划
+     * （{@link #assertDownstreamCollegeContext}，天然支持多学院）。</p>
+     *
+     * <p>无显式值时的推断兜底保持严格：父级子指标分属多个学院、或归口对应多个
+     * 下游学院 → 一律拒绝（猜不出就该拒，不许静默落到某一个学院）。</p>
+     */
+    private Long resolveNewIndicatorTargetOrgId(Map<String, Object> item,
+                                                Long parentIndicatorId,
+                                                Map<String, Object> parent,
+                                                Long ownerOrgId) {
+        Long requestedTargetOrgId = toLongId(valueOf(item, "targetOrgId", "target_org_id"));
+        Set<Long> childTargetOrgIds = new LinkedHashSet<>(jdbcTemplate.queryForList(
+                """
+                SELECT DISTINCT child.target_org_id
+                FROM public.indicator child
+                JOIN public.sys_org target_org ON target_org.id = child.target_org_id
+                WHERE child.parent_indicator_id = ?
+                  AND COALESCE(child.is_deleted, false) = false
+                  AND child.target_org_id IS NOT NULL
+                ORDER BY child.target_org_id
+                """,
+                Long.class,
+                parentIndicatorId));
+
+        if (requestedTargetOrgId != null) {
+            assertAcademicTargetOrg(requestedTargetOrgId);
+            // 该学院已有此父级的子指标 → 下发计划必然存在，显式目标直接采信
+            // （不再因「父级已有多个学院子指标」误拒合法目标——用户定案同一归口
+            // 下发多个学院是正确形态，见方法 Javadoc）
+            if (childTargetOrgIds.contains(requestedTargetOrgId)) {
+                return requestedTargetOrgId;
+            }
+            // 目标学院尚无该父级的子指标：按该学院精确核对「归口 → 该学院」下游计划
+            assertDownstreamCollegeContext(requestedTargetOrgId, parent, ownerOrgId);
+            return requestedTargetOrgId;
+        }
+
+        if (childTargetOrgIds.size() > 1) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院：父级已有多个学院子指标");
+        }
+        if (childTargetOrgIds.size() == 1) {
+            Long resolved = childTargetOrgIds.iterator().next();
+            assertAcademicTargetOrg(resolved);
+            return resolved;
+        }
+
+        Long parentFunctionalOrgId = toNullableLong(parent.get("target_org_id"));
+        Long cycleId = toNullableLong(parent.get("cycle_id"));
+        if (parentFunctionalOrgId != null && cycleId != null) {
+            List<Long> downstreamTargets = jdbcTemplate.queryForList(
+                    """
+                    SELECT DISTINCT p.target_org_id
+                    FROM public.plan p
+                    JOIN public.sys_org target_org ON target_org.id = p.target_org_id
+                    WHERE p.cycle_id = ?
+                      AND p.functional_org_id = ?
+                      AND p.created_by_org_id = ?
+                      AND p.plan_level = 'FUNC_TO_COLLEGE'
+                      AND COALESCE(p.is_deleted, false) = false
+                      AND target_org.type = 'academic'
+                    ORDER BY p.target_org_id
+                    """,
+                    Long.class,
+                    cycleId,
+                    parentFunctionalOrgId,
+                    ownerOrgId);
+            if (downstreamTargets.size() > 1) {
+                throw new IllegalArgumentException("无法确定新增子指标的目标学院：父级对应多个下游学院");
+            }
+            if (downstreamTargets.size() == 1) {
+                Long resolved = downstreamTargets.get(0);
+                assertAcademicTargetOrg(resolved);
+                return resolved;
+            }
+        }
+        throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+    }
+
+    private void assertAcademicTargetOrg(Long targetOrgId) {
+        com.sism.organization.domain.SysOrg targetOrg = organizationRepository.findById(targetOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("目标学院未找到: " + targetOrgId));
+        if (targetOrg.getType() != com.sism.organization.domain.OrgType.academic) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
+    }
+
+    /** 草稿显式目标必须同时落在父级归口部门对应的学院下游计划中。 */
+    private void assertDownstreamCollegeContext(Long targetOrgId,
+                                                Map<String, Object> parent,
+                                                Long ownerOrgId) {
+        Long parentFunctionalOrgId = toNullableLong(parent.get("target_org_id"));
+        Long cycleId = toNullableLong(parent.get("cycle_id"));
+        if (parentFunctionalOrgId == null || cycleId == null) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
+        Integer matchingPlans = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.plan p
+                JOIN public.sys_org target_org ON target_org.id = p.target_org_id
+                WHERE p.cycle_id = ?
+                  AND p.target_org_id = ?
+                  AND p.functional_org_id = ?
+                  AND p.created_by_org_id = ?
+                  AND p.plan_level = 'FUNC_TO_COLLEGE'
+                  AND COALESCE(p.is_deleted, false) = false
+                  AND target_org.type = 'academic'
+                """,
+                Integer.class,
+                cycleId,
+                targetOrgId,
+                parentFunctionalOrgId,
+                ownerOrgId);
+        if (matchingPlans == null || matchingPlans <= 0) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
+    }
+
+    /** 按给定键序取第一个非空白文本值（trim 后返回；全缺/空白返回 null）。 */
+    private String textOf(Map<String, Object> item, String... keys) {
+        for (String key : keys) {
+            Object value = item.get(key);
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return String.valueOf(value).trim();
+            }
+        }
+        return null;
+    }
+
+    /** 按给定键序取第一个非 null 原始值（数字/文本字段统一入口，缺省返回 null）。 */
+    private Object valueOf(Map<String, Object> item, String... keys) {
+        for (String key : keys) {
+            Object value = item.get(key);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
     /**
      * 2026-10-22 用户定案：异动资格按「整个计划」判定，不按单条指标状态判定。
      *
@@ -327,21 +663,38 @@ public class IndicatorMutationService {
      * 2026-10-24 用户定案（上报/异动互斥）：同一目标部门上「上报审批在途」与「异动审批在途」
      * 二选一——上报在审期间该部门的填报内容正在被审批固化，不允许异动改动表内容。
      * 判定口径：该指标所属计划（按 task→plan 回查）存在 PLAN_REPORT 审批实例 IN_REVIEW。
+     *
+     * <p><b>2026-11-13 用户拍板（上报互斥只锁本部门）</b>：学院上报按归口部门分批提交后，
+     * 先反查异动指标自身的归口部门——学院子指标取父级核心指标 target_org_id（单层口径下
+     * 100% 有父级），无父级的部门本级指标取自身 target_org_id——只拦「归口相同」的在审上报；
+     * A 部门报告在审不再拦 B 部门指标异动。反查不到（游离行等）→ 保守全锁（旧口径）。
      */
     private void assertReportApprovalNotInFlightForIndicator(Long indicatorId) {
-        Long planId = jdbcTemplate.query(
+        java.util.List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 """
-                SELECT t.plan_id
+                SELECT t.plan_id, parent.target_org_id AS parent_target_org_id, i.target_org_id AS target_org_id
                 FROM public.indicator i
                 JOIN public.sys_task t ON t.task_id = i.task_id
+                LEFT JOIN public.indicator parent ON parent.id = i.parent_indicator_id
                 WHERE i.id = ?
                 """,
-                rs -> rs.next() ? rs.getLong(1) : null,
                 indicatorId);
+        if (rows.isEmpty()) {
+            return;
+        }
+        Map<String, Object> row = rows.get(0);
+        Long planId = row.get("plan_id") == null ? null : ((Number) row.get("plan_id")).longValue();
         if (planId == null) {
             return;
         }
-        assertReportApprovalNotInFlightForPlan(planId);
+        Long parentTargetOrgId = toNullableLong(row.get("parent_target_org_id"));
+        Long selfTargetOrgId = toNullableLong(row.get("target_org_id"));
+        Long functionalDeptOrgId = parentTargetOrgId != null ? parentTargetOrgId : selfTargetOrgId;
+        assertReportApprovalNotInFlightForPlan(planId, functionalDeptOrgId);
+    }
+
+    private static Long toNullableLong(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
     }
 
     /**
@@ -349,21 +702,55 @@ public class IndicatorMutationService {
      * 指标新增/修改/删除三路径均有 assertReportApprovalNotInFlightForIndicator，
      * 实测上报审批在审时任务改名异动仍可发起，同一计划出现「上报在审 + 异动在审」
      * 两条流程并存。互斥按计划维度判定，此处为指标与任务两条入口的共用核心。
+     * 2026-11-13 起为兼容壳：归口未知 → 保守全锁（见重载）。
      */
     private void assertReportApprovalNotInFlightForPlan(Long planId) {
-        Integer inFlight = jdbcTemplate.queryForObject(
-                """
-                SELECT COUNT(*)
-                FROM public.audit_instance ai
-                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
-                    AND f.flow_code IN ('PLAN_APPROVAL_FUNCDEPT', 'PLAN_APPROVAL_COLLEGE')
-                WHERE ai.entity_type = 'PLAN_REPORT'
-                  AND ai.status = 'IN_REVIEW'
-                  AND ai.entity_id IN (
-                      SELECT pr.id FROM public.plan_report pr WHERE pr.plan_id = ?
-                  )
-                """,
-                Integer.class, planId);
+        assertReportApprovalNotInFlightForPlan(planId, null);
+    }
+
+    /**
+     * 2026-11-13 用户拍板（上报互斥只锁本部门）：只拦「与异动归口部门相同」的在审上报。
+     *
+     * <ul>
+     *   <li>functionalOrgId 非空 → 只统计该计划下 functional_org_id 命中归口（或归口未落值的
+     *       存量上报，保守视为相关）的在审 PLAN_REPORT 实例；</li>
+     *   <li>functionalOrgId 为空（反查不到，兼容旧数据）→ 保持旧口径全锁，宁可误拦不可漏锁。</li>
+     * </ul>
+     * SQL 全部参数绑定。
+     */
+    private void assertReportApprovalNotInFlightForPlan(Long planId, Long functionalOrgId) {
+        Integer inFlight;
+        if (functionalOrgId == null) {
+            inFlight = jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM public.audit_instance ai
+                    JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                        AND f.flow_code IN ('PLAN_APPROVAL_FUNCDEPT', 'PLAN_APPROVAL_COLLEGE')
+                    WHERE ai.entity_type = 'PLAN_REPORT'
+                      AND ai.status = 'IN_REVIEW'
+                      AND ai.entity_id IN (
+                          SELECT pr.id FROM public.plan_report pr WHERE pr.plan_id = ?
+                      )
+                    """,
+                    Integer.class, planId);
+        } else {
+            inFlight = jdbcTemplate.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM public.audit_instance ai
+                    JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
+                        AND f.flow_code IN ('PLAN_APPROVAL_FUNCDEPT', 'PLAN_APPROVAL_COLLEGE')
+                    WHERE ai.entity_type = 'PLAN_REPORT'
+                      AND ai.status = 'IN_REVIEW'
+                      AND ai.entity_id IN (
+                          SELECT pr.id FROM public.plan_report pr
+                          WHERE pr.plan_id = ?
+                            AND (pr.functional_org_id IS NULL OR pr.functional_org_id = ?)
+                      )
+                    """,
+                    Integer.class, planId, functionalOrgId);
+        }
         if (inFlight != null && inFlight > 0) {
             throw new IllegalStateException(
                     "该计划的上报正在审批中，暂不能发起异动；请等上报审批结束或撤回后再操作");
@@ -371,14 +758,28 @@ public class IndicatorMutationService {
     }
 
     /**
-     * 2026-10-30 定案（下发/异动互斥）：职能部门向学院下发（PLAN_DISPATCH_FUNCDEPT）审批在途时，
-     * 战略部不得再异动该职能部门自己的指标。
+     * 2026-11-09（学院指标单层口径）下发/异动互斥：对<b>学院指标</b>发起异动前，
+     * 检查该学院是否正有学院下发审批在途。
      *
-     * 判定口径：异动指标的目标部门（target_org_id）即职能部门；若该职能部门在当前考核周期
-     * 内存在任一 FUNC_TO_COLLEGE 计划的 PLAN_DISPATCH_FUNCDEPT 实例 IN_REVIEW，则拒绝异动。
-     * 下发审批审的是「该职能部门指标拆给学院」的稳定快照；异动会改动源指标，使审批对象失效。
+     * <p><b>口径演进</b>：
+     * <ul>
+     *   <li>2026-10-30 初版：职能部门向学院下发审批在途时，战略部不得异动该职能部门自己的指标
+     *       （因为下发审的是「部门指标拆给学院」的快照）；</li>
+     *   <li>2026-11-05：判定改为「该职能部门正在被下发到学院」，靠
+     *       {@code p.created_by_org_id = 本指标目标部门} 圈定 —— 改成战略部下发后该条件恒不成立
+     *       → 守卫静默失效（异动照常发起）；</li>
+     *   <li>2026-11-09（单层口径）：学院指标改为「战略部 → 学院」直发、<b>没有父级</b>，
+     *       职能部门也<b>不再</b>向学院下发指标 —— 「部门指标拆给学院」这层依赖已经不存在，
+     *       按部门锚定既会误拦（部门自己的指标在异动，却挡住给学院下发）也会漏拦。
+     *       现在唯一还成立的冲突是<b>同一批学院指标</b>自身：
+     *       下发审批审的是这批指标的快照，异动会改掉它。</li>
+     * </ul>
      *
-     * 仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
+     * <p><b>为什么这里必须限定 FUNC_TO_COLLEGE</b>：只有归属学院下发计划的指标（学院指标）
+     * 才与学院下发审批共享同一份快照。职能部门的指标属于「战略部 → 职能部门」链，
+     * 与学院下发审批无关，直接放行 —— 不限定的话，这个守卫要么对职能部门误拦、要么对学院漏拦。
+     *
+     * <p>仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
      */
     private void assertDispatchApprovalNotInFlightForIndicator(Long indicatorId) {
         java.util.List<Map<String, Object>> rows = jdbcTemplate.queryForList(
@@ -387,7 +788,12 @@ public class IndicatorMutationService {
                 FROM public.indicator i
                 JOIN public.sys_task t ON t.task_id = i.task_id
                 JOIN public.plan p ON p.id = t.plan_id
+                -- 2026-11-09（单层口径）：限定指标属于「学院下发计划」（即学院指标）。
+                -- 原口径限定 sys_org.type='functional'（目标组织是职能部门）——
+                -- 单层后学院指标的目标组织是学院，该条件恒不成立 → rows 为空 → 守卫对学院指标
+                -- 整体静默失效（同一批指标既在异动在审又有下发在途，不拦）。
                 WHERE i.id = ?
+                  AND p.plan_level = 'FUNC_TO_COLLEGE'
                 """,
                 indicatorId);
         if (rows.isEmpty()) {
@@ -399,26 +805,12 @@ public class IndicatorMutationService {
             return;
         }
 
-        Integer inFlight = jdbcTemplate.queryForObject(
-                """
-                SELECT COUNT(*)
-                FROM public.audit_instance ai
-                JOIN public.audit_flow_def f ON f.id = ai.flow_def_id
-                    AND f.flow_code = 'PLAN_DISPATCH_FUNCDEPT'
-                JOIN public.plan p ON p.id = ai.entity_id
-                WHERE ai.entity_type = 'PLAN'
-                  AND ai.status = 'IN_REVIEW'
-                  AND p.plan_level = 'FUNC_TO_COLLEGE'
-                  AND p.created_by_org_id = ?
-                  AND p.cycle_id = ?
-                  AND COALESCE(p.is_deleted, false) = false
-                """,
-                Integer.class,
+        boolean dispatchInFlight = collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(
                 ((Number) targetOrgId).longValue(),
                 ((Number) cycleId).longValue());
-        if (inFlight != null && inFlight > 0) {
+        if (dispatchInFlight) {
             throw new IllegalStateException(
-                    "该职能部门的下发审批正在进行中，暂不能发起异动；请等下发审批结束或撤回后再操作");
+                    "该学院的下发审批正在进行中，暂不能发起异动；请等下发审批结束或撤回后再操作");
         }
     }
 
@@ -474,11 +866,18 @@ public class IndicatorMutationService {
         }
         // 2026-10-27 修复（上报/异动互斥对齐）：任务改名异动补上报在途校验，
         // 与指标三路径（新增/修改/删除）同口径——上报在审期间不允许异动改动表内容。
+        // 2026-11-13 用户拍板（上报互斥只锁本部门）：任务改名不改指标值，归口取计划
+        // functional_org_id（FUNC_TO_COLLEGE 计划由 V102/导入链/提交补写保证落值）；
+        // 取不到时保守全锁。SQL 参数绑定。
         Long planId = current.get("plan_id") == null
                 ? null
                 : ((Number) current.get("plan_id")).longValue();
         if (planId != null) {
-            assertReportApprovalNotInFlightForPlan(planId);
+            Long planFunctionalOrgId = jdbcTemplate.query(
+                    "SELECT functional_org_id FROM public.plan WHERE id = ? AND functional_org_id IS NOT NULL",
+                    (rs, rowNum) -> rs.getLong("functional_org_id"),
+                    planId).stream().findFirst().orElse(null);
+            assertReportApprovalNotInFlightForPlan(planId, planFunctionalOrgId);
         }
         assertNoActiveMutationFlow(TASK_ENTITY_TYPE, taskId, "战略任务");
         String previousName = current.get("name") == null ? null : String.valueOf(current.get("name"));

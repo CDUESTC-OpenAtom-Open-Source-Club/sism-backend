@@ -99,6 +99,15 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
     /**
      * 2026-10-26 数据隔离修复（审批链验证报告 R13）：按可见组织过滤指标——
      * 部门账号只能看到「目标组织 = 本部门」或「拥有组织 = 本部门」的指标。
+     *
+     * <p>2026-11-10 用户拍板口径（归口可见性放行）：战略部直发的学院子指标
+     * （owner=战略发展部、target=二级学院、parent_indicator_id 非空），
+     * 其<b>归口职能部门</b>（即父级核心指标的目标组织）亦可见，
+     * 用于审核进度鉴定与归口查看。原两分支口径下该类子指标对归口部门完全不可见，
+     * 导致上报审批环节要求的「归口部门完成子指标审核进度鉴定」不可达（上报链死锁）。
+     *
+     * <p>本次放行<b>不区分指标状态</b>：DRAFT 子指标也会出现在归口视角，
+     * 供鉴定提前准备；写权限不受影响（写由 StrategyOrgWriteGuard/isDispatchOwned 闸门另行管）。
      */
     @Query(value = """
             SELECT i.* FROM indicator i
@@ -107,7 +116,16 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN cycle c ON p.cycle_id = c.id
             WHERE c.year = :year
               AND COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             ORDER BY COALESCE(i.sort_order, 2147483647) ASC, i.id ASC
             """,
            countQuery = """
@@ -117,7 +135,16 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN cycle c ON p.cycle_id = c.id
             WHERE c.year = :year
               AND COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             """,
            nativeQuery = true)
     Page<Indicator> findByYearAndVisibleOrg(
@@ -125,12 +152,27 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             @Param("orgId") Long orgId,
             Pageable pageable);
 
+    /**
+     * 2026-11-10 归口可见性放行（与 {@link #findByYearAndVisibleOrg} 同口径，无年份过滤版）：
+     * 在「目标组织 = 本部门」或「拥有组织 = 本部门」之外新增第三分支——
+     * 其父级核心指标的目标组织 = 本部门（归口职能部门）的子指标可见。
+     * 详见 findByYearAndVisibleOrg 的口径注释。
+     */
     @Query(value = """
             SELECT i.* FROM indicator i
             INNER JOIN sys_task t ON i.task_id = t.task_id
             INNER JOIN plan p ON t.plan_id = p.id
             WHERE COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             ORDER BY COALESCE(i.sort_order, 2147483647) ASC, i.id ASC
             """,
            countQuery = """
@@ -138,7 +180,16 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
             INNER JOIN sys_task t ON i.task_id = t.task_id
             INNER JOIN plan p ON t.plan_id = p.id
             WHERE COALESCE(i.is_deleted, false) = false
-              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId)
+              AND (i.target_org_id = :orgId OR i.owner_org_id = :orgId
+                   OR (
+                     i.parent_indicator_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM public.indicator p2
+                       WHERE p2.id = i.parent_indicator_id
+                         AND p2.target_org_id = :orgId
+                         AND COALESCE(p2.is_deleted, false) = false
+                     )
+                   ))
             """,
            nativeQuery = true)
     Page<Indicator> findByVisibleOrg(@Param("orgId") Long orgId, Pageable pageable);
@@ -151,6 +202,63 @@ public interface JpaIndicatorRepositoryInternal extends JpaRepository<Indicator,
     List<Indicator> findByOwnerOrgIdAndTargetOrgIdAndIsDeletedFalse(Long ownerOrgId, Long targetOrgId);
 
     List<Indicator> findByIdInAndIsDeletedFalse(List<Long> ids);
+
+    /**
+     * 2026-11-05（学院指标直发改造）：学院下发导入的「父级核心指标」锚点。
+     *
+     * <p>口径：归属 = 战略发展部 + 目标组织是职能部门（sys_org.type='functional'）+ 自身无父级 +
+     * 未删除 + <b>同一考核周期</b>（经 sys_task → plan → cycle_id 关联）。
+     * 指标表本身不带 cycle，必须经任务与计划关联才能按周期收敛——否则历年同名核心指标会互相串号。
+     *
+     * <p>2026-11-10（用户拍板：草稿指标不能做父级锚点）：追加「核心指标状态 = DISTRIBUTED（已下发）」
+     * 过滤。职能部门没有收到「已下发」的核心指标，就不存在任何学院指标下发的资格——
+     * 计划尚未推进到下发的核心指标（approvePlan → 计划置 DISTRIBUTED → 指标经
+     * syncIndicatorStatusWithPlan 同步刷成 DISTRIBUTED）不能充当学院子指标的父级锚点。
+     */
+    @Query(value = """
+            SELECT i.* FROM public.indicator i
+            INNER JOIN public.sys_task t ON i.task_id = t.task_id
+            INNER JOIN public.plan p ON t.plan_id = p.id
+            INNER JOIN public.sys_org o ON o.id = i.target_org_id
+            WHERE i.owner_org_id = :ownerOrgId
+              AND i.parent_indicator_id IS NULL
+              AND COALESCE(i.is_deleted, false) = false
+              AND COALESCE(t.is_deleted, false) = false
+              AND COALESCE(p.is_deleted, false) = false
+              AND p.cycle_id = :cycleId
+              AND o.type = 'functional'
+              AND COALESCE(o.is_deleted, false) = false
+              AND i.status = 'DISTRIBUTED'
+            ORDER BY i.id
+            """, nativeQuery = true)
+    List<Indicator> findCoreDispatchAnchors(@Param("ownerOrgId") Long ownerOrgId,
+                                             @Param("cycleId") Long cycleId);
+
+    /**
+     * 2026-11-10（学院导入资格口径）：与 {@link #findCoreDispatchAnchors} 同一圈定
+     * （归属战略部 + 目标职能部门 + 无父级 + 未删除 + 同一考核周期），但<b>不过滤指标状态</b>。
+     *
+     * <p>用途：学院导入行级提示区分「系统里没有这条核心指标」与「存在但尚未下发」——
+     * 后者给出「请先完成职能部门核心指标下发」的业务化引导，而不是笼统的
+     * 「与上级下发内容不一致」。
+     */
+    @Query(value = """
+            SELECT i.* FROM public.indicator i
+            INNER JOIN public.sys_task t ON i.task_id = t.task_id
+            INNER JOIN public.plan p ON t.plan_id = p.id
+            INNER JOIN public.sys_org o ON o.id = i.target_org_id
+            WHERE i.owner_org_id = :ownerOrgId
+              AND i.parent_indicator_id IS NULL
+              AND COALESCE(i.is_deleted, false) = false
+              AND COALESCE(t.is_deleted, false) = false
+              AND COALESCE(p.is_deleted, false) = false
+              AND p.cycle_id = :cycleId
+              AND o.type = 'functional'
+              AND COALESCE(o.is_deleted, false) = false
+            ORDER BY i.id
+            """, nativeQuery = true)
+    List<Indicator> findCoreIndicatorsInCycle(@Param("ownerOrgId") Long ownerOrgId,
+                                              @Param("cycleId") Long cycleId);
 
     @EntityGraph(attributePaths = {"ownerOrg", "targetOrg"})
     @Query("""

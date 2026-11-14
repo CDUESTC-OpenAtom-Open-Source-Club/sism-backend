@@ -59,7 +59,8 @@ class ReportControllerTest {
 
         PlanReport report = PlanReport.createDraft("2026-04", 10L, ReportOrgType.FUNC_DEPT, 200L, 101L);
         report.setId(1L);
-        when(reportApplicationService.createReport("2026-04", 10L, ReportOrgType.FUNC_DEPT, 200L, 101L))
+        // 2026-11-13：创建草稿签名追加可选归口 functionalOrgId（请求未传 → null）
+        when(reportApplicationService.createReport("2026-04", 10L, ReportOrgType.FUNC_DEPT, 200L, 101L, null))
                 .thenReturn(report);
 
         CreatePlanReportRequest request = new CreatePlanReportRequest();
@@ -73,7 +74,7 @@ class ReportControllerTest {
 
         assertEquals(200, response.getStatusCodeValue());
         assertNotNull(response.getBody());
-        verify(reportApplicationService).createReport("2026-04", 10L, ReportOrgType.FUNC_DEPT, 200L, 101L);
+        verify(reportApplicationService).createReport("2026-04", 10L, ReportOrgType.FUNC_DEPT, 200L, 101L, null);
     }
 
     @Test
@@ -328,7 +329,7 @@ class ReportControllerTest {
         report.setIndicatorDetails(null);
         when(reportApplicationService.findReportsByPlanIdForOrg(4036L, 10L)).thenReturn(List.of(report));
 
-        var response = controller.getReportsByPlanId(4036L, currentUser);
+        var response = controller.getReportsByPlanId(4036L, null, currentUser);
 
         assertEquals(200, response.getStatusCodeValue());
         assertNotNull(response.getBody());

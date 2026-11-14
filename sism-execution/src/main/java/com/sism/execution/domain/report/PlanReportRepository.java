@@ -76,4 +76,14 @@ public interface PlanReportRepository {
     Optional<PlanReport> findByUniqueKey(Long planId, String reportMonth, ReportOrgType reportOrgType, Long reportOrgId);
 
     Optional<PlanReport> findLatestByMonthlyScope(Long planId, String reportMonth, ReportOrgType reportOrgType, Long reportOrgId);
+
+    /**
+     * 2026-11-13（学院上报按归口部门分批提交）：唯一性从 (plan, report_org, month) 三元组
+     * 升级为 (plan, report_org, month, functional_org_id) 四元组。
+     * functional_org_id 为 NULL 时保持旧行为兼容：NULL 与 NULL 视为同组、NULL 与非 NULL
+     * 不同组（IS NOT DISTINCT FROM 语义）。传 functionalOrgId=null 即查「无归口」分组，
+     * 不会复用已按部门落值的草稿。
+     */
+    Optional<PlanReport> findLatestByMonthlyScope(Long planId, String reportMonth, ReportOrgType reportOrgType,
+                                                  Long reportOrgId, Long functionalOrgId);
 }

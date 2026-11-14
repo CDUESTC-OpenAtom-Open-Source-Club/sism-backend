@@ -51,6 +51,21 @@ public class Plan extends AggregateRoot<Long> {
     @Column(name = "created_by_org_id", nullable = false)
     private Long createdByOrgId;
 
+    /**
+     * 2026-11-08（学院指标单层口径）：该学院指标的归口职能部门（仅 FUNC_TO_COLLEGE 使用）。
+     *
+     * <p>为什么需要：学院指标改为「战略部 → 学院」直接下发后没有父级，
+     * 而学院上报链第 3 环「分管职能部门负责人审批」必须知道该学院归口哪个职能部门。
+     * 改造前这个答案藏在父级链里（父级核心指标的目标部门），单层后父级没了；
+     * 组织树也推不出（8 个学院的 parent_org_id 全是 35），
+     * created_by_org_id 现在固定是战略部 → 用它推席位会落错部门并派单失败。
+     *
+     * <p>可空：STRAT_TO_FUNC 计划不需要；存量学院计划为 null 时
+     * 审批席位回退到 created_by_org_id（改造前口径），向后兼容。
+     */
+    @Column(name = "functional_org_id")
+    private Long functionalOrgId;
+
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.NAMED_ENUM)
     @Column(name = "plan_level", columnDefinition = "plan_level", nullable = false)
@@ -90,7 +105,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void activate() {
         if (PlanStatus.DISTRIBUTED.value().equals(this.status)) {
-            throw new IllegalStateException("Plan is already distributed");
+            throw new IllegalStateException("该计划已下发，请勿重复下发；请刷新后查看最新状态");
         }
         String previousStatus = this.status;
         this.status = PlanStatus.DISTRIBUTED.value();
@@ -116,7 +131,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void ensureCanSubmitForApproval() {
         if (!PlanStatus.DRAFT.value().equals(this.status) && !PlanStatus.RETURNED.value().equals(this.status)) {
-            throw new IllegalStateException("Plan must be in DRAFT or RETURNED state to submit for approval");
+            throw new IllegalStateException("当前计划状态不支持发起下发审批（仅草稿或退回待重报状态可发起），请刷新后查看最新状态");
         }
     }
 
@@ -141,7 +156,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void approve() {
         if (PlanStatus.DISTRIBUTED.value().equals(this.status)) {
-            throw new IllegalStateException("Plan is already distributed");
+            throw new IllegalStateException("该计划已下发，请勿重复下发；请刷新后查看最新状态");
         }
         String previousStatus = this.status;
         this.status = PlanStatus.DISTRIBUTED.value();
@@ -165,7 +180,7 @@ public class Plan extends AggregateRoot<Long> {
 
     public void archive() {
         if (Boolean.TRUE.equals(this.isDeleted)) {
-            throw new IllegalStateException("Plan is already archived");
+            throw new IllegalStateException("该计划已归档，请勿重复归档；请刷新后查看最新状态");
         }
         String previousStatus = this.status;
         this.isDeleted = true;

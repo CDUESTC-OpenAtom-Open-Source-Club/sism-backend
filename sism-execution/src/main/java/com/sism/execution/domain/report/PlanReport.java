@@ -57,6 +57,19 @@ public class PlanReport extends AggregateRoot<Long> {
     @Column(name = "audit_instance_id")
     private Long auditInstanceId;
 
+    /**
+     * 2026-11-13 用户拍板（学院上报按归口部门分批提交）：本报告归属的职能部门（归口）。
+     *
+     * <p>权威来源=提交时按「报告明细指标 → 父级核心指标.target_org_id」反查落列
+     * （见 ReportApplicationService#submitReport）；草稿期可由前端传入
+     * （创建草稿 API 可选 functionalOrgId）用于「同月同组织多部门」草稿隔离。
+     *
+     * <p>为空时保持旧口径：上报/异动互斥全锁、席位解析回退 plan.functional_org_id。
+     * 可空、无外键，与本表既有列一致（V104）。
+     */
+    @Column(name = "functional_org_id")
+    private Long functionalOrgId;
+
     @Column(name = "created_by")
     private Long createdBy;
 
@@ -141,6 +154,16 @@ public class PlanReport extends AggregateRoot<Long> {
 
     public static PlanReport createDraft(String reportMonth, Long reportOrgId,
                                          ReportOrgType reportOrgType, Long planId, Long createdBy) {
+        return createDraft(reportMonth, reportOrgId, reportOrgType, planId, createdBy, null);
+    }
+
+    /**
+     * 2026-11-13：草稿期可选携带归口职能部门（前端选中部门后开草稿时传入），
+     * 用于「同月同组织多部门」草稿隔离；提交时的权威归口仍以反查落列为准。
+     */
+    public static PlanReport createDraft(String reportMonth, Long reportOrgId,
+                                         ReportOrgType reportOrgType, Long planId, Long createdBy,
+                                         Long functionalOrgId) {
         String normalizedMonth = normalizeReportMonth(reportMonth);
         if (normalizedMonth == null) {
             throw new IllegalArgumentException("Report month cannot be null or empty");
@@ -163,6 +186,7 @@ public class PlanReport extends AggregateRoot<Long> {
         report.status = PlanReportStatus.DRAFT;
         report.isDeleted = false;
         report.createdBy = createdBy;
+        report.functionalOrgId = functionalOrgId;
         return report;
     }
 

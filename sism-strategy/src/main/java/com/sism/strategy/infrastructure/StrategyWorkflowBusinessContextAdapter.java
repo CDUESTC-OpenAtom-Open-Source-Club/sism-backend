@@ -32,6 +32,66 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
         return Optional.of(entityId);
     }
 
+    /**
+     * 2026-11-08（学院指标单层口径）：该业务实体对应的「归口职能部门」。
+     *
+     * <p><b>为什么必须同时支持 PLAN 和 PLAN_REPORT</b>：学院上报链的审批实例
+     * entityType 是 {@code PLAN_REPORT}、entityId 是 reportId（见 ReportWorkflowEventListener）；
+     * 只认 PLAN 会让真实链路上永远读不到归口部门，席位继续回退到战略部（35），
+     * 而战略部没有 role2 账号 → 第 3 环直接抛 No available approver candidates。
+     * 这是本方法第一版的真实缺陷，必须先把报告映射回计划再查。
+     *
+     * <p><b>2026-11-13 用户拍板（学院上报按归口部门分批提交）</b>：同一学院计划同月可并存
+     * 多份报告（学院 × 归口部门 = 一份月报），每份报告自带 functional_org_id
+     * （提交时反查落列）。席位解析改为<b>报告行归口优先</b>，为空回退
+     * plan.functional_org_id（plan 级归口只反映 MIN，多部门并存时会派错人）。
+     *
+     * <p>未配置归口部门（存量数据）→ empty，调用方回退 created_by_org_id 原口径。
+     */
+    @Override
+    public Optional<Long> findFunctionalOrgIdByEntity(String entityType, Long entityId) {
+        if (PLAN_REPORT_ENTITY_TYPE.equalsIgnoreCase(entityType) && entityId != null) {
+            // 2026-11-13：报告行归口优先（SQL 参数绑定，无拼接）
+            Optional<Long> fromReport = jdbcTemplate.query(
+                    "SELECT functional_org_id FROM public.plan_report WHERE id = ? AND functional_org_id IS NOT NULL",
+                    (rs, rowNum) -> rs.getLong("functional_org_id"),
+                    entityId).stream().findFirst();
+            if (fromReport.isPresent()) {
+                return fromReport;
+            }
+        }
+        Long planId = resolvePlanIdForContext(entityType, entityId);
+        if (planId == null) {
+            return Optional.empty();
+        }
+        return jdbcTemplate.query(
+                "SELECT functional_org_id FROM public.plan WHERE id = ? AND functional_org_id IS NOT NULL",
+                (rs, rowNum) -> rs.getLong("functional_org_id"),
+                planId).stream().findFirst();
+    }
+
+    /**
+     * 把审批实例的业务实体映射到计划 id。
+     *
+     * <p>PLAN → 自身；PLAN_REPORT → 报告的 plan_id；其它 → 无法映射（异动链用指标，
+     * 不需要归口部门，走默认 empty）。
+     */
+    private Long resolvePlanIdForContext(String entityType, Long entityId) {
+        if (entityId == null) {
+            return null;
+        }
+        if ("PLAN".equalsIgnoreCase(entityType)) {
+            return entityId;
+        }
+        if ("PLAN_REPORT".equalsIgnoreCase(entityType)) {
+            return jdbcTemplate.query(
+                    "SELECT plan_id FROM public.plan_report WHERE id = ?",
+                    (rs, rowNum) -> rs.getLong("plan_id"),
+                    entityId).stream().findFirst().orElse(null);
+        }
+        return null;
+    }
+
     @Override
     public Optional<BusinessSummary> getBusinessSummary(String entityType, Long entityId) {
         // 2026-10-21：战略任务改名异动（entityType=TASK）——卡片显示任务名与流向
@@ -154,10 +214,16 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
      * 2026-10-31 P-18：上报审批的业务摘要——public.plan_report 行 + 所属计划。
      * 不过滤 is_deleted：被取消/归档的上报在「审批历史」里仍要能显示当时的轮次与流向
      * （与 INDICATOR 分支的 audit_log 兜底同一诉求，软删只翻标记不改业务值）。
+     *
+     * <p>2026-11-13 用户定案（上报流向语义修正）：学院上报的真实去向是<b>归口职能部门</b>
+     * （战略发展部只是终审节点，不占用流向展示）——target 解析改为归口优先：
+     * ① 报告行 functional_org_id（V104 起提交时反查落列，权威来源）；
+     * ② 为空回退 plan.functional_org_id；③ 仍为空（存量无归口数据）→ 回退旧口径
+     * 计划创建方（战略部），不炸。涉及多职能部门时各报告流向各自正确。</p>
      */
     private Optional<BusinessSummary> resolvePlanReportSummary(Long reportId) {
         return jdbcTemplate.query(
-                "SELECT plan_id, report_month, report_org_id FROM public.plan_report WHERE id = ?",
+                "SELECT plan_id, report_month, report_org_id, functional_org_id FROM public.plan_report WHERE id = ?",
                 rs -> {
                     if (!rs.next()) {
                         return Optional.<BusinessSummary>empty();
@@ -165,16 +231,27 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
                     long planId = rs.getLong("plan_id");
                     String reportMonth = rs.getString("report_month");
                     long reportOrgId = rs.getLong("report_org_id");
+                    long functionalOrgId = rs.getLong("functional_org_id");
                     Long sourceId = reportOrgId > 0 ? reportOrgId : null;
                     String sourceOrgName = resolveOrgName(sourceId);
                     Long targetId = null;
                     String targetOrgName = null;
-                    if (planId > 0) {
-                        // 接收部门=计划创建方（下发方）；计划缺失时降级为只写上报组织
-                        targetId = planRepository.findById(planId)
-                                .map(Plan::getCreatedByOrgId)
-                                .orElse(null);
+                    if (functionalOrgId > 0) {
+                        // ① 报告行归口（权威来源）
+                        targetId = functionalOrgId;
                         targetOrgName = resolveOrgName(targetId);
+                    } else if (planId > 0) {
+                        // ② 计划级归口回退（V104 回填的存量）；③ 再缺 → 旧口径创建方
+                        Plan plan = planRepository.findById(planId).orElse(null);
+                        Long planFunctional = plan != null ? plan.getFunctionalOrgId() : null;
+                        if (planFunctional != null && planFunctional > 0) {
+                            targetId = planFunctional;
+                            targetOrgName = resolveOrgName(targetId);
+                        } else {
+                            // 接收部门=计划创建方（下发方，存量兼容）；计划缺失时降级为只写上报组织
+                            targetId = plan != null ? plan.getCreatedByOrgId() : null;
+                            targetOrgName = resolveOrgName(targetId);
+                        }
                     }
                     String route;
                     if (sourceOrgName != null && targetOrgName != null) {

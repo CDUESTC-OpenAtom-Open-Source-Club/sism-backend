@@ -25,9 +25,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -239,6 +241,79 @@ class StrategyWorkflowBusinessContextAdapterTest {
         assertEquals("战略发展部", summary.get().targetOrgName());
     }
 
+    // 2026-11-13 用户定案（上报流向语义修正）：学院上报的真实去向是**归口职能部门**
+    // （战略发展部只是终审节点，不占流向展示）——target 解析归口优先：报告行
+    // functional_org_id（V104 权威来源）→ plan.functional_org_id 回退 → 旧口径创建方。
+    @Test
+    @DisplayName("PLAN_REPORT 归口优先：报告行 functional_org_id → target=归口职能部门（不再显示战略发展部）")
+    void planReport_targetShouldPreferReportFunctionalOrg() {
+        doAnswer(invocation -> {
+            ResultSetExtractor<Optional<BusinessSummary>> extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            when(rs.next()).thenReturn(true);
+            when(rs.getLong("plan_id")).thenReturn(705489L);
+            when(rs.getString("report_month")).thenReturn("202611");
+            when(rs.getLong("report_org_id")).thenReturn(57L);
+            when(rs.getLong("functional_org_id")).thenReturn(37L);
+            Optional<BusinessSummary> extracted = extractor.extractData(rs);
+            assertTrue(extracted.isPresent());
+            return extracted;
+        }).when(jdbcTemplate).query(
+                contains("public.plan_report"), any(ResultSetExtractor.class), eq(920L));
+        // 归口命中时不应再查计划（target 直接取报告行归口）
+        SysOrg reporter = mock(SysOrg.class);
+        when(reporter.getName()).thenReturn("计算机学院");
+        SysOrg functional = mock(SysOrg.class);
+        when(functional.getName()).thenReturn("纪委办公室 | 监察处");
+        when(organizationRepository.findById(57L)).thenReturn(Optional.of(reporter));
+        when(organizationRepository.findById(37L)).thenReturn(Optional.of(functional));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN_REPORT", 920L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("2026年度 11月上报（计算机学院 -> 纪委办公室 | 监察处）", summary.get().displayName());
+        assertEquals(37L, summary.get().targetOrgId());
+        assertEquals("纪委办公室 | 监察处", summary.get().targetOrgName());
+        verify(planRepository, never()).findById(anyLong());
+    }
+
+    @Test
+    @DisplayName("PLAN_REPORT 归口回退：报告行无归口 → plan.functional_org_id → 仍缺 → 旧口径创建方")
+    void planReport_targetShouldFallBackToPlanFunctionalThenCreator() {
+        doAnswer(invocation -> {
+            ResultSetExtractor<Optional<BusinessSummary>> extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            when(rs.next()).thenReturn(true);
+            when(rs.getLong("plan_id")).thenReturn(4036L);
+            when(rs.getString("report_month")).thenReturn("202610");
+            when(rs.getLong("report_org_id")).thenReturn(77L);
+            // 存量报告行无归口（getLong 返回 0 = NULL）
+            when(rs.getLong("functional_org_id")).thenReturn(0L);
+            Optional<BusinessSummary> extracted = extractor.extractData(rs);
+            assertTrue(extracted.isPresent());
+            return extracted;
+        }).when(jdbcTemplate).query(
+                contains("public.plan_report"), any(ResultSetExtractor.class), eq(921L));
+        Plan plan = mock(Plan.class);
+        // 计划级归口回退命中（V104 回填）；createdByOrgId 存根不消费（归口优先短路），lenient 抑制
+        lenient().when(plan.getCreatedByOrgId()).thenReturn(88L);
+        when(plan.getFunctionalOrgId()).thenReturn(46L);
+        when(planRepository.findById(4036L)).thenReturn(Optional.of(plan));
+        SysOrg reporter = mock(SysOrg.class);
+        when(reporter.getName()).thenReturn("XX学院");
+        SysOrg planFunctional = mock(SysOrg.class);
+        when(planFunctional.getName()).thenReturn("人力资源部");
+        when(organizationRepository.findById(77L)).thenReturn(Optional.of(reporter));
+        when(organizationRepository.findById(46L)).thenReturn(Optional.of(planFunctional));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN_REPORT", 921L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("2026年度 10月上报（XX学院 -> 人力资源部）", summary.get().displayName());
+        assertEquals(46L, summary.get().targetOrgId());
+        assertEquals("人力资源部", summary.get().targetOrgName());
+    }
+
     @Test
     @DisplayName("PLAN_REPORT 分支降级：轮次缺失省年度月段、计划缺失只写上报组织、月份前导零去掉")
     void planReport_shouldDegradeWhenRoundOrPlanMissing() {
@@ -299,5 +374,77 @@ class StrategyWorkflowBusinessContextAdapterTest {
 
         Optional<BusinessSummary> withoutRow = adapter.getBusinessSummary("PLAN_REPORT", 913L);
         assertFalse(withoutRow.isPresent());
+    }
+
+    // ==================== 2026-11-13 用户拍板（学院上报按归口部门分批提交） ====================
+    //
+    // 席位解析升级：报告行归口优先（同月多部门并存时 plan 级归口只反映 MIN，会派错人），
+    // 为空回退 plan.functional_org_id（存量报告兼容）。
+
+    @Test
+    @DisplayName("2026-11-13：PLAN_REPORT 归口解析优先读报告行 functional_org_id，不再直查 plan")
+    void findFunctionalOrgIdByEntity_reportRowTakesPriorityOverPlan() {
+        when(jdbcTemplate.query(
+                contains("plan_report WHERE id = ? AND functional_org_id IS NOT NULL"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L)))
+                .thenReturn(java.util.List.of(37L));
+
+        Optional<Long> functionalOrgId = adapter.findFunctionalOrgIdByEntity("PLAN_REPORT", 9L);
+
+        assertTrue(functionalOrgId.isPresent());
+        assertEquals(37L, functionalOrgId.get());
+        // 报告行已命中：不应再反查报告所属计划，更不应读 plan 级归口
+        verify(jdbcTemplate, never()).query(
+                contains("SELECT plan_id FROM public.plan_report"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L));
+        verify(jdbcTemplate, never()).query(
+                contains("SELECT functional_org_id FROM public.plan WHERE id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(111L));
+    }
+
+    @Test
+    @DisplayName("2026-11-13：报告行归口为空回退 plan.functional_org_id（存量报告兼容）")
+    void findFunctionalOrgIdByEntity_fallsBackToPlanWhenReportRowHasNoFunctionalOrg() {
+        // ① 报告行归口为空（存量报告 / V104 之前提交）
+        when(jdbcTemplate.query(
+                contains("plan_report WHERE id = ? AND functional_org_id IS NOT NULL"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L)))
+                .thenReturn(java.util.List.of());
+        // ② 报告映射回计划 111
+        when(jdbcTemplate.query(
+                contains("SELECT plan_id FROM public.plan_report"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(9L)))
+                .thenReturn(java.util.List.of(111L));
+        // ③ 计划级归口 38 兜底
+        when(jdbcTemplate.query(
+                contains("SELECT functional_org_id FROM public.plan WHERE id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(111L)))
+                .thenReturn(java.util.List.of(38L));
+
+        Optional<Long> functionalOrgId = adapter.findFunctionalOrgIdByEntity("PLAN_REPORT", 9L);
+
+        assertTrue(functionalOrgId.isPresent());
+        assertEquals(38L, functionalOrgId.get());
+    }
+
+    @Test
+    @DisplayName("2026-11-13：PLAN 实体归口解析口径不变（直接读 plan.functional_org_id）")
+    void findFunctionalOrgIdByEntity_planEntityStillReadsPlanRow() {
+        when(jdbcTemplate.query(
+                contains("SELECT functional_org_id FROM public.plan WHERE id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.RowMapper<Long>>any(),
+                eq(111L)))
+                .thenReturn(java.util.List.of(38L));
+
+        Optional<Long> functionalOrgId = adapter.findFunctionalOrgIdByEntity("PLAN", 111L);
+
+        assertTrue(functionalOrgId.isPresent());
+        assertEquals(38L, functionalOrgId.get());
     }
 }

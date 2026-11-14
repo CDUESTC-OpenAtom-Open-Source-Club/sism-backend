@@ -91,6 +91,13 @@
             <artifactId>mockito-core</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- H2 仅测试使用：指标可见性原生 SQL（findByVisibleOrg/findByYearAndVisibleOrg）
+             的仓库层集成测试需要真库执行，与 sism-task/sism-main 同款做法（生产用 PostgreSQL） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
