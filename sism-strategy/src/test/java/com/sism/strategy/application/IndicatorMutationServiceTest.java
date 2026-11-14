@@ -686,19 +686,44 @@ class IndicatorMutationServiceTest {
         return org;
     }
 
-    /** 打桩：父级核心指标锚点（目标组织=学院、所属周期=2026）。 */
+    /** 打桩：父级核心指标锚点（目标组织=归口职能部门 41003、所属周期=2026）。 */
     private void stubParentAnchor() {
+        stubParentAnchorWithChildren(List.of(COLLEGE_ORG_ID));
+    }
+
+    private void stubParentAnchorWithChildren(List<Long> targetOrgIds) {
         when(jdbcTemplate.query(
                 contains("p.cycle_id"),
                 org.mockito.ArgumentMatchers
                         .<org.springframework.jdbc.core.ResultSetExtractor<Map<String, Object>>>any(),
                 eq(PARENT_INDICATOR_ID)))
                 .thenReturn(Map.of(
-                        "target_org_id", COLLEGE_ORG_ID,
+                        "target_org_id", TARGET_ORG_ID,
                         "cycle_id", PARENT_CYCLE_ID));
+        stubExistingChildTargets(targetOrgIds);
     }
 
-    /** 打桩：发起人组织（战略发展部）与父级目标组织（学院）的 SysOrg 加载。 */
+    private void stubParentAnchorWithoutChildren() {
+        when(jdbcTemplate.query(
+                contains("p.cycle_id"),
+                org.mockito.ArgumentMatchers
+                        .<org.springframework.jdbc.core.ResultSetExtractor<Map<String, Object>>>any(),
+                eq(PARENT_INDICATOR_ID)))
+                .thenReturn(Map.of(
+                        "target_org_id", TARGET_ORG_ID,
+                        "cycle_id", PARENT_CYCLE_ID));
+        stubExistingChildTargets(List.of());
+    }
+
+    private void stubExistingChildTargets(List<Long> targetOrgIds) {
+        when(jdbcTemplate.queryForList(
+                contains("SELECT DISTINCT child.target_org_id"),
+                eq(Long.class),
+                eq(PARENT_INDICATOR_ID)))
+                .thenReturn(targetOrgIds);
+    }
+
+    /** 打桩：发起人组织（战略发展部）、父级归口职能部门与目标学院。 */
     private void stubOrgs() {
         com.sism.organization.domain.SysOrg owner = org(STRATEGY_ORG_ID, com.sism.organization.domain.OrgType.admin);
         com.sism.organization.domain.SysOrg college = org(COLLEGE_ORG_ID, com.sism.organization.domain.OrgType.academic);
@@ -706,6 +731,20 @@ class IndicatorMutationServiceTest {
                 .thenReturn(java.util.Optional.of(owner));
         when(organizationRepository.findById(COLLEGE_ORG_ID))
                 .thenReturn(java.util.Optional.of(college));
+    }
+
+    private void stubOwnerOrg() {
+        when(organizationRepository.findById(STRATEGY_ORG_ID))
+                .thenReturn(java.util.Optional.of(org(STRATEGY_ORG_ID,
+                        com.sism.organization.domain.OrgType.admin)));
+    }
+
+    private void stubDownstreamCollegePlan() {
+        when(jdbcTemplate.queryForObject(
+                contains("SELECT COUNT(*)"),
+                eq(Integer.class),
+                any(Object[].class)))
+                .thenAnswer(invocation -> invocation.getArgument(0, String.class).contains("audit_instance") ? 0 : 1);
     }
 
     /** 打桩：权重闭合校验的（计划、目标部门）反查——新旧指标同属计划 4040 / 部门 41003。 */
@@ -807,8 +846,9 @@ class IndicatorMutationServiceTest {
     @DisplayName("2026-11-14 权重闭合（90+10=100）：新行已落库、计入合计且不带 override，校验通过后启动审批链")
     void initiateBatch_shouldValidateWeightClosureIncludingCreatedRow() {
         stubReporter();
-        stubParentAnchor();
+        stubParentAnchorWithoutChildren();
         stubOrgs();
+        stubDownstreamCollegePlan();
         Indicator created = stubCreatedIndicator("补位指标", new java.math.BigDecimal("10"), null);
         when(strategyApplicationService.createIndicator(
                 any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
@@ -827,7 +867,8 @@ class IndicatorMutationServiceTest {
                         "create", true,
                         "indicatorDesc", "补位指标",
                         "weightPercent", new java.math.BigDecimal("10"),
-                        "parentIndicatorId", PARENT_INDICATOR_ID)),
+                        "parentIndicatorId", PARENT_INDICATOR_ID,
+                        "targetOrgId", COLLEGE_ORG_ID)),
                 OPERATOR_ID);
 
         // 闭合校验以新行为入口（90 存量 + 10 新增 = 100 通过）：create 行已落库、
@@ -848,8 +889,9 @@ class IndicatorMutationServiceTest {
     @DisplayName("2026-11-14 权重闭合（90+20=110）：合计不为 100 整批拒绝，审批链不启动")
     void initiateBatch_shouldRejectCreateBatchWhenWeightNotClosed() {
         stubReporter();
-        stubParentAnchor();
+        stubParentAnchorWithoutChildren();
         stubOrgs();
+        stubDownstreamCollegePlan();
         Indicator created = stubCreatedIndicator("超重指标", new java.math.BigDecimal("20"), null);
         when(strategyApplicationService.createIndicator(
                 any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
@@ -872,13 +914,80 @@ class IndicatorMutationServiceTest {
                                 "create", true,
                                 "indicatorDesc", "超重指标",
                                 "weightPercent", new java.math.BigDecimal("20"),
-                                "parentIndicatorId", PARENT_INDICATOR_ID)),
+                                "parentIndicatorId", PARENT_INDICATOR_ID,
+                        "targetOrgId", COLLEGE_ORG_ID)),
                         OPERATOR_ID));
 
         assertTrue(error.getMessage().contains("必须为100"));
         // 校验未通过：整批拒绝（@Transactional 回滚落库），审批链绝不启动
         verify(businessWorkflowApplicationService, never())
                 .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("2026-11-14 目标解析：同一父级多个未删除子指标指向同一学院时继续使用该学院")
+    void initiateBatch_shouldResolveSameCollegeFromDuplicateChildren() {
+        stubReporter();
+        stubParentAnchorWithChildren(List.of(COLLEGE_ORG_ID, COLLEGE_ORG_ID));
+        stubOrgs();
+        Indicator created = stubCreatedIndicator("同学院新增", new java.math.BigDecimal("10"), null);
+        when(strategyApplicationService.createIndicator(
+                any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
+                any(), any(), any(), eq(0), eq(PARENT_CYCLE_ID), eq(true)))
+                .thenReturn(created);
+        Map<String, Object> newRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        newRow.put("id", NEW_INDICATOR_ID);
+        newRow.put("indicator_desc", "同学院新增");
+        newRow.put("weight_percent", new java.math.BigDecimal("10"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(NEW_INDICATOR_ID)))
+                .thenReturn(newRow);
+        stubWeightAnchorQueries();
+        stubWorkflowStart("1310");
+
+        assertEquals(List.of("1310"), service.initiateBatch(
+                List.of(Map.of("create", true, "indicatorDesc", "同学院新增",
+                        "parentIndicatorId", PARENT_INDICATOR_ID)), OPERATOR_ID));
+
+        ArgumentCaptor<com.sism.organization.domain.SysOrg> targetCaptor =
+                ArgumentCaptor.forClass(com.sism.organization.domain.SysOrg.class);
+        verify(strategyApplicationService).createIndicator(
+                any(), any(), targetCaptor.capture(), any(), eq(PARENT_INDICATOR_ID),
+                any(), any(), any(), any(), eq(0), eq(PARENT_CYCLE_ID), eq(true));
+        assertEquals(COLLEGE_ORG_ID, targetCaptor.getValue().getId());
+    }
+
+    @Test
+    @DisplayName("2026-11-14 目标解析：父级子指标分属多个学院时明确拒绝")
+    void initiateBatch_shouldRejectDifferentChildCollegeTargets() {
+        stubReporter();
+        stubParentAnchorWithChildren(List.of(COLLEGE_ORG_ID, COLLEGE_ORG_ID + 1));
+        stubOwnerOrg();
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("create", true, "indicatorDesc", "冲突学院新增",
+                                "parentIndicatorId", PARENT_INDICATOR_ID)), OPERATOR_ID));
+
+        assertEquals("无法确定新增子指标的目标学院：父级已有多个学院子指标", error.getMessage());
+        verifyNoInteractions(strategyApplicationService);
+        verifyNoInteractions(entityManager);
+    }
+
+    @Test
+    @DisplayName("2026-11-14 目标解析：无子指标且无显式目标学院时明确拒绝")
+    void initiateBatch_shouldRejectWhenTargetCollegeCannotBeDetermined() {
+        stubReporter();
+        stubParentAnchorWithoutChildren();
+        stubOwnerOrg();
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("create", true, "indicatorDesc", "缺少目标学院",
+                                "parentIndicatorId", PARENT_INDICATOR_ID)), OPERATOR_ID));
+
+        assertEquals("无法确定新增子指标的目标学院", error.getMessage());
+        verifyNoInteractions(strategyApplicationService);
+        verifyNoInteractions(entityManager);
     }
 
     @Test
@@ -926,8 +1035,9 @@ class IndicatorMutationServiceTest {
     @DisplayName("2026-11-14 混合批次：带字段 create 条目与旧格式 {id, create:true} 同批各走各的分支")
     void initiateBatch_shouldSupportMixedLegacyAndDraftCreateItems() {
         stubReporter();
-        stubParentAnchor();
+        stubParentAnchorWithoutChildren();
         stubOrgs();
+        stubDownstreamCollegePlan();
         Indicator created = stubCreatedIndicator("草稿新增", new java.math.BigDecimal("10"), null);
         when(strategyApplicationService.createIndicator(
                 any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
@@ -949,7 +1059,8 @@ class IndicatorMutationServiceTest {
                         Map.of(
                                 "create", true,
                                 "indicatorDesc", "草稿新增",
-                                "parentIndicatorId", PARENT_INDICATOR_ID),
+                                "parentIndicatorId", PARENT_INDICATOR_ID,
+                                "targetOrgId", COLLEGE_ORG_ID),
                         Map.of("id", INDICATOR_ID, "create", true)),
                 OPERATOR_ID);
 
