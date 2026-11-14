@@ -161,19 +161,25 @@ class IndicatorAppraisalApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("setLevel：上报在途 + 席位角色 + 当前节点候选人 → 成功落库")
-    void shouldPersistAppraisalLevelWhenReportSubmittedAndInstanceInReview() {
-        stubReportRow("SUBMITTED", "IN_REVIEW");
-        stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
-        when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(collegeFlow());
-        when(approverResolver.canUserApprove(any(AuditStepDef.class), any(Long.class), any(AuditInstance.class)))
-                .thenReturn(true);
+    @DisplayName("指标无任何上报记录 → context 不再静默省略：返回 canAppraise=false + 「尚未发起上报」提示")
+    void shouldReturnLockHintContextForIndicatorWithoutReportRow() {
+        // 不 stub jdbcTemplate.query → loadLatestReportRows 返回空 map（无 report 行）
+        List<IndicatorAppraisalContextResponse> contexts =
+                service().getContexts(List.of(INDICATOR_ID), APPROVER_USER_ID, SEAT_ROLES);
 
-        IndicatorAppraisalContextResponse context =
-                service().setLevel(INDICATOR_ID, "normal", APPROVER_USER_ID, SEAT_ROLES);
-
-        verify(planReportIndicatorRepository).updateAppraisalLevel(REPORT_ID, INDICATOR_ID, "NORMAL");
-        assertTrue(context.isCanAppraise());
+        // 2026-11-14 提示语统一：三视图点击无上报记录的格子都能拿到同一权威提示，
+        // 而不是前端兜底的「非上报审批期间」（此前该类指标被静默省略，提示语族不一致）
+        assertEquals(1, contexts.size());
+        IndicatorAppraisalContextResponse context = contexts.get(0);
+        assertEquals(INDICATOR_ID, context.getIndicatorId());
+        assertFalse(context.isCanAppraise());
+        assertNotNull(context.getLockHint());
+        assertTrue(context.getLockHint().contains("尚未发起上报"),
+                "无上报记录应有专属提示，实际：" + context.getLockHint());
+        assertFalse(context.getLockHint().contains("评定人"),
+                "「尚未发起上报」不应与「非当前环节评定人」混用同一句提示");
+        assertFalse(context.getLockHint().contains("无评定权限"),
+                "「尚未发起上报」不应与「无席位角色」混用同一句提示");
     }
 
     @Test
