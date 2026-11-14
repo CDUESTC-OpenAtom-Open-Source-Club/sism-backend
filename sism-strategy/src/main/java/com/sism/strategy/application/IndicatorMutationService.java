@@ -432,13 +432,15 @@ public class IndicatorMutationService {
         }
         com.sism.organization.domain.SysOrg ownerOrg = organizationRepository.findById(ownerOrgId)
                 .orElseThrow(() -> new IllegalArgumentException("责任组织未找到: " + ownerOrgId));
-        Long targetOrgId = toNullableLong(parent.get("target_org_id"));
-        // targetOrg 为空时不在此拦——交给 createIndicator/resolveTaskIdForChildIndicator
-        // 的既有「目标组织不能为空」口径，报错文案全局一致
-        com.sism.organization.domain.SysOrg targetOrg = targetOrgId == null
-                ? null
-                : organizationRepository.findById(targetOrgId)
-                        .orElseThrow(() -> new IllegalArgumentException("目标组织未找到: " + targetOrgId));
+        // 学院新增行的目标组织不能从父级核心指标直接继承：父级 target_org_id 是归口职能部门，
+        // 新指标必须落到父级对应的下游学院。解析器只接受已验证的学院目标，无法确定时拒绝。
+        Long targetOrgId = resolveNewIndicatorTargetOrgId(
+                item, parentIndicatorId, parent, ownerOrgId);
+        com.sism.organization.domain.SysOrg targetOrg = organizationRepository.findById(targetOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("目标学院未找到: " + targetOrgId));
+        if (targetOrg.getType() != com.sism.organization.domain.OrgType.academic) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
         Long cycleId = toNullableLong(parent.get("cycle_id"));
         Long taskId = toLongId(valueOf(item, "taskId", "task_id"));
         Object weightRaw = item.containsKey("weightPercent")
@@ -456,9 +458,131 @@ public class IndicatorMutationService {
 
         // 复用既有「新增进入异动」逻辑：前置校验 + (新增) 快照 + IN_MUTATION 标记
         markCreatedIndicatorInMutation(created.getId(), operatorUserId, batchId);
-        log.info("[IndicatorMutation] 前端内存草稿新增行已同事务落库并进入异动: indicatorId={}, parentIndicatorId={}, batchId={}",
-                created.getId(), parentIndicatorId, batchId);
+        log.info("[IndicatorMutation] 前端内存草稿新增行已同事务落库并进入异动: indicatorId={}, parentIndicatorId={}, targetOrgId={}, batchId={}",
+                created.getId(), parentIndicatorId, targetOrgId, batchId);
         return created.getId();
+    }
+
+    /**
+     * 解析新增学院子指标的目标学院。
+     *
+     * <p>父级核心指标的 target_org_id 是归口职能部门，不能作为学院子指标的目标组织。
+     * 解析顺序为：已校验的草稿 targetOrgId、父级现有未删除子指标的唯一目标、
+     * 父级归口职能部门对应的 FUNC_TO_COLLEGE 计划唯一目标。任何歧义都拒绝，
+     * 不从父级 target_org_id 回退。
+     */
+    private Long resolveNewIndicatorTargetOrgId(Map<String, Object> item,
+                                                Long parentIndicatorId,
+                                                Map<String, Object> parent,
+                                                Long ownerOrgId) {
+        Long requestedTargetOrgId = toLongId(valueOf(item, "targetOrgId", "target_org_id"));
+        Set<Long> childTargetOrgIds = new LinkedHashSet<>(jdbcTemplate.queryForList(
+                """
+                SELECT DISTINCT child.target_org_id
+                FROM public.indicator child
+                JOIN public.sys_org target_org ON target_org.id = child.target_org_id
+                WHERE child.parent_indicator_id = ?
+                  AND COALESCE(child.is_deleted, false) = false
+                  AND child.target_org_id IS NOT NULL
+                ORDER BY child.target_org_id
+                """,
+                Long.class,
+                parentIndicatorId));
+
+        if (requestedTargetOrgId != null) {
+            assertAcademicTargetOrg(requestedTargetOrgId);
+            if (!childTargetOrgIds.isEmpty()) {
+                if (childTargetOrgIds.size() > 1) {
+                    throw new IllegalArgumentException("无法确定新增子指标的目标学院：父级已有多个学院子指标");
+                }
+                if (!requestedTargetOrgId.equals(childTargetOrgIds.iterator().next())) {
+                    throw new IllegalArgumentException("新增子指标的目标学院与父级现有子指标不一致");
+                }
+                return requestedTargetOrgId;
+            }
+            assertDownstreamCollegeContext(requestedTargetOrgId, parent, ownerOrgId);
+            return requestedTargetOrgId;
+        }
+
+        if (childTargetOrgIds.size() > 1) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院：父级已有多个学院子指标");
+        }
+        if (childTargetOrgIds.size() == 1) {
+            Long resolved = childTargetOrgIds.iterator().next();
+            assertAcademicTargetOrg(resolved);
+            return resolved;
+        }
+
+        Long parentFunctionalOrgId = toNullableLong(parent.get("target_org_id"));
+        Long cycleId = toNullableLong(parent.get("cycle_id"));
+        if (parentFunctionalOrgId != null && cycleId != null) {
+            List<Long> downstreamTargets = jdbcTemplate.queryForList(
+                    """
+                    SELECT DISTINCT p.target_org_id
+                    FROM public.plan p
+                    JOIN public.sys_org target_org ON target_org.id = p.target_org_id
+                    WHERE p.cycle_id = ?
+                      AND p.functional_org_id = ?
+                      AND p.created_by_org_id = ?
+                      AND p.plan_level = 'FUNC_TO_COLLEGE'
+                      AND COALESCE(p.is_deleted, false) = false
+                      AND target_org.type = 'academic'
+                    ORDER BY p.target_org_id
+                    """,
+                    Long.class,
+                    cycleId,
+                    parentFunctionalOrgId,
+                    ownerOrgId);
+            if (downstreamTargets.size() > 1) {
+                throw new IllegalArgumentException("无法确定新增子指标的目标学院：父级对应多个下游学院");
+            }
+            if (downstreamTargets.size() == 1) {
+                Long resolved = downstreamTargets.get(0);
+                assertAcademicTargetOrg(resolved);
+                return resolved;
+            }
+        }
+        throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+    }
+
+    private void assertAcademicTargetOrg(Long targetOrgId) {
+        com.sism.organization.domain.SysOrg targetOrg = organizationRepository.findById(targetOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("目标学院未找到: " + targetOrgId));
+        if (targetOrg.getType() != com.sism.organization.domain.OrgType.academic) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
+    }
+
+    /** 草稿显式目标必须同时落在父级归口部门对应的学院下游计划中。 */
+    private void assertDownstreamCollegeContext(Long targetOrgId,
+                                                Map<String, Object> parent,
+                                                Long ownerOrgId) {
+        Long parentFunctionalOrgId = toNullableLong(parent.get("target_org_id"));
+        Long cycleId = toNullableLong(parent.get("cycle_id"));
+        if (parentFunctionalOrgId == null || cycleId == null) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
+        Integer matchingPlans = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM public.plan p
+                JOIN public.sys_org target_org ON target_org.id = p.target_org_id
+                WHERE p.cycle_id = ?
+                  AND p.target_org_id = ?
+                  AND p.functional_org_id = ?
+                  AND p.created_by_org_id = ?
+                  AND p.plan_level = 'FUNC_TO_COLLEGE'
+                  AND COALESCE(p.is_deleted, false) = false
+                  AND target_org.type = 'academic'
+                """,
+                Integer.class,
+                cycleId,
+                targetOrgId,
+                parentFunctionalOrgId,
+                ownerOrgId);
+        if (matchingPlans == null || matchingPlans <= 0) {
+            throw new IllegalArgumentException("无法确定新增子指标的目标学院");
+        }
     }
 
     /** 按给定键序取第一个非空白文本值（trim 后返回；全缺/空白返回 null）。 */
