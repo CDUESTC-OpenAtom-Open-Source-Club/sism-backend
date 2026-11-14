@@ -1,6 +1,7 @@
 package com.sism.strategy.application;
 
 import com.sism.shared.domain.user.UserProvider;
+import com.sism.strategy.domain.indicator.Indicator;
 import com.sism.strategy.infrastructure.StrategyOrgProperties;
 import com.sism.workflow.application.BusinessWorkflowApplicationService;
 import com.sism.workflow.interfaces.dto.StartWorkflowRequest;
@@ -27,10 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -93,6 +97,20 @@ class IndicatorMutationServiceTest {
     @Mock
     private CollegeDispatchGuardService collegeDispatchGuardService;
 
+    // ==================== 2026-11-14（新增行不落库改造）：同事务创建分支 ====================
+
+    /** 同事务创建复用的 createIndicator（整体 mock，落库行为由其自身测试覆盖）。 */
+    @Mock
+    private StrategyApplicationService strategyApplicationService;
+
+    /** 同事务创建需要以 SysOrg 实体调用 createIndicator（归属=发起人组织，目标=父级 target_org）。 */
+    @Mock
+    private com.sism.organization.domain.OrganizationRepository organizationRepository;
+
+    /** JPA INSERT 延迟到 flush——原生 SQL 读回新行前必须显式 flush（见服务字段注释）。 */
+    @Mock
+    private jakarta.persistence.EntityManager entityManager;
+
     private IndicatorMutationService service;
 
     @BeforeEach
@@ -116,7 +134,11 @@ class IndicatorMutationServiceTest {
                 userNotificationService,
                 approverResolver,
                 workflowDefinitionQueryService,
-                workflowReadModelService
+                workflowReadModelService,
+                // 2026-11-14：新增行不落库——同事务创建分支
+                strategyApplicationService,
+                organizationRepository,
+                entityManager
         );
     }
 
@@ -641,6 +663,305 @@ class IndicatorMutationServiceTest {
         assertEquals(
                 java.math.BigDecimal.valueOf(20),
                 overrideCaptor.getValue().get(INDICATOR_ID));
+    }
+
+    // ==================== 2026-11-14（新增行不落库改造）：同事务创建分支 ====================
+    //
+    // 口径：学院页签「新增行」在点「发起异动」前是纯前端内存草稿（刷新即丢、不落库）。
+    // 发起异动时新增行带完整创建字段提交，后端在同一事务内：创建指标落库 →
+    // 打 mutation_status=IN_MUTATION → 快照 audit_log（before 全 "(新增)"）→
+    // 批次闭合权重校验 → 启动 PLAN_MUTATION_STRATEGY 审批链。
+
+    private static final Long PARENT_INDICATOR_ID = 1001L;
+    private static final Long NEW_INDICATOR_ID = 2101L;
+    private static final Long COLLEGE_ORG_ID = 41010L;
+    private static final Long PARENT_CYCLE_ID = 2026L;
+
+    /** 测试用组织实体（SysOrg 无 equals 重写，按同一实例匹配）。 */
+    private com.sism.organization.domain.SysOrg org(Long id, com.sism.organization.domain.OrgType type) {
+        var org = new com.sism.organization.domain.SysOrg();
+        org.setId(id);
+        org.setType(type);
+        org.setName("org-" + id);
+        return org;
+    }
+
+    /** 打桩：父级核心指标锚点（目标组织=学院、所属周期=2026）。 */
+    private void stubParentAnchor() {
+        when(jdbcTemplate.query(
+                contains("p.cycle_id"),
+                org.mockito.ArgumentMatchers
+                        .<org.springframework.jdbc.core.ResultSetExtractor<Map<String, Object>>>any(),
+                eq(PARENT_INDICATOR_ID)))
+                .thenReturn(Map.of(
+                        "target_org_id", COLLEGE_ORG_ID,
+                        "cycle_id", PARENT_CYCLE_ID));
+    }
+
+    /** 打桩：发起人组织（战略发展部）与父级目标组织（学院）的 SysOrg 加载。 */
+    private void stubOrgs() {
+        com.sism.organization.domain.SysOrg owner = org(STRATEGY_ORG_ID, com.sism.organization.domain.OrgType.admin);
+        com.sism.organization.domain.SysOrg college = org(COLLEGE_ORG_ID, com.sism.organization.domain.OrgType.academic);
+        when(organizationRepository.findById(STRATEGY_ORG_ID))
+                .thenReturn(java.util.Optional.of(owner));
+        when(organizationRepository.findById(COLLEGE_ORG_ID))
+                .thenReturn(java.util.Optional.of(college));
+    }
+
+    /** 打桩：权重闭合校验的（计划、目标部门）反查——新旧指标同属计划 4040 / 部门 41003。 */
+    private void stubWeightAnchorQueries() {
+        when(jdbcTemplate.query(
+                contains("SELECT t.plan_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(4040L);
+        when(jdbcTemplate.query(
+                contains("SELECT target_org_id"),
+                org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ResultSetExtractor<Long>>any(),
+                any()))
+                .thenReturn(TARGET_ORG_ID);
+    }
+
+    /** 打桩：同事务创建返回的新指标（SEQUENCE 主键已分配，行已 flush）。 */
+    private Indicator stubCreatedIndicator(String desc, java.math.BigDecimal weight, String remark) {
+        var created = new Indicator();
+        created.setId(NEW_INDICATOR_ID);
+        created.setIndicatorDesc(desc);
+        created.setWeightPercent(weight);
+        created.setRemark(remark);
+        created.setStatus(com.sism.strategy.domain.indicator.IndicatorStatus.DRAFT);
+        return created;
+    }
+
+    @Test
+    @DisplayName("2026-11-14（新增行不落库）：带创建字段的 create 条目→同事务落库+打 IN_MUTATION+(新增)快照+CREATE 审批链")
+    void initiateBatch_shouldCreateAndMarkIndicatorWhenItemCarriesCreateFields() {
+        stubReporter();
+        stubParentAnchor();
+        stubOrgs();
+        Indicator created = stubCreatedIndicator("学院新增指标", new java.math.BigDecimal("10"), "下发备注");
+        when(strategyApplicationService.createIndicator(
+                eq("学院新增指标"), any(com.sism.organization.domain.SysOrg.class),
+                any(com.sism.organization.domain.SysOrg.class),
+                isNull(), eq(PARENT_INDICATOR_ID), eq("定量"),
+                eq(new java.math.BigDecimal("10")), isNull(), eq("下发备注"),
+                eq(0), eq(PARENT_CYCLE_ID), eq(true)))
+                .thenReturn(created);
+        // markCreatedIndicatorInMutation 对新行的读回（flush 后同事务可见）
+        Map<String, Object> newRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        newRow.put("id", NEW_INDICATOR_ID);
+        newRow.put("indicator_desc", "学院新增指标");
+        newRow.put("weight_percent", new java.math.BigDecimal("10"));
+        newRow.put("remark", "下发备注");
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(NEW_INDICATOR_ID)))
+                .thenReturn(newRow);
+        stubWeightAnchorQueries();
+        stubWorkflowStart("1301");
+
+        List<String> instanceIds = service.initiateBatch(
+                List.of(Map.of(
+                        "create", true,
+                        "indicatorDesc", "学院新增指标",
+                        "weightPercent", new java.math.BigDecimal("10"),
+                        "indicatorType", "定量",
+                        "parentIndicatorId", PARENT_INDICATOR_ID,
+                        "remark", "下发备注")),
+                OPERATOR_ID);
+
+        assertEquals(List.of("1301"), instanceIds);
+        // 同事务创建：skipDistributedWeightValidation=true（闭合校验由批次末尾统一做）；
+        // 归属=发起人组织（战略部 35），目标=父级核心指标 target_org（学院）
+        ArgumentCaptor<com.sism.organization.domain.SysOrg> ownerCaptor =
+                ArgumentCaptor.forClass(com.sism.organization.domain.SysOrg.class);
+        ArgumentCaptor<com.sism.organization.domain.SysOrg> targetCaptor =
+                ArgumentCaptor.forClass(com.sism.organization.domain.SysOrg.class);
+        verify(strategyApplicationService).createIndicator(
+                eq("学院新增指标"), ownerCaptor.capture(), targetCaptor.capture(),
+                isNull(), eq(PARENT_INDICATOR_ID), eq("定量"),
+                eq(new java.math.BigDecimal("10")), isNull(), eq("下发备注"),
+                eq(0), eq(PARENT_CYCLE_ID), eq(true));
+        assertEquals(STRATEGY_ORG_ID, ownerCaptor.getValue().getId());
+        assertEquals(COLLEGE_ORG_ID, targetCaptor.getValue().getId());
+        // JPA INSERT 延迟到 flush：原生 SQL 读回前必须显式 flush
+        verify(entityManager).flush();
+        // 打异动标记用新落库 id（不是条目里的临时标识）
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(NEW_INDICATOR_ID));
+        // 快照：before 全 (新增)，after 取落库值
+        Map<String, Map<String, Object>> changedFields = capturedCreateChangedFields();
+        assertEquals(Set.of("indicator_desc", "weight_percent", "remark"), changedFields.keySet());
+        changedFields.forEach((field, diff) -> assertEquals(
+                "(新增)", String.valueOf(diff.get("before")), field + " 的 before 应为 (新增)"));
+        assertEquals("学院新增指标", changedFields.get("indicator_desc").get("after"));
+        // 审批链：CREATE 语义、实体指向新 id
+        ArgumentCaptor<StartWorkflowRequest> captor =
+                ArgumentCaptor.forClass(StartWorkflowRequest.class);
+        verify(businessWorkflowApplicationService)
+                .startWorkflow(captor.capture(), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+        assertEquals("PLAN_MUTATION_STRATEGY", captor.getValue().getWorkflowCode());
+        assertEquals(NEW_INDICATOR_ID, captor.getValue().getBusinessEntityId());
+        assertEquals("CREATE", captor.getValue().getVariables().get("mutationType"));
+    }
+
+    @Test
+    @DisplayName("2026-11-14 权重闭合（90+10=100）：新行已落库、计入合计且不带 override，校验通过后启动审批链")
+    void initiateBatch_shouldValidateWeightClosureIncludingCreatedRow() {
+        stubReporter();
+        stubParentAnchor();
+        stubOrgs();
+        Indicator created = stubCreatedIndicator("补位指标", new java.math.BigDecimal("10"), null);
+        when(strategyApplicationService.createIndicator(
+                any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
+                eq(new java.math.BigDecimal("10")), any(), any(), eq(0), any(), eq(true)))
+                .thenReturn(created);
+        Map<String, Object> newRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        newRow.put("id", NEW_INDICATOR_ID);
+        newRow.put("weight_percent", new java.math.BigDecimal("10"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(NEW_INDICATOR_ID)))
+                .thenReturn(newRow);
+        stubWeightAnchorQueries();
+        stubWorkflowStart("1302");
+
+        service.initiateBatch(
+                List.of(Map.of(
+                        "create", true,
+                        "indicatorDesc", "补位指标",
+                        "weightPercent", new java.math.BigDecimal("10"),
+                        "parentIndicatorId", PARENT_INDICATOR_ID)),
+                OPERATOR_ID);
+
+        // 闭合校验以新行为入口（90 存量 + 10 新增 = 100 通过）：create 行已落库、
+        // 由库表值直接计入合计——不产生 override（override 只用于未落库的修改条目）
+        ArgumentCaptor<java.util.Set<Long>> excludedCaptor =
+                ArgumentCaptor.forClass(java.util.Set.class);
+        ArgumentCaptor<Map<Long, java.math.BigDecimal>> overrideCaptor =
+                ArgumentCaptor.forClass(Map.class);
+        verify(basicTaskWeightValidationService).validatePlanBasicWeight(
+                eq(4040L), eq(TARGET_ORG_ID), excludedCaptor.capture(), overrideCaptor.capture());
+        assertTrue(excludedCaptor.getValue().isEmpty());
+        assertTrue(overrideCaptor.getValue().isEmpty());
+        verify(businessWorkflowApplicationService).startWorkflow(
+                any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+    }
+
+    @Test
+    @DisplayName("2026-11-14 权重闭合（90+20=110）：合计不为 100 整批拒绝，审批链不启动")
+    void initiateBatch_shouldRejectCreateBatchWhenWeightNotClosed() {
+        stubReporter();
+        stubParentAnchor();
+        stubOrgs();
+        Indicator created = stubCreatedIndicator("超重指标", new java.math.BigDecimal("20"), null);
+        when(strategyApplicationService.createIndicator(
+                any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
+                eq(new java.math.BigDecimal("20")), any(), any(), eq(0), any(), eq(true)))
+                .thenReturn(created);
+        Map<String, Object> newRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        newRow.put("id", NEW_INDICATOR_ID);
+        newRow.put("weight_percent", new java.math.BigDecimal("20"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(NEW_INDICATOR_ID)))
+                .thenReturn(newRow);
+        stubWeightAnchorQueries();
+        // 模拟「90 存量 + 20 新增 = 110」的闭合校验失败
+        doThrow(new IllegalStateException("基础性任务指标权重合计必须为100，当前为110"))
+                .when(basicTaskWeightValidationService)
+                .validatePlanBasicWeight(eq(4040L), eq(TARGET_ORG_ID), any(), any());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of(
+                                "create", true,
+                                "indicatorDesc", "超重指标",
+                                "weightPercent", new java.math.BigDecimal("20"),
+                                "parentIndicatorId", PARENT_INDICATOR_ID)),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("必须为100"));
+        // 校验未通过：整批拒绝（@Transactional 回滚落库），审批链绝不启动
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
+    }
+
+    @Test
+    @DisplayName("2026-11-14 兼容回归：无创建字段的 {id, create:true} 走旧分支（按已落库 id 读回），不触发同事务创建")
+    void initiateBatch_shouldKeepLegacyBranchForCreateItemWithoutFields() {
+        stubReporter();
+        stubIndicatorRow("DRAFT", "DISTRIBUTED");
+        stubWorkflowStart("1303");
+
+        List<String> instanceIds = service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "create", true)),
+                OPERATOR_ID);
+
+        assertEquals(List.of("1303"), instanceIds);
+        // 旧格式：不创建新指标、不 flush——向后兼容的关键断言
+        verifyNoInteractions(strategyApplicationService);
+        verifyNoInteractions(entityManager);
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+    }
+
+    @Test
+    @DisplayName("2026-11-14 校验：create 条目缺 indicatorDesc / 缺 parentIndicatorId 明确报错，不落库")
+    void initiateBatch_shouldRejectCreateItemMissingRequiredFields() {
+        stubReporter();
+
+        IllegalArgumentException missingDesc = assertThrows(IllegalArgumentException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("create", true, "parentIndicatorId", PARENT_INDICATOR_ID)),
+                        OPERATOR_ID));
+        assertTrue(missingDesc.getMessage().contains("新增指标内容不能为空"));
+
+        IllegalArgumentException missingParent = assertThrows(IllegalArgumentException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("create", true, "indicatorDesc", "只有内容没有父级")),
+                        OPERATOR_ID));
+        assertTrue(missingParent.getMessage().contains("新增指标缺少关联的核心指标"));
+
+        // 必填校验先于任何落库动作
+        verifyNoInteractions(strategyApplicationService);
+        verifyNoInteractions(entityManager);
+    }
+
+    @Test
+    @DisplayName("2026-11-14 混合批次：带字段 create 条目与旧格式 {id, create:true} 同批各走各的分支")
+    void initiateBatch_shouldSupportMixedLegacyAndDraftCreateItems() {
+        stubReporter();
+        stubParentAnchor();
+        stubOrgs();
+        Indicator created = stubCreatedIndicator("草稿新增", new java.math.BigDecimal("10"), null);
+        when(strategyApplicationService.createIndicator(
+                any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
+                any(), any(), any(), eq(0), any(), eq(true)))
+                .thenReturn(created);
+        Map<String, Object> newRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        newRow.put("id", NEW_INDICATOR_ID);
+        newRow.put("weight_percent", new java.math.BigDecimal("10"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(NEW_INDICATOR_ID)))
+                .thenReturn(newRow);
+        Map<String, Object> legacyRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(INDICATOR_ID)))
+                .thenReturn(legacyRow);
+        stubWeightAnchorQueries();
+        stubWorkflowStart("1304", "1305");
+
+        List<String> instanceIds = service.initiateBatch(
+                List.of(
+                        Map.of(
+                                "create", true,
+                                "indicatorDesc", "草稿新增",
+                                "parentIndicatorId", PARENT_INDICATOR_ID),
+                        Map.of("id", INDICATOR_ID, "create", true)),
+                OPERATOR_ID);
+
+        // 两个条目各自启动审批链（新行用落库新 id，旧行用已有 id）
+        assertEquals(List.of("1304", "1305"), instanceIds);
+        verify(strategyApplicationService, times(1)).createIndicator(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean());
+        verify(entityManager, times(1)).flush();
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(NEW_INDICATOR_ID));
+        verify(jdbcTemplate).update(
+                contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
     }
 
     private void stubReporter() {

@@ -1115,14 +1115,24 @@ public class IndicatorController {
     }
 
     /**
-     * 2026-10-21 用户定案：一次异动可同时调整多条指标——多条字段攒改与新增指标
+     * 2026-10-21 用户定案：一次异动可同时调整多条指标——多条指标攒改与新增指标
      * 整批一次提交；后端先全部应用再统一校验权重合计，任一失败整批回滚。
      * item 结构：{id, create?, indicator_desc?, weight_percent?, remark?}
+     *
+     * <p><b>2026-11-14（新增行不落库改造）前端契约</b>：create 条目支持带完整创建字段的
+     * 「前端内存草稿行」——{@code {create: true, indicatorDesc, weightPercent,
+     * indicatorType, parentIndicatorId, taskId?, remark?}}（<b>无需 id</b>），后端在同一
+     * 事务内创建指标落库 → 打 IN_MUTATION 标记 → 快照 audit_log → 批次闭合权重校验 →
+     * 启动审批链；仅 {@code {id, create:true}} 的旧格式（行已落库）继续兼容，向后不炸。
+     * 请求体为裸数组 {@code List<Map<String,Object>>}，条目多带字段自然透传，
+     * 无 DTO 反序列化拦截（签名无需改动）。
      */
     @org.springframework.transaction.annotation.Transactional
     @org.springframework.web.bind.annotation.PostMapping("/mutations/batch")
     @Operation(summary = "批量发起指标异动",
-            description = "仅战略发展部；多条指标攒改与新增指标整批提交，权重合计校验整批一次，任一失败整批回滚")
+            description = "仅战略发展部；多条指标攒改与新增指标整批提交，权重合计校验整批一次，任一失败整批回滚。"
+                    + "create 条目可带完整创建字段（indicatorDesc/weightPercent/indicatorType/parentIndicatorId/taskId?/remark?，无需 id）"
+                    + "——前端内存草稿行同事务落库并进入异动；仅 {id, create:true} 旧格式继续兼容")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<java.util.List<String>>> initiateMutationBatch(
             @org.springframework.web.bind.annotation.RequestBody
