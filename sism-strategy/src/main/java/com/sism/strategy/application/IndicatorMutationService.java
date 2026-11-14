@@ -467,9 +467,17 @@ public class IndicatorMutationService {
      * 解析新增学院子指标的目标学院。
      *
      * <p>父级核心指标的 target_org_id 是归口职能部门，不能作为学院子指标的目标组织。
-     * 解析顺序为：已校验的草稿 targetOrgId、父级现有未删除子指标的唯一目标、
-     * 父级归口职能部门对应的 FUNC_TO_COLLEGE 计划唯一目标。任何歧义都拒绝，
-     * 不从父级 target_org_id 回退。
+     * 解析顺序为：显式 targetOrgId（前端所选学院）→ 父级现有未删除子指标的唯一目标 →
+     * 父级归口职能部门对应的 FUNC_TO_COLLEGE 计划唯一目标。</p>
+     *
+     * <p>2026-11-14（用户定案「一个归口可下发多个学院」）显式档放宽：目标学院只要
+     * 已有该父级的子指标 → 计划必然存在，直接通过（同一父级在多个学院各有子指标
+     * 是生产既有形态，如党委办 36 → 工学院 403656 + 计算机学院 403657）；不在
+     * 子指标学院集合里时按该学院精确核对下游 FUNC_TO_COLLEGE 计划
+     * （{@link #assertDownstreamCollegeContext}，天然支持多学院）。</p>
+     *
+     * <p>无显式值时的推断兜底保持严格：父级子指标分属多个学院、或归口对应多个
+     * 下游学院 → 一律拒绝（猜不出就该拒，不许静默落到某一个学院）。</p>
      */
     private Long resolveNewIndicatorTargetOrgId(Map<String, Object> item,
                                                 Long parentIndicatorId,
@@ -491,15 +499,13 @@ public class IndicatorMutationService {
 
         if (requestedTargetOrgId != null) {
             assertAcademicTargetOrg(requestedTargetOrgId);
-            if (!childTargetOrgIds.isEmpty()) {
-                if (childTargetOrgIds.size() > 1) {
-                    throw new IllegalArgumentException("无法确定新增子指标的目标学院：父级已有多个学院子指标");
-                }
-                if (!requestedTargetOrgId.equals(childTargetOrgIds.iterator().next())) {
-                    throw new IllegalArgumentException("新增子指标的目标学院与父级现有子指标不一致");
-                }
+            // 该学院已有此父级的子指标 → 下发计划必然存在，显式目标直接采信
+            // （不再因「父级已有多个学院子指标」误拒合法目标——用户定案同一归口
+            // 下发多个学院是正确形态，见方法 Javadoc）
+            if (childTargetOrgIds.contains(requestedTargetOrgId)) {
                 return requestedTargetOrgId;
             }
+            // 目标学院尚无该父级的子指标：按该学院精确核对「归口 → 该学院」下游计划
             assertDownstreamCollegeContext(requestedTargetOrgId, parent, ownerOrgId);
             return requestedTargetOrgId;
         }
