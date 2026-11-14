@@ -183,6 +183,22 @@ class IndicatorAppraisalApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("setLevel：上报在途 + 席位角色 + 当前节点候选人 → 成功落库")
+    void shouldPersistAppraisalLevelWhenReportSubmittedAndInstanceInReview() {
+        stubReportRow("SUBMITTED", "IN_REVIEW");
+        stubInstance(AuditInstance.STATUS_PENDING, 3, 13L);
+        when(workflowDefinitionQueryService.getAuditFlowDefById(4L)).thenReturn(collegeFlow());
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), any(Long.class), any(AuditInstance.class)))
+                .thenReturn(true);
+
+        IndicatorAppraisalContextResponse context =
+                service().setLevel(INDICATOR_ID, "normal", APPROVER_USER_ID, SEAT_ROLES);
+
+        verify(planReportIndicatorRepository).updateAppraisalLevel(REPORT_ID, INDICATOR_ID, "NORMAL");
+        assertTrue(context.isCanAppraise());
+    }
+
+    @Test
     @DisplayName("setLevel：非当前节点候选人 → AccessDenied 且信息与 context 的 lockHint 同源（含节点名）")
     void shouldDenySetLevelWithStepNameWhenNotCurrentStepApprover() {
         stubReportRow("SUBMITTED", "IN_REVIEW");
