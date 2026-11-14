@@ -25,9 +25,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -237,6 +239,79 @@ class StrategyWorkflowBusinessContextAdapterTest {
         assertEquals("XX学院", summary.get().sourceOrgName());
         assertEquals(88L, summary.get().targetOrgId());
         assertEquals("战略发展部", summary.get().targetOrgName());
+    }
+
+    // 2026-11-13 用户定案（上报流向语义修正）：学院上报的真实去向是**归口职能部门**
+    // （战略发展部只是终审节点，不占流向展示）——target 解析归口优先：报告行
+    // functional_org_id（V104 权威来源）→ plan.functional_org_id 回退 → 旧口径创建方。
+    @Test
+    @DisplayName("PLAN_REPORT 归口优先：报告行 functional_org_id → target=归口职能部门（不再显示战略发展部）")
+    void planReport_targetShouldPreferReportFunctionalOrg() {
+        doAnswer(invocation -> {
+            ResultSetExtractor<Optional<BusinessSummary>> extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            when(rs.next()).thenReturn(true);
+            when(rs.getLong("plan_id")).thenReturn(705489L);
+            when(rs.getString("report_month")).thenReturn("202611");
+            when(rs.getLong("report_org_id")).thenReturn(57L);
+            when(rs.getLong("functional_org_id")).thenReturn(37L);
+            Optional<BusinessSummary> extracted = extractor.extractData(rs);
+            assertTrue(extracted.isPresent());
+            return extracted;
+        }).when(jdbcTemplate).query(
+                contains("public.plan_report"), any(ResultSetExtractor.class), eq(920L));
+        // 归口命中时不应再查计划（target 直接取报告行归口）
+        SysOrg reporter = mock(SysOrg.class);
+        when(reporter.getName()).thenReturn("计算机学院");
+        SysOrg functional = mock(SysOrg.class);
+        when(functional.getName()).thenReturn("纪委办公室 | 监察处");
+        when(organizationRepository.findById(57L)).thenReturn(Optional.of(reporter));
+        when(organizationRepository.findById(37L)).thenReturn(Optional.of(functional));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN_REPORT", 920L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("2026年度 11月上报（计算机学院 -> 纪委办公室 | 监察处）", summary.get().displayName());
+        assertEquals(37L, summary.get().targetOrgId());
+        assertEquals("纪委办公室 | 监察处", summary.get().targetOrgName());
+        verify(planRepository, never()).findById(anyLong());
+    }
+
+    @Test
+    @DisplayName("PLAN_REPORT 归口回退：报告行无归口 → plan.functional_org_id → 仍缺 → 旧口径创建方")
+    void planReport_targetShouldFallBackToPlanFunctionalThenCreator() {
+        doAnswer(invocation -> {
+            ResultSetExtractor<Optional<BusinessSummary>> extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            when(rs.next()).thenReturn(true);
+            when(rs.getLong("plan_id")).thenReturn(4036L);
+            when(rs.getString("report_month")).thenReturn("202610");
+            when(rs.getLong("report_org_id")).thenReturn(77L);
+            // 存量报告行无归口（getLong 返回 0 = NULL）
+            when(rs.getLong("functional_org_id")).thenReturn(0L);
+            Optional<BusinessSummary> extracted = extractor.extractData(rs);
+            assertTrue(extracted.isPresent());
+            return extracted;
+        }).when(jdbcTemplate).query(
+                contains("public.plan_report"), any(ResultSetExtractor.class), eq(921L));
+        Plan plan = mock(Plan.class);
+        // 计划级归口回退命中（V104 回填）；createdByOrgId 存根不消费（归口优先短路），lenient 抑制
+        lenient().when(plan.getCreatedByOrgId()).thenReturn(88L);
+        when(plan.getFunctionalOrgId()).thenReturn(46L);
+        when(planRepository.findById(4036L)).thenReturn(Optional.of(plan));
+        SysOrg reporter = mock(SysOrg.class);
+        when(reporter.getName()).thenReturn("XX学院");
+        SysOrg planFunctional = mock(SysOrg.class);
+        when(planFunctional.getName()).thenReturn("人力资源部");
+        when(organizationRepository.findById(77L)).thenReturn(Optional.of(reporter));
+        when(organizationRepository.findById(46L)).thenReturn(Optional.of(planFunctional));
+
+        Optional<BusinessSummary> summary = adapter.getBusinessSummary("PLAN_REPORT", 921L);
+
+        assertTrue(summary.isPresent());
+        assertEquals("2026年度 10月上报（XX学院 -> 人力资源部）", summary.get().displayName());
+        assertEquals(46L, summary.get().targetOrgId());
+        assertEquals("人力资源部", summary.get().targetOrgName());
     }
 
     @Test

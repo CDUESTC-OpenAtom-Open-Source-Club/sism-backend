@@ -214,10 +214,16 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
      * 2026-10-31 P-18：上报审批的业务摘要——public.plan_report 行 + 所属计划。
      * 不过滤 is_deleted：被取消/归档的上报在「审批历史」里仍要能显示当时的轮次与流向
      * （与 INDICATOR 分支的 audit_log 兜底同一诉求，软删只翻标记不改业务值）。
+     *
+     * <p>2026-11-13 用户定案（上报流向语义修正）：学院上报的真实去向是<b>归口职能部门</b>
+     * （战略发展部只是终审节点，不占用流向展示）——target 解析改为归口优先：
+     * ① 报告行 functional_org_id（V104 起提交时反查落列，权威来源）；
+     * ② 为空回退 plan.functional_org_id；③ 仍为空（存量无归口数据）→ 回退旧口径
+     * 计划创建方（战略部），不炸。涉及多职能部门时各报告流向各自正确。</p>
      */
     private Optional<BusinessSummary> resolvePlanReportSummary(Long reportId) {
         return jdbcTemplate.query(
-                "SELECT plan_id, report_month, report_org_id FROM public.plan_report WHERE id = ?",
+                "SELECT plan_id, report_month, report_org_id, functional_org_id FROM public.plan_report WHERE id = ?",
                 rs -> {
                     if (!rs.next()) {
                         return Optional.<BusinessSummary>empty();
@@ -225,16 +231,27 @@ public class StrategyWorkflowBusinessContextAdapter implements WorkflowBusinessC
                     long planId = rs.getLong("plan_id");
                     String reportMonth = rs.getString("report_month");
                     long reportOrgId = rs.getLong("report_org_id");
+                    long functionalOrgId = rs.getLong("functional_org_id");
                     Long sourceId = reportOrgId > 0 ? reportOrgId : null;
                     String sourceOrgName = resolveOrgName(sourceId);
                     Long targetId = null;
                     String targetOrgName = null;
-                    if (planId > 0) {
-                        // 接收部门=计划创建方（下发方）；计划缺失时降级为只写上报组织
-                        targetId = planRepository.findById(planId)
-                                .map(Plan::getCreatedByOrgId)
-                                .orElse(null);
+                    if (functionalOrgId > 0) {
+                        // ① 报告行归口（权威来源）
+                        targetId = functionalOrgId;
                         targetOrgName = resolveOrgName(targetId);
+                    } else if (planId > 0) {
+                        // ② 计划级归口回退（V104 回填的存量）；③ 再缺 → 旧口径创建方
+                        Plan plan = planRepository.findById(planId).orElse(null);
+                        Long planFunctional = plan != null ? plan.getFunctionalOrgId() : null;
+                        if (planFunctional != null && planFunctional > 0) {
+                            targetId = planFunctional;
+                            targetOrgName = resolveOrgName(targetId);
+                        } else {
+                            // 接收部门=计划创建方（下发方，存量兼容）；计划缺失时降级为只写上报组织
+                            targetId = plan != null ? plan.getCreatedByOrgId() : null;
+                            targetOrgName = resolveOrgName(targetId);
+                        }
                     }
                     String route;
                     if (sourceOrgName != null && targetOrgName != null) {
