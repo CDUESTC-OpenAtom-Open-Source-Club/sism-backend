@@ -973,6 +973,131 @@ class IndicatorMutationServiceTest {
         verifyNoInteractions(entityManager);
     }
 
+    // ==================== 2026-11-14（多学院拓扑）显式目标档放宽 ====================
+    //
+    // 用户定案「一个归口下发多个学院，重复也没关系」：同一父级核心指标在多个学院
+    // 各有子指标是生产既有形态（如党委办 36 → 工学院 403656 + 计算机学院 403657）。
+    // 前端显式传 targetOrgId 时不得再因「父级已有多个学院子指标」误拒合法目标：
+    // ① 目标 ∈ 父级子指标学院集合 → 直接通过；② 目标 ∉ 集合 → 按该学院精确核对
+    // 下游 FUNC_TO_COLLEGE 计划（有 → 过，无 → 拒）。推断兜底档（无显式值）不变。
+
+    /** 第二学院组织实体（与 COLLEGE_ORG_ID 并列，构成「同一父级跨两学院」拓扑）。 */
+    private com.sism.organization.domain.SysOrg stubSecondCollegeOrg(long secondCollegeOrgId) {
+        var second = org(secondCollegeOrgId, com.sism.organization.domain.OrgType.academic);
+        when(organizationRepository.findById(secondCollegeOrgId))
+                .thenReturn(java.util.Optional.of(second));
+        return second;
+    }
+
+    @Test
+    @DisplayName("多学院拓扑①：显式目标=父级子指标学院之一（父级跨两学院）→ 直接通过，不再误拒")
+    void initiateBatch_shouldAcceptExplicitTargetWhenParentHasChildrenInMultipleColleges() {
+        stubReporter();
+        stubParentAnchorWithChildren(List.of(COLLEGE_ORG_ID, COLLEGE_ORG_ID + 1));
+        stubOrgs();
+        Indicator created = stubCreatedIndicator("多学院显式新增", new java.math.BigDecimal("10"), null);
+        when(strategyApplicationService.createIndicator(
+                any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
+                eq(new java.math.BigDecimal("10")), any(), any(), eq(0), eq(PARENT_CYCLE_ID), eq(true)))
+                .thenReturn(created);
+        Map<String, Object> newRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        newRow.put("id", NEW_INDICATOR_ID);
+        newRow.put("indicator_desc", "多学院显式新增");
+        newRow.put("weight_percent", new java.math.BigDecimal("10"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(NEW_INDICATOR_ID)))
+                .thenReturn(newRow);
+        stubWeightAnchorQueries();
+        stubWorkflowStart("1320");
+
+        assertEquals(List.of("1320"), service.initiateBatch(
+                List.of(Map.of(
+                        "create", true,
+                        "indicatorDesc", "多学院显式新增",
+                        "weightPercent", new java.math.BigDecimal("10"),
+                        "parentIndicatorId", PARENT_INDICATOR_ID,
+                        "targetOrgId", COLLEGE_ORG_ID)),
+                OPERATOR_ID));
+
+        // 目标 = 显式传入的学院（父级子指标分属两学院不再影响解析）
+        ArgumentCaptor<com.sism.organization.domain.SysOrg> targetCaptor =
+                ArgumentCaptor.forClass(com.sism.organization.domain.SysOrg.class);
+        verify(strategyApplicationService).createIndicator(
+                any(), any(), targetCaptor.capture(), any(), eq(PARENT_INDICATOR_ID),
+                any(), any(), any(), any(), eq(0), eq(PARENT_CYCLE_ID), eq(true));
+        assertEquals(COLLEGE_ORG_ID, targetCaptor.getValue().getId());
+    }
+
+    @Test
+    @DisplayName("多学院拓扑②：显式目标不在父级子指标学院集合，但该学院有下游计划 → 按 assertDownstreamCollegeContext 放行")
+    void initiateBatch_shouldAcceptExplicitTargetViaDownstreamPlanWhenNotInChildColleges() {
+        long secondCollegeOrgId = COLLEGE_ORG_ID + 1;
+        stubReporter();
+        // 父级现有子指标只落在 COLLEGE_ORG_ID；显式目标 = 另一学院
+        stubParentAnchorWithChildren(List.of(COLLEGE_ORG_ID));
+        stubOwnerOrg();
+        stubSecondCollegeOrg(secondCollegeOrgId);
+        // 「归口 → 另一学院」的下游 FUNC_TO_COLLEGE 计划存在（COUNT=1）
+        stubDownstreamCollegePlan();
+        Indicator created = stubCreatedIndicator("新学院显式新增", new java.math.BigDecimal("10"), null);
+        when(strategyApplicationService.createIndicator(
+                any(), any(), any(), any(), eq(PARENT_INDICATOR_ID), any(),
+                eq(new java.math.BigDecimal("10")), any(), any(), eq(0), eq(PARENT_CYCLE_ID), eq(true)))
+                .thenReturn(created);
+        Map<String, Object> newRow = indicatorRow("DRAFT", "DISTRIBUTED");
+        newRow.put("id", NEW_INDICATOR_ID);
+        newRow.put("weight_percent", new java.math.BigDecimal("10"));
+        when(jdbcTemplate.queryForMap(contains("FROM public.indicator"), eq(NEW_INDICATOR_ID)))
+                .thenReturn(newRow);
+        stubWeightAnchorQueries();
+        stubWorkflowStart("1321");
+
+        assertEquals(List.of("1321"), service.initiateBatch(
+                List.of(Map.of(
+                        "create", true,
+                        "indicatorDesc", "新学院显式新增",
+                        "weightPercent", new java.math.BigDecimal("10"),
+                        "parentIndicatorId", PARENT_INDICATOR_ID,
+                        "targetOrgId", secondCollegeOrgId)),
+                OPERATOR_ID));
+
+        // 目标 = 显式传入的第二学院（靠下游计划精确匹配放行，不靠父级子指标集合）
+        ArgumentCaptor<com.sism.organization.domain.SysOrg> targetCaptor =
+                ArgumentCaptor.forClass(com.sism.organization.domain.SysOrg.class);
+        verify(strategyApplicationService).createIndicator(
+                any(), any(), targetCaptor.capture(), any(), eq(PARENT_INDICATOR_ID),
+                any(), any(), any(), any(), eq(0), eq(PARENT_CYCLE_ID), eq(true));
+        assertEquals(secondCollegeOrgId, targetCaptor.getValue().getId());
+    }
+
+    @Test
+    @DisplayName("多学院拓扑④：显式目标不在子指标学院集合且该学院无下游计划 → 拒绝，不落库")
+    void initiateBatch_shouldRejectExplicitTargetWithoutDownstreamPlan() {
+        long secondCollegeOrgId = COLLEGE_ORG_ID + 1;
+        stubReporter();
+        stubParentAnchorWithChildren(List.of(COLLEGE_ORG_ID));
+        stubOwnerOrg();
+        stubSecondCollegeOrg(secondCollegeOrgId);
+        // 「归口 → 另一学院」无 FUNC_TO_COLLEGE 计划（COUNT=0）
+        when(jdbcTemplate.queryForObject(
+                contains("SELECT COUNT(*)"),
+                eq(Integer.class),
+                any(Object[].class)))
+                .thenReturn(0);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of(
+                                "create", true,
+                                "indicatorDesc", "无计划学院新增",
+                                "parentIndicatorId", PARENT_INDICATOR_ID,
+                                "targetOrgId", secondCollegeOrgId)),
+                        OPERATOR_ID));
+
+        assertEquals("无法确定新增子指标的目标学院", error.getMessage());
+        verifyNoInteractions(strategyApplicationService);
+        verifyNoInteractions(entityManager);
+    }
+
     @Test
     @DisplayName("2026-11-14 目标解析：无子指标且无显式目标学院时明确拒绝")
     void initiateBatch_shouldRejectWhenTargetCollegeCannotBeDetermined() {
