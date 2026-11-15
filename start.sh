@@ -99,10 +99,13 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+# 2026-11-15：改用 load-env-file.sh 载入 .env。
+# 过去用 `set -a; source .env; set +a`，source 会直接覆盖外部已经导出的同名变量，
+# 导致「按环境变量指定库」无声失效、连错库且没有任何提示。
+# 现在显式环境变量优先级高于 .env 文件，.env 只提供缺省值。
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=scripts/lib/load-env-file.sh
+source "$SCRIPT_DIR/scripts/lib/load-env-file.sh" "$ENV_FILE"
 
 echo "✓ 已加载环境文件: $SCRIPT_DIR/$ENV_FILE"
 echo "✓ 当前数据库: ${DB_URL:-<missing DB_URL>}"

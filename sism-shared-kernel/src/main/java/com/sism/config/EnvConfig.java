@@ -44,8 +44,15 @@ public final class EnvConfig {
     }
 
     private static String lookup(String key) {
+        // 2026-11-15：显式传入的环境变量优先级高于 .env 文件。
+        // 过去是「先查 .env，查不到再查 System.getenv」，导致 .env 里的本地库地址
+        // 静默压过外部指定的目标库。现在反过来：环境变量优先，.env 只兜底。
+        String fromEnvironment = System.getenv(key);
+        if (fromEnvironment != null && !fromEnvironment.isBlank()) {
+            return fromEnvironment;
+        }
         Dotenv loader = getDotenv();
-        return loader != null ? loader.get(key) : System.getenv(key);
+        return loader != null ? loader.get(key) : null;
     }
 
     private static Dotenv getDotenv() {

@@ -70,7 +70,10 @@ mkdir -p "$LOG_DIR"
 
 check_database() {
   if [[ -f "$BACKEND_DIR/.env" ]]; then
-    ( set -a; source "$BACKEND_DIR/.env"; set +a )
+    # 2026-11-15：显式环境变量优先级高于 .env 文件（见 scripts/lib/load-env-file.sh）
+    # shellcheck source-path=SCRIPTDIR
+    # shellcheck source=../lib/load-env-file.sh
+    ( source "$ROOT_DIR/backend/scripts/lib/load-env-file.sh" "$BACKEND_DIR/.env" )
   fi
   local url="${DB_URL:-}"
   if [[ -z "$url" ]]; then
