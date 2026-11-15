@@ -4,13 +4,22 @@
 
 ## 当前保留的脚本分类
 
-### 0. `dev/`
+### 0. `lib/`
+跨脚本复用的 shell 公共片段：
+
+- `load-env-file.sh`：载入 `.env` 但**不覆盖外部显式传入的环境变量**
+  （优先级：显式环境变量 > `.env` 文件）
+  - 用法：`source "<脚本路径>" "<.env 路径>"`
+  - 背景：`set -a; source .env; set +a` 会直接覆盖外部已经导出的同名变量，
+    导致「按环境变量指定库」无声失效（`.env` 里的本地库地址顶掉外部指定的库）。
+
+### 1. `dev/`
 用于本地开发一键启动：
 
 - `up-local.sh`：检查环境与数据库 → **询问是否灌种子（可选）** → 启动后端与前端 → 打印访问地址
   - `./scripts/dev/up-local.sh`（交互）/ `--seed` / `--no-seed` / `--stop`
 
-### 1. `deployment/`
+### 2. `deployment/`
 用于后端部署与运维：
 
 - `deploy.sh`：服务器上的通用部署脚本
@@ -19,13 +28,13 @@
 - `backup-database.sh`：PostgreSQL 备份
 - `restore-database.sh`：PostgreSQL 恢复
 
-### 2. `report-chunks/`
+### 3. `report-chunks/`
 用于 `docs/generated/` 下分片报告的清单生成与正文重建：
 
 - `build-manifest.js`
 - `render-report.js`
 
-### 3. `testing/`
+### 4. `testing/`
 只保留仍有长期价值的轻量校验脚本：
 
 - `check-flyway-version-collisions.sh`：检查 Flyway 迁移版本号冲突
