@@ -15,9 +15,10 @@ SCRIPT_DIR="$ROOT_DIR/database/scripts"
 ENV_FILE="$ROOT_DIR/.env"
 
 if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  source "$ENV_FILE"
-  set +a
+  # 2026-11-15：显式环境变量优先级高于 .env 文件（见 scripts/lib/load-env-file.sh）
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=../../scripts/lib/load-env-file.sh
+  source "$ROOT_DIR/scripts/lib/load-env-file.sh" "$ENV_FILE"
 fi
 
 DB_JDBC_URL="${DB_URL:-}"

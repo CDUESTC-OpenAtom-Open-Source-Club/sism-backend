@@ -7,7 +7,9 @@ import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -16,6 +18,11 @@ import java.util.Map;
  * This class loads the .env file from the project root directory and injects
  * its values into the Spring Boot environment. This allows application.yml to
  * use placeholders like ${DB_URL} that will be resolved from .env file.
+ *
+ * <p>优先级约定：显式环境变量 &gt; application.yml &gt; .env 文件。
+ * 因此 .env 只作为「缺省值提供者」：凡是外部环境变量已经显式定义的键
+ * （DB_URL / DB_USERNAME / DB_PASSWORD / JWT_SECRET 等）都不再从 .env 注入，
+ * 避免 .env 里的本地开发库地址静默压过外部指定的目标库。
  *
  * Registration: META-INF/spring/org.springframework.boot.env.EnvironmentPostProcessor
  *
@@ -42,8 +49,16 @@ public class EnvConfigPostProcessor implements EnvironmentPostProcessor {
 
             // Convert to Map for Spring PropertySource
             Map<String, Object> envMap = new HashMap<>();
+            List<String> overriddenByEnvironment = new ArrayList<>();
             dotenv.entries().forEach(entry -> {
                 String originalKey = entry.getKey();
+                // 2026-11-15：外部显式传入的环境变量优先级高于 .env 文件。
+                // 该键已经由环境提供时，.env 里的同名字段不再注入（连同其映射属性名），
+                // 避免 .env 静默压过外部环境变量。
+                if (isExplicitlyConfigured(environment, originalKey)) {
+                    overriddenByEnvironment.add(originalKey);
+                    return;
+                }
                 String mappedKey = mapEnvVariableToProperty(originalKey);
                 // Always put the mapped Spring property name
                 envMap.put(mappedKey, entry.getValue());
@@ -60,11 +75,34 @@ public class EnvConfigPostProcessor implements EnvironmentPostProcessor {
                 environment.getPropertySources().addLast(propertySource);
                 System.out.println("Loaded " + envMap.size() + " environment variables from .env file");
             }
+            if (!overriddenByEnvironment.isEmpty()) {
+                System.out.println("Kept externally provided environment variables (not overridden by .env): "
+                        + String.join(", ", overriddenByEnvironment));
+            }
 
         } catch (Exception e) {
             System.err.println("Failed to load .env file: " + e.getMessage());
             // Continue without .env - application will use defaults or system properties
         }
+    }
+
+    /**
+     * 判断某个键是否已经被外部环境变量（或系统属性）显式定义。
+     *
+     * <p>这里刻意走 Spring Environment 而不是 {@code System.getenv}：
+     * <ul>
+     *   <li>能识别系统属性（-DDB_URL=...）与 Spring 的宽松绑定
+     *       （SPRING_DATASOURCE_URL -&gt; spring.datasource.url）；</li>
+     *   <li>测试可以替换 systemEnvironment 属性源来稳定复现「外部传入」场景。</li>
+     * </ul>
+     *
+     * @param environment Spring 环境
+     * @param key         .env 中的原始键名
+     * @return 外部已显式定义（非空白）时返回 true
+     */
+    private boolean isExplicitlyConfigured(ConfigurableEnvironment environment, String key) {
+        String value = environment.getProperty(key);
+        return value != null && !value.isBlank();
     }
 
     /**
