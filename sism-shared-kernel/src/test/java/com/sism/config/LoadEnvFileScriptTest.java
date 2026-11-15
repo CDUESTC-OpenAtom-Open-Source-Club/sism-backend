@@ -26,6 +26,8 @@ class LoadEnvFileScriptTest {
     private static final String DOTENV_DB_URL = "jdbc:postgresql://localhost:5432/sism";
     private static final String DOTENV_DB_USERNAME = "dotenv_user";
     private static final String EXTERNAL_DB_URL = "jdbc:postgresql://external-host:5432/otherdb";
+    private static final String DOTENV_ALLOWED_ORIGINS = "http://localhost:5173";
+    private static final String EXTERNAL_ALLOWED_ORIGINS = "https://sism.blackevil.cn,https://blackevil.cn";
 
     @Test
     void externallyProvidedEnvVarShouldWinOverEnvFile() throws IOException, InterruptedException {
@@ -79,7 +81,66 @@ class LoadEnvFileScriptTest {
     }
 
     /**
-     * 执行 bash：source 载入脚本后打印 DB_URL / DB_USERNAME
+     * compose 场景：ALLOWED_ORIGINS 由外部传入（compose 的 environment 段），
+     * 载入 .env 不得把它覆盖掉。
+     *
+     * <p>ALLOWED_ORIGINS 决定生产 CORS 白名单（app.cors.allowed-origins），
+     * 一旦被 .env 里的旧值盖住，后端就会以「生产 CORS 白名单不对」启动。
+     */
+    @Test
+    void externallyProvidedAllowedOriginsShouldWinOverEnvFile() throws IOException, InterruptedException {
+        Path helper = locateHelperScript();
+        Path tempDir = Files.createTempDirectory("load-env-file-script-cors-test");
+        Path envFile = tempDir.resolve(".env");
+        try {
+            Files.writeString(
+                    envFile,
+                    "DB_URL=" + DOTENV_DB_URL + "\nALLOWED_ORIGINS=" + DOTENV_ALLOWED_ORIGINS + "\n",
+                    StandardCharsets.UTF_8
+            );
+
+            Map<String, String> external = new LinkedHashMap<>();
+            external.put("ALLOWED_ORIGINS", EXTERNAL_ALLOWED_ORIGINS);
+
+            String output = runBash(helper, envFile, external);
+
+            assertTrue(output.contains("ALLOWED_ORIGINS=" + EXTERNAL_ALLOWED_ORIGINS),
+                    "外部传入的 ALLOWED_ORIGINS 必须胜出，实际输出: " + output);
+            assertTrue(output.contains("DB_URL=" + DOTENV_DB_URL),
+                    "未设置的环境变量仍应回落到 .env，实际输出: " + output);
+        } finally {
+            Files.deleteIfExists(envFile);
+            Files.deleteIfExists(tempDir);
+        }
+    }
+
+    /**
+     * 本地场景：ALLOWED_ORIGINS 只在 .env 里 → 载入后仍应可用。
+     */
+    @Test
+    void envFileShouldProvideAllowedOriginsWhenNoEnvVarIsGiven() throws IOException, InterruptedException {
+        Path helper = locateHelperScript();
+        Path tempDir = Files.createTempDirectory("load-env-file-script-cors-default-test");
+        Path envFile = tempDir.resolve(".env");
+        try {
+            Files.writeString(
+                    envFile,
+                    "ALLOWED_ORIGINS=" + DOTENV_ALLOWED_ORIGINS + "\n",
+                    StandardCharsets.UTF_8
+            );
+
+            String output = runBash(helper, envFile, Map.of());
+
+            assertTrue(output.contains("ALLOWED_ORIGINS=" + DOTENV_ALLOWED_ORIGINS),
+                    "未传环境变量时应使用 .env 的 ALLOWED_ORIGINS，实际输出: " + output);
+        } finally {
+            Files.deleteIfExists(envFile);
+            Files.deleteIfExists(tempDir);
+        }
+    }
+
+    /**
+     * 执行 bash：source 载入脚本后打印 DB_URL / DB_USERNAME / ALLOWED_ORIGINS
      */
     private String runBash(Path helper, Path envFile, Map<String, String> externalEnv)
             throws IOException, InterruptedException {
@@ -88,7 +149,9 @@ class LoadEnvFileScriptTest {
         ProcessBuilder builder = new ProcessBuilder(
                 "bash",
                 "-c",
-                "source \"$1\" \"$2\"; printf 'DB_URL=%s\\nDB_USERNAME=%s\\n' \"${DB_URL:-}\" \"${DB_USERNAME:-}\"",
+                "source \"$1\" \"$2\"; "
+                        + "printf 'DB_URL=%s\\nDB_USERNAME=%s\\nALLOWED_ORIGINS=%s\\n' "
+                        + "\"${DB_URL:-}\" \"${DB_USERNAME:-}\" \"${ALLOWED_ORIGINS:-}\"",
                 "bash",
                 helper.toString(),
                 envFile.toString()
