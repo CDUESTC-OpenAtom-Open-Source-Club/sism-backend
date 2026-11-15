@@ -9,6 +9,7 @@ on:
       - '.github/workflows/deployment-portability.yml'
       - 'deploy/compose/**'
       - 'scripts/deployment/bootstrap-docker-host.sh'
+      - 'scripts/deployment/deploy-via-ghcr.sh'
       - 'scripts/deployment/download-offline-release.sh'
       - 'scripts/deployment/install-offline-release.sh'
       - 'scripts/deployment/upload-offline-release.sh'
@@ -22,6 +23,7 @@ on:
       - '.github/workflows/deployment-portability.yml'
       - 'deploy/compose/**'
       - 'scripts/deployment/bootstrap-docker-host.sh'
+      - 'scripts/deployment/deploy-via-ghcr.sh'
       - 'scripts/deployment/download-offline-release.sh'
       - 'scripts/deployment/install-offline-release.sh'
       - 'scripts/deployment/upload-offline-release.sh'
@@ -49,6 +51,7 @@ jobs:
       - name: Validate deployment scripts
         run: |
           bash -n scripts/deployment/bootstrap-docker-host.sh
+          bash -n scripts/deployment/deploy-via-ghcr.sh
           bash -n scripts/deployment/download-offline-release.sh
           bash -n scripts/deployment/install-offline-release.sh
           bash -n scripts/deployment/upload-offline-release.sh
@@ -56,6 +59,7 @@ jobs:
           bash -n scripts/deployment/validate-docker-host.sh
           shellcheck \
             scripts/deployment/bootstrap-docker-host.sh \
+            scripts/deployment/deploy-via-ghcr.sh \
             scripts/deployment/download-offline-release.sh \
             scripts/deployment/install-offline-release.sh \
             scripts/deployment/upload-offline-release.sh \
