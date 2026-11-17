@@ -70,12 +70,15 @@ public class BusinessImportController {
 
     @PostMapping(value = "/distribution/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
-    @Operation(summary = "预览学院子指标导入")
+    @Operation(summary = "预览学院子指标导入",
+            description = "2026-11-17（学院线粒度改造）：functionalOrgId = 本次导入归属的归口部门（线身份）；"
+                    + "不传时由文件父级核心指标反查推导，跨归口或与所选归口不一致一律阻断")
     public ResponseEntity<ApiResponse<ImportPreviewResponse>> previewDistribution(
             @RequestPart("file") MultipartFile file,
             @RequestParam Long cycleId,
             @RequestParam Long targetCollegeOrgId,
             @RequestParam(required = false) Long sourceOrgId,
+            @RequestParam(required = false) Long functionalOrgId,
             @RequestParam(required = false) String sheetName,
             @AuthenticationPrincipal CurrentUser currentUser) {
         assertStrategyOrgScope(currentUser);
@@ -85,6 +88,7 @@ public class BusinessImportController {
                         cycleId,
                         targetCollegeOrgId,
                         sourceOrgId,
+                        functionalOrgId,
                         sheetName,
                         currentUser)));
     }

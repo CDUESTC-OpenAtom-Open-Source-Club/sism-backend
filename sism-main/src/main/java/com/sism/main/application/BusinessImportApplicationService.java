@@ -111,6 +111,10 @@ public class BusinessImportApplicationService {
      * 与迁移 V104 存量回填、计划提交补写共用同一实现，避免口径漂移。
      */
     private final com.sism.strategy.application.PlanFunctionalOrgResolver planFunctionalOrgResolver;
+    /**
+     * 2026-11-17（学院线粒度改造）：考核周期查询——「已下发」阻断文案要说出是哪个年度。
+     */
+    private final com.sism.strategy.domain.repository.CycleRepository cycleRepository;
     private final Map<String, PreviewContext> previews = new ConcurrentHashMap<>();
 
     public ImportPreviewResponse previewStrategicTasks(MultipartFile file,
@@ -126,13 +130,15 @@ public class BusinessImportApplicationService {
 
         ParsedWorkbook parsed = parser.parse(file, ImportType.STRATEGIC_TASK, sheetName);
         List<ImportRowPreview> rows = enrichStrategicRows(parsed.rows(), cycleId, targetOrg, currentUser);
-        return storePreview(file, parsed, rows, ImportType.STRATEGIC_TASK, cycleId, currentUser.getOrgId(), targetOrg, currentUser);
+        // 2026-11-17（学院线粒度改造）：职能部门导入（STRAT_TO_FUNC）没有归口维度 → functionalOrgId = null
+        return storePreview(file, parsed, rows, ImportType.STRATEGIC_TASK, cycleId, currentUser.getOrgId(), targetOrg, currentUser, null);
     }
 
     public ImportPreviewResponse previewDistribution(MultipartFile file,
                                                      Long cycleId,
                                                      Long targetCollegeOrgId,
                                                      Long sourceOrgId,
+                                                     Long functionalOrgId,
                                                      String sheetName,
                                                      CurrentUser currentUser) {
         requireCycleAndUser(cycleId, currentUser);
@@ -181,9 +187,19 @@ public class BusinessImportApplicationService {
         }
 
         ParsedWorkbook parsed = parser.parse(file, ImportType.DISTRIBUTION, sheetName);
-        List<ImportRowPreview> rows = enrichDistributionRows(parsed.rows(), cycleId, sourceOrg, targetOrg);
+        // 2026-11-17（学院线粒度改造）：先做父级锚点匹配，反查文件里的归口部门集合，
+        // 再与请求入参 functionalOrgId 交叉校验（跨归口 / 不一致 → 阻断）。
+        // 顺序不能反：归口是「线身份」的一部分，取计划、建线都要用它，必须先定下来。
+        DistributionAnchorContext anchorContext = resolveDistributionAnchors(parsed.rows(), targetOrg, cycleId);
+        Long effectiveFunctionalOrgId = resolveEffectiveFunctionalOrgId(functionalOrgId, anchorContext.functionalOrgIds());
+        List<ImportRowPreview> rows = enrichDistributionRows(
+                anchorContext,
+                cycleId,
+                sourceOrg,
+                targetOrg,
+                effectiveFunctionalOrgId);
         // 2026-11-05：来源组织一律记为战略发展部，避免批次上下文里残留职能部门来源
-        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, sourceOrg.getId(), targetOrg, currentUser);
+        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, sourceOrg.getId(), targetOrg, currentUser, effectiveFunctionalOrgId);
     }
 
     public ImportCommitResponse commit(String batchId,
@@ -244,9 +260,9 @@ public class BusinessImportApplicationService {
                     autoSubmitAndApprove,
                     workflowCode,
                     currentPlan.map(Plan::getAuditInstanceId).orElse(null),
-                    // 2026-10-20 用户定案：文案明确原因与替代路径，避免用户反复尝试导入
-                    "该部门计划已下发，不能再通过导入修改。如需新增或调整指标，"
-                            + "请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批");
+                    // 2026-11-17（学院线粒度改造）：拦截口径从「整学院一刀切」收窄到「按该线判定」，
+                    // 并点名归口部门——同学院另一归口的线已下发，不再拦本线导入。
+                    distributedPlanBlockedMessage(context, currentPlan.get()));
         }
 
         CommitCounters counters;
@@ -388,17 +404,77 @@ public class BusinessImportApplicationService {
                 .anyMatch(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()));
     }
 
+    /**
+     * 2026-11-17（学院线粒度改造）：取「本次导入要操作的那条线」。
+     *
+     * <p>学院导入（FUNC_TO_COLLEGE）：按<b>线身份</b>查——(cycle, FUNC_TO_COLLEGE, 战略发展部, 学院, 归口部门)。
+     * 归口维度是必须的：同学院可以并存多条归口不同的线，
+     * 用不带归口的 4 键查询会命中别的线 → 别的线已下发就把本线导入一起拦死
+     * （本缺陷的根因：教务处那条线一下发，整个学院的导入入口被关死）。
+     *
+     * <p>职能部门导入（STRAT_TO_FUNC）：线下没有归口维度，仍按 4 键查。
+     */
     private Optional<Plan> findPlanForImportContext(PreviewContext context) {
-        PlanLevel planLevel = context.type() == ImportType.STRATEGIC_TASK
-                ? PlanLevel.STRAT_TO_FUNC
-                : PlanLevel.FUNC_TO_COLLEGE;
-        // 2026-11-05（学院指标直发改造）：学院下发计划的创建组织固定为战略发展部，
-        // 不再取批次上下文里的 sourceOrgId——历史批次里可能残留职能部门来源，
-        // 会让「已下发不可再导入」的判定落到另一条计划上。
-        Long createdByOrgId = context.type() == ImportType.STRATEGIC_TASK
-                ? context.sourceOrgId()
-                : strategyOrgId();
-        return findPlan(context.cycleId(), planLevel, createdByOrgId, context.targetOrgId());
+        if (context.type() == ImportType.DISTRIBUTION) {
+            // 2026-11-05（学院指标直发改造）：学院下发计划的创建组织固定为战略发展部，
+            // 不再取批次上下文里的 sourceOrgId——历史批次里可能残留职能部门来源，
+            // 会让「已下发不可再导入」的判定落到另一条计划上。
+            return planRepository
+                    .findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                            context.cycleId(),
+                            PlanLevel.FUNC_TO_COLLEGE,
+                            strategyOrgId(),
+                            context.targetOrgId(),
+                            context.functionalOrgId());
+        }
+        return planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                context.cycleId(),
+                PlanLevel.STRAT_TO_FUNC,
+                context.sourceOrgId(),
+                context.targetOrgId());
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：「已下发不可再导入」的阻断文案。
+     *
+     * <p>学院导入按<b>线</b>口径点名归口部门（让人一眼看出是哪条线被拦）：
+     * 「该学院 2026 年度的「教务处」这条线已下发，不能再通过导入新增指标；
+     * 如需补充，请点「新增行」或双击编辑后点「发起异动」」。
+     *
+     * <p>职能部门导入保持部门口径（那里没有线的概念）。
+     */
+    private String distributedPlanBlockedMessage(PreviewContext context, Plan plan) {
+        if (context.type() != ImportType.DISTRIBUTION) {
+            // 2026-10-20 用户定案：文案明确原因与替代路径，避免用户反复尝试导入
+            return "该部门计划已下发，不能再通过导入修改。如需新增或调整指标，"
+                    + "请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批";
+        }
+        String functionalOrgName = resolveOrgName(plan.getFunctionalOrgId());
+        String cycleLabel = resolveCycleLabel(context.cycleId());
+        return "该学院 " + cycleLabel + "的「" + functionalOrgName + "」这条线已下发，"
+                + "不能再通过导入新增指标；如需补充，请点「新增行」或双击编辑后点「发起异动」";
+    }
+
+    /** 归口部门名称（取不到时退回「归口部门 #id」，不因取名失败而中断阻断流程）。 */
+    private String resolveOrgName(Long orgId) {
+        if (orgId == null) {
+            return "未指定归口部门";
+        }
+        return organizationRepository.findById(orgId)
+                .map(SysOrg::getName)
+                .filter(name -> !isBlank(name))
+                .orElse("归口部门 #" + orgId);
+    }
+
+    /** 考核年度标签（取不到时退回 cycleId，保证文案始终能说出是哪个年度）。 */
+    private String resolveCycleLabel(Long cycleId) {
+        if (cycleId == null) {
+            return "当前考核年度";
+        }
+        return cycleRepository.findById(cycleId)
+                .map(cycle -> cycle.getYear() != null ? cycle.getYear() + " 年度" : cycle.getName())
+                .filter(label -> !isBlank(label))
+                .orElse("考核年度 #" + cycleId);
     }
 
     private String resolveCommitStatus(Boolean autoSubmitAndApprove, ImportWorkflowResult workflow) {
@@ -432,7 +508,8 @@ public class BusinessImportApplicationService {
                                                Long cycleId,
                                                Long sourceOrgId,
                                                SysOrg targetOrg,
-                                               CurrentUser currentUser) {
+                                               CurrentUser currentUser,
+                                               Long functionalOrgId) {
         ImportSummary summary = summarize(rows);
         boolean blocking = summary.errorRows() > 0;
         String batchId = "IMP-" + UUID.randomUUID();
@@ -447,7 +524,8 @@ public class BusinessImportApplicationService {
                 parsed.fieldMappings(),
                 rows,
                 blocking,
-                parsed.confirmToken()
+                parsed.confirmToken(),
+                functionalOrgId
         );
         previews.put(batchId, new PreviewContext(
                 batchId,
@@ -455,6 +533,7 @@ public class BusinessImportApplicationService {
                 cycleId,
                 sourceOrgId,
                 targetOrg.getId(),
+                functionalOrgId,
                 currentUser.getId(),
                 parsed.confirmToken(),
                 response
@@ -539,10 +618,19 @@ public class BusinessImportApplicationService {
         return defaultWeight(row.normalized().weight());
     }
 
-    private List<ImportRowPreview> enrichDistributionRows(List<ImportRowPreview> rows,
-                                                          Long cycleId,
-                                                          SysOrg sourceOrg,
-                                                          SysOrg targetCollege) {
+    /**
+     * 2026-11-17（学院线粒度改造）：学院导入的<b>父级锚点匹配</b>阶段。
+     *
+     * <p>拆出来的原因：归口部门（线身份的一部分）必须先从「文件父级核心指标 → 父级.target_org_id」
+     * 反查出来，才能去取线、建线；而取线/建线又需要父级匹配结果（同名子指标匹配）——
+     * 所以这一段必须独立出来先跑。
+     *
+     * <p>归口集合只取<b>匹配成功</b>的父级：匹配失败的行已有行级阻断错误，
+     * 它们不参与归口推导（否则一条写错的行会把整批的归口带偏）。
+     */
+    private DistributionAnchorContext resolveDistributionAnchors(List<ImportRowPreview> rows,
+                                                                  SysOrg targetCollege,
+                                                                  Long cycleId) {
         // 2026-10-31 层级化定案：父级核心指标按名称反查（父指标是已下发系统数据，文件不再携带父级战略任务列）；
         // 子指标按（父级核心指标 + 名称）匹配——同名=更新、新名称=新增。
         // 2026-10-31 用户拍板（父级行=上级定死锚点）：系统父级锚点按 ID 升序作为「下发顺序」基准
@@ -577,9 +665,6 @@ public class BusinessImportApplicationService {
                 .filter(indicator -> indicator.getStatus() != IndicatorStatus.DISTRIBUTED)
                 .collect(Collectors.groupingBy(indicator -> normalizeKey(indicator.getIndicatorDesc())));
 
-        Plan plan = findPlan(cycleId, PlanLevel.FUNC_TO_COLLEGE, sourceOrg.getId(), targetCollege.getId()).orElse(null);
-        Map<String, Indicator> existingChildren = existingDistributionIndicators(plan, targetCollege);
-
         // 第一遍：逐行做学院一致性、父级锚点匹配与锚点一致性硬校验（名称/类型被改=阻断）
         List<DistributionRowAnchor> anchored = new ArrayList<>();
         for (ImportRowPreview row : rows) {
@@ -588,6 +673,87 @@ public class BusinessImportApplicationService {
         // 第二遍：相对顺序校验——文件中出现的父级组序列必须是系统下发顺序的子序列
         // （允许删掉不填的组，不允许调换/乱序；违反=阻断）
         applyParentOrderValidation(anchored, systemParentAnchors);
+
+        // 2026-11-17（学院线粒度改造）：从匹配成功的父级核心指标反查归口部门集合
+        // （父级核心指标是「战略部 → 职能部门」下发的，其 target_org 就是该学院的归口部门）。
+        Set<Long> functionalOrgIds = anchored.stream()
+                .map(DistributionRowAnchor::matchedParent)
+                .filter(Objects::nonNull)
+                .map(Indicator::getTargetOrg)
+                .filter(Objects::nonNull)
+                .map(SysOrg::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        return new DistributionAnchorContext(anchored, systemParentAnchors, functionalOrgIds);
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：导入归口部门与文件父级反查结果的<b>交叉校验</b>。
+     *
+     * <p>规则：
+     * <ul>
+     *   <li>文件里出现多个归口 → 阻断：「请按归口部门分别导入」（硬阻断，导入入口直接拒绝）；</li>
+     *   <li>所选归口与文件反查归口不一致 → 阻断：「请按归口部门分别导入」（硬阻断）；</li>
+     *   <li>未指定归口 → 按文件反查的唯一值推导；反查不出 → 返回 null 兜底：
+     *       父级没匹配上的文件本来就有行级阻断错误（预览 blocking），即便侥幸通过预览，
+     *       commit 阶段也会被「归口为空」守卫拦下——不允许建出 (35, 学院, NULL) 的无线空壳。</li>
+     *   <li>指定了归口但文件里一个父级都没匹配上 → 保留所选归口（行级错误已经会阻断预览）。</li>
+     * </ul>
+     */
+    private Long resolveEffectiveFunctionalOrgId(Long requestedFunctionalOrgId, Set<Long> fileFunctionalOrgIds) {
+        Set<Long> distinct = fileFunctionalOrgIds == null
+                ? Set.of()
+                : fileFunctionalOrgIds.stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        if (distinct.size() > 1) {
+            throw new IllegalArgumentException(
+                    "文件中的父级核心指标分属多个归口部门（" + describeOrgNames(distinct)
+                            + "），一条线只能有一个归口部门，请按归口部门分别导入后再上传");
+        }
+        if (requestedFunctionalOrgId == null) {
+            // 反查不出唯一归口：不在预览入口硬抛——父级匹配失败的行已带行级阻断错误
+            //（用户能拿到逐行引导，比一句笼统异常更有用）；commit 阶段的归口空值守卫兜底
+            return distinct.isEmpty() ? null : distinct.iterator().next();
+        }
+        requireFunctionalOrg(requestedFunctionalOrgId);
+        if (!distinct.isEmpty() && !distinct.contains(requestedFunctionalOrgId)) {
+            throw new IllegalArgumentException(
+                    "所选归口部门「" + resolveOrgName(requestedFunctionalOrgId) + "」与文件中的父级核心指标归口「"
+                            + describeOrgNames(distinct) + "」不一致，请按归口部门分别导入后再上传");
+        }
+        return requestedFunctionalOrgId;
+    }
+
+    /** 校验显式指定的归口部门：必须存在且是职能部门。 */
+    private void requireFunctionalOrg(Long functionalOrgId) {
+        SysOrg org = organizationRepository.findById(functionalOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("归口部门不存在"));
+        if (org.getType() != OrgType.functional) {
+            throw new IllegalArgumentException("归口部门必须是职能部门");
+        }
+    }
+
+    /** 归口部门集合的可读描述（用于阻断文案，点名是哪几个部门）。 */
+    private String describeOrgNames(Set<Long> orgIds) {
+        return orgIds.stream()
+                .map(this::resolveOrgName)
+                .collect(Collectors.joining("、"));
+    }
+
+    private List<ImportRowPreview> enrichDistributionRows(DistributionAnchorContext anchorContext,
+                                                          Long cycleId,
+                                                          SysOrg sourceOrg,
+                                                          SysOrg targetCollege,
+                                                          Long functionalOrgId) {
+        List<DistributionRowAnchor> anchored = anchorContext.anchors();
+
+        // 2026-11-17（学院线粒度改造）：按「线身份」取计划——同学院多条线时必须精确命中本线，
+        // 否则「同名子指标更新」会跨线匹配（A 线的子指标被 B 线的导入改名/覆盖）。
+        Plan plan = findLinePlan(cycleId, targetCollege.getId(), functionalOrgId).orElse(null);
+        Map<String, Indicator> existingChildren = existingDistributionIndicators(plan, targetCollege);
 
         // 第三遍：组装预览行（错误优先阻断；未使用预填行置 SKIP；其余按名称匹配更新/新增）
         List<ImportRowPreview> enriched = new ArrayList<>();
@@ -625,6 +791,20 @@ public class BusinessImportApplicationService {
             }
         }
         return appendMergedBasicWeightWarnings(enriched, plan, targetCollege.getId(), basicContributions);
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：学院导入的父级锚点匹配结果。
+     *
+     * @param anchors           逐行锚点校验结果（含错误/警告、匹配到的父级）
+     * @param systemParentAnchors 系统父级锚点（按 ID 升序，下发顺序基线）
+     * @param functionalOrgIds  文件父级核心指标反查出来的归口部门集合（去重）
+     */
+    private record DistributionAnchorContext(
+            List<DistributionRowAnchor> anchors,
+            List<Indicator> systemParentAnchors,
+            Set<Long> functionalOrgIds
+    ) {
     }
 
     /**
@@ -1018,8 +1198,23 @@ public class BusinessImportApplicationService {
                     "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标");
         }
         SysOrg targetCollege = requireOrg(context.targetOrgId(), "目标学院不存在");
-        // 2026-11-05（B7）：计划创建组织固定为战略发展部（复用 FUNC_TO_COLLEGE 级别，不新增枚举）
-        Plan plan = findOrCreatePlan(context.cycleId(), PlanLevel.FUNC_TO_COLLEGE, currentOrg.getId(), targetCollege.getId());
+        // 2026-11-17（学院线粒度改造）：归口为空 = 线身份残缺——不允许建出 (35, 学院, NULL) 空壳
+        //（V105 迁移归档的就是这种行）。预览阶段反查不出唯一归口的文件会有行级阻断错误，
+        // 这里是防绕过的最后闸门。
+        if (context.functionalOrgId() == null) {
+            throw new IllegalArgumentException(
+                    "无法确定本次导入归属的归口部门：文件父级核心指标未能反查出唯一归口，"
+                            + "请按归口部门分别导入后再上传");
+        }
+        // 2026-11-17（学院线粒度改造）：建线带归口部门——线的身份 = (cycle, FUNC_TO_COLLEGE,
+        // 战略发展部, 学院, 归口部门)。归口在预览阶段已与文件父级交叉校验过，这里直接落库。
+        // 同学院另一归口的线已下发不影响本线：查线/建线都按 5 键，不按「学院」一刀切。
+        Plan plan = findOrCreateLinePlan(
+                context.cycleId(),
+                PlanLevel.FUNC_TO_COLLEGE,
+                currentOrg.getId(),
+                targetCollege.getId(),
+                context.functionalOrgId());
         CommitCounter counter = new CommitCounter(plan);
         Set<Long> coveredIds = new HashSet<>();
         // 2026-11-09（修复学院上报链第 3 环派单失败）：本批导入所依赖的职能部门集合。
@@ -1160,24 +1355,28 @@ public class BusinessImportApplicationService {
      * <p><b>为什么能从父级推出来</b>：学院子指标的父级核心指标是「战略部 → 职能部门」下发的，
      * 其 {@code target_org} 就是那个职能部门，也就是「该学院归口哪个部门」的准确答案。
      *
-     * <p><b>多部门的情况</b>：一个学院理论上只归口一个职能部门，但历史数据可能跨多个部门。
-     * 这里取 id 最小的作为稳定选择并打 warn，便于运维发现口径分裂，而不是静默随机。
-     *
      * <p><b>2026-11-13 收口</b>：反查与最小选择逻辑移入
      * {@link com.sism.strategy.application.PlanFunctionalOrgResolver}（与迁移 V104 存量回填、
      * 计划提交补写共用同一实现，避免口径漂移）；本批导入收集的父级部门集合作为候选传入，
      * 候选为空时由 resolver 回退 DB 反查（同口径）。
+     *
+     * <p><b>2026-11-17（学院线粒度改造）：只补空值，不再覆盖写</b>——归口部门现在是「线身份」，
+     * 建线时已经写准（预览阶段交叉校验过），运行时改写它等于把 A 线的指标搬到 B 线的计划下。
+     * 多归口时不再取 MIN 猜测（resolver 改为告警并返回 null）。
      */
     private void applyFunctionalOrgFromDispatchChain(Plan plan, Set<Long> functionalOrgIds) {
         if (plan == null || plan.getId() == null) {
             return;
         }
-        Long chosen = planFunctionalOrgResolver.chooseFunctionalOrgId(plan.getId(), functionalOrgIds);
+        if (plan.getFunctionalOrgId() != null) {
+            // 线身份已定，不再改写
+            return;
+        }
+        Long chosen = planFunctionalOrgResolver.resolveUniqueFunctionalOrgId(plan.getId(), functionalOrgIds);
         if (chosen == null) {
             return;
         }
-        if (!Objects.equals(plan.getFunctionalOrgId(), chosen)) {
-            plan.setFunctionalOrgId(chosen);
+        if (plan.fillFunctionalOrgIfAbsent(chosen)) {
             planRepository.save(plan);
         }
     }
@@ -1355,6 +1554,37 @@ public class BusinessImportApplicationService {
     private Plan findOrCreatePlan(Long cycleId, PlanLevel planLevel, Long createdByOrgId, Long targetOrgId) {
         return findPlan(cycleId, planLevel, createdByOrgId, targetOrgId)
                 .orElseGet(() -> planRepository.save(Plan.create(cycleId, targetOrgId, createdByOrgId, planLevel)));
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：按「线身份」取线或建线。
+     *
+     * <p>线的唯一键 = (cycle, planLevel, 代发通道, 目标学院, 归口部门)。
+     * 建线时把归口一次性写准；查线时用 5 键 finder（不命中 legacy 空壳）。
+     */
+    private Plan findOrCreateLinePlan(Long cycleId,
+                                      PlanLevel planLevel,
+                                      Long createdByOrgId,
+                                      Long targetOrgId,
+                                      Long functionalOrgId) {
+        return findLinePlan(cycleId, targetOrgId, functionalOrgId)
+                .orElseGet(() -> planRepository.save(
+                        Plan.create(cycleId, targetOrgId, createdByOrgId, planLevel, functionalOrgId)));
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：按「线身份」查线（只查存活行）。
+     *
+     * <p>归口维度是必须的：同学院可并存多条归口不同的线，不带归口的查询会命中别的线。
+     */
+    private Optional<Plan> findLinePlan(Long cycleId, Long targetOrgId, Long functionalOrgId) {
+        return planRepository
+                .findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                        cycleId,
+                        PlanLevel.FUNC_TO_COLLEGE,
+                        strategyOrgId(),
+                        targetOrgId,
+                        functionalOrgId);
     }
 
     private Optional<Plan> findPlan(Long cycleId, PlanLevel planLevel, Long createdByOrgId, Long targetOrgId) {
@@ -1601,6 +1831,10 @@ public class BusinessImportApplicationService {
             Long cycleId,
             Long sourceOrgId,
             Long targetOrgId,
+            // 2026-11-17（学院线粒度改造）：本批次归属的「线」的归口部门（线身份的一部分）。
+            // 学院导入必非空（预览阶段由文件父级反查 + 入参交叉校验确定）；
+            // 职能部门导入（STRATEGIC_TASK）无线概念，为 null。
+            Long functionalOrgId,
             Long currentUserId,
             String confirmToken,
             ImportPreviewResponse response

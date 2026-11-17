@@ -114,7 +114,10 @@ public final class BusinessImportDtos {
             List<FieldMapping> fieldMappings,
             List<ImportRowPreview> rows,
             boolean blocking,
-            String confirmToken
+            String confirmToken,
+            // 2026-11-17（学院线粒度改造）：本批次归属的「线」的归口部门（线身份的一部分）。
+            // 学院导入必非空（由文件父级反查 + 入参交叉校验确定）；职能部门导入为 null（无线概念）。
+            Long functionalOrgId
     ) {
     }
 

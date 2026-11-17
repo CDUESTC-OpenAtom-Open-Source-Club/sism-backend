@@ -62,6 +62,13 @@ public class Plan extends AggregateRoot<Long> {
      *
      * <p>可空：STRAT_TO_FUNC 计划不需要；存量学院计划为 null 时
      * 审批席位回退到 created_by_org_id（改造前口径），向后兼容。
+     *
+     * <p><b>2026-11-17（学院线粒度改造）</b>：本字段从「属性」升格为「线身份」——
+     * 一个学院在同一考核年度可以有多个归口部门各自的「线」，
+     * 线的唯一键 = (cycle_id, plan_level=FUNC_TO_COLLEGE, created_by_org_id=战略发展部,
+     * target_org_id=学院, functional_org_id=归口部门)。
+     * 因此本字段<b>运行时不可覆盖写</b>：只允许在建线时写入、或在为空时补写
+     * （见 {@link #fillFunctionalOrgIfAbsent(Long)}）。
      */
     @Column(name = "functional_org_id")
     private Long functionalOrgId;
@@ -101,6 +108,40 @@ public class Plan extends AggregateRoot<Long> {
         plan.isDeleted = false;
         plan.status = PlanStatus.DRAFT.value();
         return plan;
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：带归口部门的建线重载。
+     *
+     * <p>FUNC_TO_COLLEGE 的「线身份」包含归口部门（functional_org_id），
+     * 建线时必须一次性写准；建线之后不再允许覆盖写（见 {@link #fillFunctionalOrgIfAbsent(Long)}）。
+     * STRAT_TO_FUNC 等不需要归口的计划传 null 即可。
+     */
+    public static Plan create(Long cycleId,
+                               Long targetOrgId,
+                               Long createdByOrgId,
+                               PlanLevel planLevel,
+                               Long functionalOrgId) {
+        Plan plan = create(cycleId, targetOrgId, createdByOrgId, planLevel);
+        plan.functionalOrgId = functionalOrgId;
+        return plan;
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：归口部门<b>仅补空值</b>。
+     *
+     * <p>线的归口是身份不是属性：一旦落库就不可改写（改写会让 A 线的指标跑到 B 线的计划下）。
+     * 只有「还没落值」的线才允许补写（存量回填 / 导入链首次建线）。
+     *
+     * @return true=本次补写了归口；false=已有归口或入参为空（未改动）
+     */
+    public boolean fillFunctionalOrgIfAbsent(Long newFunctionalOrgId) {
+        if (newFunctionalOrgId == null || this.functionalOrgId != null) {
+            return false;
+        }
+        this.functionalOrgId = newFunctionalOrgId;
+        this.updatedAt = LocalDateTime.now();
+        return true;
     }
 
     public void activate() {
