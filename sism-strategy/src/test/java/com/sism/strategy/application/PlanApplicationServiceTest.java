@@ -39,6 +39,7 @@ import java.util.Optional;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -50,6 +51,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -70,6 +72,11 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 @ExtendWith(MockitoExtension.class)
 @DisplayName("Plan Application Service Tests")
 class PlanApplicationServiceTest {
+
+    /** 2026-11-17（学院线粒度）：归口甲（一条线）。 */
+    private static final Long FUNCTIONAL_ORG_A = 44L;
+    /** 2026-11-17（学院线粒度）：归口乙（同学院的另一条线）。 */
+    private static final Long FUNCTIONAL_ORG_B = 45L;
 
     @Mock
     private PlanRepository planRepository;
@@ -146,6 +153,13 @@ class PlanApplicationServiceTest {
                 any(String.class),
                 any(MapSqlParameterSource.class)
         )).thenReturn(List.of());
+        // 2026-11-17（学院线粒度）：计划冲突校验改走 jdbcTemplate 内联 SQL（5 键），
+        // 默认无同线冲突；各用例按需覆盖为「同归口才算冲突」。
+        lenient().when(jdbcTemplate.queryForList(
+                anyString(),
+                eq(Long.class),
+                any(Object[].class)
+        )).thenReturn(List.of());
         strategyOrgProperties = new StrategyOrgProperties();
         service = new PlanApplicationService(
                 planRepository,
@@ -164,6 +178,139 @@ class PlanApplicationServiceTest {
         );
     }
 
+    // ==================== 2026-11-17 学院线粒度（计划冲突校验加归口维度） ====================
+    //
+    // 口径：一条线的身份 = cycle + plan_level + created_by + 目标学院 + 归口部门。
+    // 一个学院在同一考核年度可以有多个归口部门各自的线 → 同学院不同归口不再判冲突；
+    // 同归口重复建线仍被拦。STRAT_TO_FUNC（flow1）不带归口维度，行为与改造前一致。
+
+    /**
+     * 取「最后一个可变参数」——两条内联 SQL 的最后一个参数都是归口部门。
+     *
+     * <p>Mockito 会把可变参数展开成独立参数（也可能保留成数组），这里两种形态都兜住。
+     */
+    private static Object lastVarArg(org.mockito.invocation.InvocationOnMock invocation) {
+        Object[] args = invocation.getArguments();
+        Object last = args[args.length - 1];
+        if (last instanceof Object[] array && array.length > 0) {
+            return array[array.length - 1];
+        }
+        return last;
+    }
+
+    /**
+     * 模拟「同归口才算同一条线」的库内判定。
+     *
+     * <p>内联 SQL 的最后一个参数是归口部门：只有与库里那条线的归口一致时才返回冲突计划 ID
+     * （NULL 与 NULL 同组，对应 {@code IS NOT DISTINCT FROM} 语义）。
+     */
+    private void stubActivePlanIdsByFunctionalOrg(Long existingFunctionalOrgId, Long existingPlanId) {
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    Long queriedFunctionalOrgId = (Long) lastVarArg(invocation);
+                    return Objects.equals(queriedFunctionalOrgId, existingFunctionalOrgId)
+                            ? List.of(existingPlanId)
+                            : List.of();
+                });
+    }
+
+    /**
+     * 模拟「同学院 + 同归口才有在审异动」的库内判定（学院级联锁已收窄到线级）。
+     *
+     * <p>SQL 参数顺序：(cycle_id, target_org_id, functional_org_id)。
+     */
+    private void stubCollegeCascadeCountForFunctionalOrg(Long mutationFunctionalOrgId) {
+        when(jdbcTemplate.queryForObject(contains("sys_org"), eq(Integer.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    Long queriedFunctionalOrgId = (Long) lastVarArg(invocation);
+                    return Objects.equals(queriedFunctionalOrgId, mutationFunctionalOrgId) ? 1 : 0;
+                });
+    }
+
+    @Test
+    @DisplayName("2026-11-17：同学院不同归口建第二条线不再被判冲突")
+    void shouldAllowSecondLineWithDifferentFunctionalOrg() {
+        Cycle cycle = new Cycle();
+        cycle.setId(2026L);
+        cycle.setYear(2026);
+
+        CreatePlanRequest request = new CreatePlanRequest();
+        request.setCycleId(2026L);
+        request.setCreatedByOrgId(35L);
+        request.setTargetOrgId(36L);
+        request.setPlanType("OPERATION");
+
+        when(cycleRepository.findById(2026L)).thenReturn(Optional.of(cycle));
+        // 库里已有的是归口甲那条线；本次建的是另一条线 → 不是同一条线 → 不冲突
+        stubActivePlanIdsByFunctionalOrg(FUNCTIONAL_ORG_A, 1L);
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
+            Plan saved = invocation.getArgument(0);
+            saved.setId(99L);
+            return saved;
+        });
+
+        assertDoesNotThrow(() -> service.createPlan(request));
+        verify(planRepository).save(any(Plan.class));
+    }
+
+    @Test
+    @DisplayName("2026-11-17：同归口重复建线仍被拦（同一归口的线不得并存）")
+    void shouldRejectSecondLineWithSameFunctionalOrg() {
+        Plan current = Plan.create(2026L, 36L, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        current.setId(10L);
+        current.setFunctionalOrgId(FUNCTIONAL_ORG_A);
+
+        UpdatePlanRequest request = new UpdatePlanRequest();
+
+        when(planRepository.findById(10L)).thenReturn(Optional.of(current));
+        // 库里已有归口甲的线（同 cycle + 同学院 + 同归口）→ 同一条线 → 冲突
+        stubActivePlanIdsByFunctionalOrg(FUNCTIONAL_ORG_A, 11L);
+
+        ConflictException error = assertThrows(ConflictException.class, () -> service.updatePlan(10L, request));
+        assertTrue(error.getMessage().contains("functionalOrgId=" + FUNCTIONAL_ORG_A),
+                "冲突文案必须带归口维度：" + error.getMessage());
+        verify(planRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-17：同学院另一归口的线并存不判冲突")
+    void shouldAllowPlanWhenConflictBelongsToOtherFunctionalOrg() {
+        Plan current = Plan.create(2026L, 36L, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        current.setId(10L);
+        current.setFunctionalOrgId(FUNCTIONAL_ORG_A);
+
+        UpdatePlanRequest request = new UpdatePlanRequest();
+
+        when(planRepository.findById(10L)).thenReturn(Optional.of(current));
+        when(planRepository.save(same(current))).thenReturn(current);
+        // 库里那条线是归口乙的 → 不是同一条线 → 不冲突
+        stubActivePlanIdsByFunctionalOrg(FUNCTIONAL_ORG_B, 11L);
+
+        assertDoesNotThrow(() -> service.updatePlan(10L, request));
+        verify(planRepository).save(same(current));
+    }
+
+    @Test
+    @DisplayName("2026-11-17 回归：flow1（战略部→职能部门）不带归口维度，冲突判定行为不变")
+    void shouldKeepFlow1ConflictBehaviourUnchanged() {
+        Cycle cycle = new Cycle();
+        cycle.setId(2026L);
+        cycle.setYear(2026);
+
+        CreatePlanRequest request = new CreatePlanRequest();
+        request.setCycleId(2026L);
+        request.setCreatedByOrgId(35L);
+        request.setTargetOrgId(36L);
+        request.setPlanType("STRATEGY");
+
+        when(cycleRepository.findById(2026L)).thenReturn(Optional.of(cycle));
+        // STRAT_TO_FUNC 计划归口恒为 NULL：不带归口维度 → 库里已有同键计划即冲突
+        stubActivePlanIdsByFunctionalOrg(null, 1L);
+
+        assertThrows(ConflictException.class, () -> service.createPlan(request));
+        verify(planRepository, never()).save(any());
+    }
+
     @Test
     @DisplayName("Should publish a deterministic plan created event after saving")
     void shouldPublishPlanCreatedEventAfterSaving() {
@@ -178,9 +325,6 @@ class PlanApplicationServiceTest {
         request.setPlanType("STRATEGY");
 
         when(cycleRepository.findById(2026L)).thenReturn(Optional.of(cycle));
-        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L, PlanLevel.STRAT_TO_FUNC, 35L, 36L))
-                .thenReturn(List.of());
         when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
             Plan saved = invocation.getArgument(0);
             saved.setId(99L);
@@ -213,13 +357,10 @@ class PlanApplicationServiceTest {
         request.setTargetOrgId(36L);
         request.setPlanType("STRATEGY");
 
-        Plan existing = Plan.create(2026L, 36L, 35L, PlanLevel.STRAT_TO_FUNC);
-        existing.setId(1L);
-
         when(cycleRepository.findById(2026L)).thenReturn(Optional.of(cycle));
-        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L, PlanLevel.STRAT_TO_FUNC, 35L, 36L))
-                .thenReturn(List.of(existing));
+        // 2026-11-17：冲突校验走内联 SQL（5 键），库里存在同键计划 → 冲突
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class), any(Object[].class)))
+                .thenReturn(List.of(1L));
 
         assertThrows(ConflictException.class, () -> service.createPlan(request));
         verify(planRepository, never()).save(any());
@@ -230,16 +371,13 @@ class PlanApplicationServiceTest {
     void shouldRejectUpdateWhenBusinessKeyWouldCollide() {
         Plan current = Plan.create(2026L, 37L, 35L, PlanLevel.STRAT_TO_FUNC);
         current.setId(10L);
-        Plan existing = Plan.create(2026L, 36L, 35L, PlanLevel.STRAT_TO_FUNC);
-        existing.setId(11L);
 
         UpdatePlanRequest request = new UpdatePlanRequest();
         request.setTargetOrgId(36L);
 
         when(planRepository.findById(10L)).thenReturn(Optional.of(current));
-        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L, PlanLevel.STRAT_TO_FUNC, 35L, 36L))
-                .thenReturn(List.of(existing));
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class), any(Object[].class)))
+                .thenReturn(List.of(11L));
 
         assertThrows(ConflictException.class, () -> service.updatePlan(10L, request));
         verify(planRepository, never()).save(any());
@@ -634,11 +772,11 @@ class PlanApplicationServiceTest {
 
         when(planRepository.findById(9102L)).thenReturn(Optional.of(plan));
         when(collegeDispatchGuardService.isSourceOrgMutationInFlight(9102L, cycleId)).thenReturn(false);
-        // 2026-10-31 学院级联分支：无「目标为学院」的在审异动，放行
+        // 2026-11-17：学院级联锁收窄到线级——同学院 + 同归口才有在审异动；此处无，放行
         when(jdbcTemplate.queryForObject(
                 contains("sys_org"),
                 eq(Integer.class),
-                eq(cycleId)
+                any(Object[].class)
         )).thenReturn(0);
         when(planRepository.save(same(plan))).thenReturn(plan);
 
@@ -654,17 +792,22 @@ class PlanApplicationServiceTest {
      * 2026-10-31 缺陷修复（学院级联全锁，线上实证）：教务处→计算机学院的子计划
      * 异动在审时，向商学院（另一个学院）发起下发此前后端照常受理——原校验只查
      * 「异动指标 target_org_id = 职能部门自身」，学院子计划异动（target=学院）
-     * 永不命中。按 2026-10-11 定案补齐级联分支：同周期内存在任意「目标为学院」
-     * 的异动在审时，任何以学院为目标的下发一律拒绝。
+     * 永不命中。按 2026-10-11 定案补齐级联分支。
+     *
+     * <p><b>2026-11-17（学院线粒度，用户 2026-11-16 拍板）</b>：该「学院级联全锁」被判定为
+     * 过度锁——一个学院可以同时有多个归口部门各自的线，A 线的异动在审不应拦死 B 线。
+     * 判定收窄为「同 cycle + 同学院 + 同归口」的异动在审才算冲突。
      */
     @Test
-    @DisplayName("学院级联全锁：学院子计划异动在审时向另一学院下发被拒")
-    void shouldBlockCollegeDispatchWhenCollegeSubPlanMutationInReview() {
+    @DisplayName("2026-11-17：同学院同归口的线异动在审时，同线的下发被拒（文案点名归口）")
+    void shouldBlockCollegeDispatchWhenSameLineMutationInReview() {
         Long cycleId = 2026L;
         Long strategyOrgId = 35L;
         Long businessCollegeOrgId = 36L;
         Plan plan = Plan.create(cycleId, businessCollegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
         plan.setId(9105L);
+        // 2026-11-17：线身份含归口部门
+        plan.setFunctionalOrgId(FUNCTIONAL_ORG_A);
 
         SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
         request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
@@ -672,20 +815,49 @@ class PlanApplicationServiceTest {
         when(planRepository.findById(9105L)).thenReturn(Optional.of(plan));
         // 下发所依赖的职能部门自身指标无在审异动
         when(collegeDispatchGuardService.isSourceOrgMutationInFlight(9105L, cycleId)).thenReturn(false);
-        // 同周期存在目标组织为学院（sys_org.type='academic'）的异动审批在审
-        when(jdbcTemplate.queryForObject(
-                contains("sys_org"),
-                eq(Integer.class),
-                eq(cycleId)
-        )).thenReturn(1);
+        // 同学院 + 同归口存在异动审批在审（按 SQL 传入的归口维度判定）
+        stubCollegeCascadeCountForFunctionalOrg(FUNCTIONAL_ORG_A);
 
         IllegalStateException error = assertThrows(IllegalStateException.class,
                 () -> service.submitPlanForApproval(9105L, request, 188L, strategyOrgId));
 
-        assertTrue(error.getMessage().contains("暂不能向学院下发"));
+        assertTrue(error.getMessage().contains("暂不能向该学院下发"),
+                "冲突文案应说明被拦的是学院下发：" + error.getMessage());
+        assertTrue(error.getMessage().contains("归口部门"),
+                "冲突文案必须点名是哪个归口部门的线在冲突：" + error.getMessage());
         // 整体拒绝：不落库、不发事件（下发审批链不得启动）
         verify(planRepository, never()).save(any());
         verify(eventPublisher, never()).publish(any());
+    }
+
+    /**
+     * 2026-11-17（学院线粒度）：A 线（归口甲）异动在审时，同学院 B 线（归口乙）的下发
+     * <b>不被拦</b>——这正是「学院级联全锁」过度锁要修掉的点。
+     */
+    @Test
+    @DisplayName("2026-11-17：A 线异动在审时，同学院另一归口（B 线）的下发不被拦")
+    void shouldAllowCollegeDispatchWhenOtherFunctionalOrgLineMutationInReview() {
+        Long cycleId = 2026L;
+        Long strategyOrgId = 35L;
+        Long businessCollegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, businessCollegeOrgId, strategyOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9107L);
+        // 本次下发的是归口乙那条线
+        plan.setFunctionalOrgId(FUNCTIONAL_ORG_B);
+
+        SubmitPlanApprovalRequest request = new SubmitPlanApprovalRequest();
+        request.setWorkflowCode("PLAN_DISPATCH_COLLEGE");
+
+        when(planRepository.findById(9107L)).thenReturn(Optional.of(plan));
+        when(collegeDispatchGuardService.isSourceOrgMutationInFlight(9107L, cycleId)).thenReturn(false);
+        // 在审异动在归口甲那条线上 → 与本次下发（归口乙）不是同一条线 → 计 0 条
+        stubCollegeCascadeCountForFunctionalOrg(FUNCTIONAL_ORG_A);
+        when(planRepository.save(same(plan))).thenReturn(plan);
+
+        PlanResponse response = service.submitPlanForApproval(9107L, request, 188L, strategyOrgId);
+
+        assertEquals(PlanStatus.PENDING.value(), response.getStatus());
+        verify(planRepository).save(same(plan));
     }
 
     @Test
@@ -1196,6 +1368,55 @@ class PlanApplicationServiceTest {
         assertNotNull(response.getWorkflowHistory());
         assertEquals(1, response.getWorkflowHistory().size());
         assertEquals("职能部门审批", response.getWorkflowHistory().get(0).getStepName());
+    }
+
+    /**
+     * 2026-11-17（学院线粒度）：A 线计划详情不得混入 B 线指标。
+     *
+     * <p>兜底分支按 {@code owner_org_id + target_org_id} 取指标，命中的是「该学院所有线」的指标，
+     * 必须再按归口收口，否则 A 线计划详情会混入 B 线的指标。
+     */
+    @Test
+    @DisplayName("2026-11-17：两条线并存时，线 A 的计划详情不含线 B 的指标")
+    void shouldNotIncludeOtherFunctionalOrgLineIndicatorsInPlanDetails() {
+        Long collegeOrgId = 61L;
+        // 线 A（归口甲）与线 B（归口乙）：同学院、同周期、同创建方
+        Plan lineA = Plan.create(2026L, collegeOrgId, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        lineA.setId(4L);
+        lineA.setFunctionalOrgId(FUNCTIONAL_ORG_A);
+        Plan lineB = Plan.create(2026L, collegeOrgId, 35L, PlanLevel.FUNC_TO_COLLEGE);
+        lineB.setId(5L);
+        lineB.setFunctionalOrgId(FUNCTIONAL_ORG_B);
+
+        StrategicTask taskA = createTask(41001L, 4L);
+        taskA.setCycleId(2026L);
+        StrategicTask taskB = createTask(51001L, 5L);
+        taskB.setCycleId(2026L);
+
+        Indicator indicatorA = createIndicatorMock(2001L, 41001L, 0, "A 线指标");
+        // B 线指标只挂 task（本用例断言它被按归口过滤掉，不需要完整字段）
+        Indicator indicatorB = mock(Indicator.class);
+        when(indicatorB.getTaskId()).thenReturn(51001L);
+
+        when(planRepository.findById(4L)).thenReturn(Optional.of(lineA));
+        when(cycleRepository.findById(2026L)).thenReturn(Optional.of(createCycle(2026L, 2026)));
+        // 线 A 尚无任务绑定指标 → 走「按 owner + target 取指标」的兜底分支
+        when(taskRepository.findByPlanId(4L)).thenReturn(List.of());
+        // 兜底查询命中该学院两条线的全部指标
+        when(indicatorRepository.findByOwnerOrgIdAndTargetOrgId(35L, collegeOrgId))
+                .thenReturn(List.of(indicatorA, indicatorB));
+        // 兜底分支回查任务 → 两条线的任务（回查计划取归口）
+        when(taskRepository.findAllById(anyList())).thenReturn(List.of(taskA, taskB));
+        when(planRepository.findAllByIds(anyList())).thenReturn(List.of(lineA, lineB));
+        when(planWorkflowSnapshotQueryService.getWorkflowHistoryByPlanId(4L)).thenReturn(List.of());
+        when(jdbcTemplate.queryForList(contains("FROM public.plan_report pr"), any(Object[].class)))
+                .thenReturn(List.of());
+
+        PlanApplicationService.PlanDetailsResponse response = service.getPlanDetails(4L);
+
+        assertNotNull(response.getIndicators());
+        assertEquals(1, response.getIndicators().size(), "线 A 的计划详情只应有本线指标");
+        assertEquals(2001L, response.getIndicators().get(0).getId(), "线 A 的计划详情不得混入线 B 的指标");
     }
 
     @Test
