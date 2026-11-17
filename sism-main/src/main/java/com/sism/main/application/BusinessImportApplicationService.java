@@ -238,7 +238,16 @@ public class BusinessImportApplicationService {
                 : DISTRIBUTION_WORKFLOW_CODE;
 
         Optional<Plan> currentPlan = findPlanForImportContext(context);
+        // 2026-11-17 用户反馈第 2.3 条：一个学院一年度只有一条 FUNC_TO_COLLEGE 计划（见
+        // ux_plan_active_business_key），首批职能部门（如教务处）下发后计划即 DISTRIBUTED，
+        // 第二批（如数字校园建设办公室）会被下面这条「已下发」判据彻底堵死。
+        // 放行判据：本批全部是新增行（无 UPDATE），且至少有一个父级核心指标组是该计划里还没有的
+        // → 视为「向已下发计划追加新归口批次」，落库后直接生效，不再重复发起下发审批。
+        boolean appendToDistributedPlan = false;
         if (currentPlan.map(Plan::isDistributed).orElse(false)) {
+            appendToDistributedPlan = isAppendableDistributionBatch(currentPlan.get(), context);
+        }
+        if (currentPlan.map(Plan::isDistributed).orElse(false) && !appendToDistributedPlan) {
             return blockedCommitResponse(
                     batchId,
                     autoSubmitAndApprove,
@@ -248,6 +257,11 @@ public class BusinessImportApplicationService {
                     "该部门计划已下发，不能再通过导入修改。如需新增或调整指标，"
                             + "请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批");
         }
+        // 追加批次不需要（也不允许）再发起一次下发审批：计划已下发、审批链已结束
+        final boolean skipAutoApprove = appendToDistributedPlan;
+        if (appendToDistributedPlan) {
+            log.info("导入追加到已下发计划：planId={}, batchId={}", currentPlan.map(Plan::getId).orElse(null), batchId);
+        }
 
         CommitCounters counters;
         try {
@@ -255,7 +269,7 @@ public class BusinessImportApplicationService {
                 CommitCounters committed = context.type() == ImportType.STRATEGIC_TASK
                         ? commitStrategic(context, conflictMode, currentUser)
                         : commitDistribution(context, conflictMode);
-                if (autoSubmitAndApprove) {
+                if (autoSubmitAndApprove && !skipAutoApprove) {
                     validateCommittedPlanForAutoDispatch(committed.plan());
                 }
                 return committed;
@@ -273,7 +287,7 @@ public class BusinessImportApplicationService {
         }
 
         ImportWorkflowResult workflow = null;
-        if (autoSubmitAndApprove) {
+        if (autoSubmitAndApprove && !skipAutoApprove) {
             workflow = autoSubmitAndApprove(
                     counters.plan(),
                     workflowCode,
@@ -288,11 +302,14 @@ public class BusinessImportApplicationService {
                     null,
                     0,
                     null,
-                    "导入成功，未自动发起审批");
+                    skipAutoApprove
+                            // 2026-11-17 用户反馈第 2.3 条：追加批次直接生效，不重复走审批
+                            ? "本次导入为向已下发计划追加新指标，已直接生效，无需再次发起审批"
+                            : "导入成功，未自动发起审批");
         }
 
         previews.remove(batchId);
-        String status = resolveCommitStatus(autoSubmitAndApprove, workflow);
+        String status = resolveCommitStatus(autoSubmitAndApprove && !skipAutoApprove, workflow);
         return new ImportCommitResponse(
                 batchId,
                 status,
@@ -399,6 +416,72 @@ public class BusinessImportApplicationService {
                 ? context.sourceOrgId()
                 : strategyOrgId();
         return findPlan(context.cycleId(), planLevel, createdByOrgId, context.targetOrgId());
+    }
+
+    /**
+     * 2026-11-17 用户反馈第 2.3 条（学院第二次导入被判「已下发/重复导入」）。
+     *
+     * <p>业务约束：一个学院一个年度只有一条 {@code FUNC_TO_COLLEGE} 计划（唯一索引
+     * {@code ux_plan_active_business_key}），所以首批职能部门（如教务处）下发后，计划状态变为
+     * {@code DISTRIBUTED}；此后第二个职能部门（如数字校园建设办公室）再向同一学院下发指标时，
+     * 会命中 commit 里的「计划已下发」硬拦截，用户完全没有继续导入的路径。</p>
+     *
+     * <p>放行判据（三条同时满足，缺一不可）：
+     * <ol>
+     *   <li>本批没有任何 {@code UPDATE} 行——否则等于绕过「已下发计划改指标须走异动审批」；</li>
+     *   <li>本批至少有一个 {@code CREATE} 行带父级核心指标名；</li>
+     *   <li>该父级核心指标组在该计划里还不存在——即确实是「新归口批次」，不是把同一批文件再导一遍。</li>
+     * </ol>
+     * 命中后由调用方跳过自动审批：计划已下发、审批链已结束，追加的指标直接生效。</p>
+     */
+    private boolean isAppendableDistributionBatch(Plan plan, PreviewContext context) {
+        if (context.type() != ImportType.DISTRIBUTION || context.response() == null) {
+            return false;
+        }
+        List<ImportRowPreview> rows = context.response().rows();
+        if (rows == null || rows.isEmpty()) {
+            return false;
+        }
+        Set<String> incomingParents = new LinkedHashSet<>();
+        for (ImportRowPreview row : rows) {
+            if (row.action() == ImportAction.UPDATE) {
+                return false;
+            }
+            if (row.action() != ImportAction.CREATE || row.normalized() == null) {
+                continue;
+            }
+            String parent = normalizeKey(row.normalized().parentIndicator());
+            if (!parent.isEmpty()) {
+                incomingParents.add(parent);
+            }
+        }
+        if (incomingParents.isEmpty()) {
+            return false;
+        }
+        Set<String> existingParents = planParentIndicatorKeys(plan);
+        return incomingParents.stream().anyMatch(parent -> !existingParents.contains(parent));
+    }
+
+    private Set<String> planParentIndicatorKeys(Plan plan) {
+        Set<String> keys = new HashSet<>();
+        List<StrategicTask> tasks = taskRepository.findByPlanId(plan.getId());
+        if (tasks.isEmpty()) {
+            return keys;
+        }
+        List<Long> taskIds = tasks.stream().map(StrategicTask::getId).toList();
+        List<Long> parentIds = indicatorRepository.findByTaskIds(taskIds).stream()
+                .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
+                .map(Indicator::getParentIndicatorId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (parentIds.isEmpty()) {
+            return keys;
+        }
+        for (Indicator parent : indicatorRepository.findByIds(parentIds)) {
+            keys.add(normalizeKey(parent.getIndicatorDesc()));
+        }
+        return keys;
     }
 
     private String resolveCommitStatus(Boolean autoSubmitAndApprove, ImportWorkflowResult workflow) {
