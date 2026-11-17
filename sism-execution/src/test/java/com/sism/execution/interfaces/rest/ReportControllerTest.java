@@ -23,10 +23,14 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.data.domain.Page;
 
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.web.bind.annotation.PostMapping;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.doReturn;
@@ -386,5 +390,27 @@ class ReportControllerTest {
 
         assertEquals(200, response.getStatusCodeValue());
         verify(reportApplicationService).findReportsByConditionsForOrg(queryRequest, 10L);
+    }
+
+    /**
+     * 2026-11-17 用户拍板：删除 REST 直批端点 POST /api/v1/reports/{id}/approve——
+     * 它绕过工作流直接把月报置 APPROVED 且不做鉴定投影，与审批中心唯一通道
+     * （POST /workflows/tasks/{instanceId}/approve）并存曾造成数据不一致
+     * （直批报告的鉴定投影缺失，UI 显示"审核进度 未评定"）。
+     * 本守卫断言 Controller 编译产物上不存在任何含 approve 的 @PostMapping 映射
+     * 与 approveReport 端点方法，防止直批端点回归复活。
+     */
+    @Test
+    @DisplayName("守卫：POST /{id}/approve 直批端点必须保持移除（审批唯一通道=审批中心工作流）")
+    void legacyDirectApproveEndpointMustStayRemoved() {
+        for (Method method : ReportController.class.getDeclaredMethods()) {
+            PostMapping mapping = method.getAnnotation(PostMapping.class);
+            String path = mapping == null ? "" : String.join("", mapping.value());
+            assertFalse(path.contains("approve"),
+                    () -> "发现复活的直批端点映射：" + method.getName() + " -> " + path
+                            + "；审批唯一通道为审批中心工作流 POST /workflows/tasks/{instanceId}/approve");
+            assertFalse("approveReport".equals(method.getName()),
+                    () -> "发现复活的直批端点方法：" + method.getName());
+        }
     }
 }
