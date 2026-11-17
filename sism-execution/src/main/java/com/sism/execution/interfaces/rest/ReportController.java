@@ -149,17 +149,6 @@ public class ReportController {
         return ResponseEntity.ok(ApiResponse.success(PlanReportResponse.fromEntity(report)));
     }
 
-    @PostMapping("/{id}/approve")
-    @Operation(summary = "审批通过报告", description = "审批通过已提交的报告")
-    @PreAuthorize(REPORT_APPROVAL_ACCESS)
-    public ResponseEntity<ApiResponse<PlanReportResponse>> approveReport(
-            @Parameter(description = "报告ID") @PathVariable Long id,
-            @AuthenticationPrincipal CurrentUser currentUser) {
-        requireReportWithPermission(id, currentUser);
-        PlanReport report = reportApplicationService.approveReport(id, requireCurrentUserId(currentUser), currentUser);
-        return ResponseEntity.ok(ApiResponse.success(PlanReportResponse.fromEntity(report)));
-    }
-
     @PostMapping("/{id}/reject")
     @Operation(summary = "驳回报告", description = "驳回已提交的报告，并提供驳回理由")
     @PreAuthorize(REPORT_APPROVAL_ACCESS)

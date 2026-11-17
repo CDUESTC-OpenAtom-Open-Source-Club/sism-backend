@@ -624,8 +624,13 @@ public class ReportApplicationService {
     }
 
     /**
-     * 审批通过报告
+     * 审批通过报告。
+     *
+     * @deprecated 2026-11-17 用户拍板：REST 直批端点（POST /api/v1/reports/{id}/approve）已移除，
+     * 审批唯一通道 = 审批中心工作流（POST /workflows/tasks/{instanceId}/approve）；
+     * 本方法仅供历史代码编译保留，不再暴露 HTTP 入口。新代码请勿调用。
      */
+    @Deprecated
     @Transactional
     public PlanReport approveReport(Long reportId, Long userId) {
         PlanReport report = planReportRepository.findById(reportId)
@@ -636,13 +641,6 @@ public class ReportApplicationService {
         syncApprovedIndicatorProgress(report.getId());
         publishAndSaveEvents(report);
         return enrichReportMetadata(report);
-    }
-
-    @Transactional
-    public PlanReport approveReport(Long reportId, Long userId, CurrentUser currentUser) {
-        requireAnyRole(currentUser, "ROLE_VICE_PRESIDENT", "ROLE_STRATEGY_DEPT_HEAD", "ROLE_APPROVER");
-        Long actorId = resolveUserId(userId, currentUser);
-        return approveReport(reportId, actorId);
     }
 
     /**
