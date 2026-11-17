@@ -10,7 +10,7 @@ import java.util.List;
 
 /**
  * CollegeLevelTrendResponseDTO - 学院指标完成情况（月度趋势）响应。
- * Matches frontend dashboard college-levels-trend contract (2026-10-31 拍板口径)
+ * Matches frontend dashboard college-levels-trend contract (2026-11-17 拍板口径)
  */
 @Data
 @Builder
@@ -22,7 +22,7 @@ public class CollegeLevelTrendResponseDTO {
     @Schema(description = "年份")
     private int year;
 
-    @Schema(description = "有数据的月份列表（升序，仅含有计数>0的月份）")
+    @Schema(description = "1-12 月全量月份列表（升序；每月含当年有指标/当月已上报的学院，未填报 reported=false）")
     private List<CollegeLevelMonthDTO> months;
 
     @Data
@@ -35,7 +35,7 @@ public class CollegeLevelTrendResponseDTO {
         @Schema(description = "月份")
         private int month;
 
-        @Schema(description = "当月有已鉴定上报记录的学院列表")
+        @Schema(description = "学院列表（含未填报学院，reported=false 灰柱督办）")
         private List<CollegeLevelDTO> colleges;
     }
 }
