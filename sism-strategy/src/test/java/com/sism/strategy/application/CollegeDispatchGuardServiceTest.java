@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -39,6 +40,8 @@ class CollegeDispatchGuardServiceTest {
     private static final Long CYCLE_ID = 2026L;
     private static final Long COLLEGE_ORG_ID = 61L;
     private static final Long FUNCTIONAL_ORG_ID = 44L;
+    /** 2026-11-17（学院线粒度）：同学院的另一归口部门（B 线）。 */
+    private static final Long OTHER_FUNCTIONAL_ORG_ID = 45L;
 
     private final JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
     private final CollegeDispatchGuardService service = new CollegeDispatchGuardService(jdbcTemplate);
@@ -61,6 +64,18 @@ class CollegeDispatchGuardServiceTest {
                 .query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(PLAN_ID));
     }
 
+    /**
+     * 2026-11-17（学院线粒度）：伪造「下发计划自身的归口部门」查询结果。
+     *
+     * <p>SQL 文本与计数查询区分（计数查询里也有 {@code FROM public.plan}），靠
+     * {@code SELECT functional_org_id} 这一唯一片段锁定。
+     */
+    private void stubPlanFunctionalOrgId(Long functionalOrgId) {
+        doReturn(functionalOrgId)
+                .when(jdbcTemplate)
+                .queryForObject(contains("SELECT functional_org_id"), eq(Long.class), eq(PLAN_ID));
+    }
+
     private void stubInFlightCount(int count) {
         doReturn(count)
                 .when(jdbcTemplate)
@@ -68,9 +83,10 @@ class CollegeDispatchGuardServiceTest {
     }
 
     @Test
-    @DisplayName("锚点取该学院：冲突范围是指标自身的目标组织（学院），不是任何职能部门")
+    @DisplayName("锚点取该学院：冲突范围是指标自身的目标组织（学院），并带归口维度")
     void shouldDetectInFlightMutationByCollegeTargetOrg() {
         stubTargetOrgIds(COLLEGE_ORG_ID);
+        stubPlanFunctionalOrgId(FUNCTIONAL_ORG_ID);
         stubInFlightCount(1);
 
         assertTrue(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
@@ -85,10 +101,38 @@ class CollegeDispatchGuardServiceTest {
         assertTrue(
                 java.util.Arrays.asList(args).contains(COLLEGE_ORG_ID),
                 "冲突范围应包含该学院（指标自身的目标组织）");
-        assertFalse(
+        // 2026-11-17（学院线粒度）：归口部门现在是「线」的维度，必须参与判定，
+        // 否则 A 线的异动在审会把同学院 B 线的下发一并拦死。
+        assertTrue(
                 java.util.Arrays.asList(args).contains(FUNCTIONAL_ORG_ID),
-                "冲突范围不应包含职能部门 —— 单层口径下职能部门已不再向学院下发指标");
+                "线级互斥必须带上归口维度（否则退化成学院级全锁）");
     }
+
+    /**
+     * 2026-11-17（学院线粒度）：下发侧（异动在审 vs 下发）必须按归口收窄到线级。
+     *
+     * <p>口径：冲突判定 = 同学院 + 同归口。SQL 里必须出现归口维度过滤，
+     * 且用 {@code IS NOT DISTINCT FROM}（NULL 与 NULL 同组）而不是 {@code =}
+     * （{@code =} 在归口为 NULL 时恒不成立 → 守卫静默失效）。
+     */
+    @Test
+    @DisplayName("2026-11-17：异动侧 SQL 必须按归口收窄到线级（IS NOT DISTINCT FROM）")
+    void shouldNarrowMutationSideConflictScopeByFunctionalOrg() {
+        stubTargetOrgIds(COLLEGE_ORG_ID);
+        stubPlanFunctionalOrgId(FUNCTIONAL_ORG_ID);
+        stubInFlightCount(0);
+
+        service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(sqlCaptor.capture(), eq(Integer.class), any(Object[].class));
+        String sql = sqlCaptor.getValue().toLowerCase();
+        assertTrue(sql.contains("functional_org_id is not distinct from"),
+                "异动侧冲突范围必须按归口收窄到线级");
+        assertFalse(sql.contains("functional_org_id ="),
+                "归口为 NULL 时必须与 NULL 同组（IS NOT DISTINCT FROM），用 = 会让守卫静默失效");
+    }
+
 
     @Test
     @DisplayName("2026-11-09 回归：下发侧 SQL 不得再 JOIN 父级指标（parent 恒为 NULL 会让守卫恒失效）")
@@ -156,8 +200,8 @@ class CollegeDispatchGuardServiceTest {
     void shouldAllowWhenArgumentsMissing() {
         assertFalse(service.isSourceOrgMutationInFlight(null, CYCLE_ID));
         assertFalse(service.isSourceOrgMutationInFlight(PLAN_ID, null));
-        assertFalse(service.isCollegeDispatchInFlightForOrg(null, CYCLE_ID));
-        assertFalse(service.isCollegeDispatchInFlightForOrg(FUNCTIONAL_ORG_ID, null));
+        assertFalse(service.isCollegeDispatchInFlightForOrg(null, CYCLE_ID, FUNCTIONAL_ORG_ID));
+        assertFalse(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, null, FUNCTIONAL_ORG_ID));
     }
 
     @Test
@@ -165,7 +209,7 @@ class CollegeDispatchGuardServiceTest {
     void shouldDetectCollegeDispatchInFlightForOrg() {
         stubInFlightCount(2);
 
-        assertTrue(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID));
+        assertTrue(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID, FUNCTIONAL_ORG_ID));
     }
 
     @Test
@@ -173,7 +217,7 @@ class CollegeDispatchGuardServiceTest {
     void shouldAllowWhenNoCollegeDispatchInFlight() {
         stubInFlightCount(0);
 
-        assertFalse(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID));
+        assertFalse(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID, FUNCTIONAL_ORG_ID));
     }
 
     @Test
@@ -181,7 +225,7 @@ class CollegeDispatchGuardServiceTest {
     void shouldNotJoinParentIndicatorInMutationSideQuery() {
         stubInFlightCount(0);
 
-        service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID);
+        service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID, FUNCTIONAL_ORG_ID);
 
         ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
         verify(jdbcTemplate).queryForObject(sqlCaptor.capture(), eq(Integer.class), any(Object[].class));
@@ -196,6 +240,55 @@ class CollegeDispatchGuardServiceTest {
     }
 
     /**
+     * 2026-11-17（学院线粒度）：下发侧（异动前检查「该学院有没有下发在审」）必须按归口收窄。
+     *
+     * <p>没有归口维度时，A 线（归口甲）的下发在审会把同学院 B 线（归口乙）的指标异动一并拦死。
+     */
+    @Test
+    @DisplayName("2026-11-17：下发侧 SQL 必须按归口收窄到线级，并把该线归口作为参数传入")
+    void shouldNarrowDispatchSideConflictScopeByFunctionalOrg() {
+        stubInFlightCount(0);
+
+        service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID, FUNCTIONAL_ORG_ID);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).queryForObject(sqlCaptor.capture(), eq(Integer.class), argsCaptor.capture());
+        String sql = sqlCaptor.getValue().toLowerCase();
+        assertTrue(sql.contains("functional_org_id is not distinct from"),
+                "下发侧冲突范围必须按归口收窄到线级");
+        assertFalse(sql.contains("functional_org_id ="),
+                "归口为 NULL 时必须与 NULL 同组（IS NOT DISTINCT FROM），用 = 会让守卫静默失效");
+
+        List<Object> args = java.util.Arrays.asList(argsCaptor.getValue());
+        assertTrue(args.contains(FUNCTIONAL_ORG_ID), "必须把该线归口作为参数传入（否则退化成学院级全锁）");
+        assertTrue(args.contains(COLLEGE_ORG_ID), "必须把学院作为参数传入");
+        assertTrue(args.contains(CYCLE_ID), "必须把考核周期作为参数传入");
+    }
+
+    /**
+     * 2026-11-17（学院线粒度）：A 线下发在审时，B 线（同学院、另一归口）的异动不被拦。
+     *
+     * <p>本用例锁住「归口参数确实进了 SQL」这件事：守卫的判定完全由 SQL 里的
+     * {@code p.functional_org_id IS NOT DISTINCT FROM ?} 完成，参数错传就会把
+     * B 线也拦死。
+     */
+    @Test
+    @DisplayName("2026-11-17：A 线下发在审不拦 B 线异动（归口不同 → 不算同一条线）")
+    void shouldNotBlockOtherFunctionalOrgLineMutationWhenLineDispatchInFlight() {
+        stubInFlightCount(0);
+
+        // B 线（归口乙）发起异动 → 守卫按归口查不到在途下发 → 放行
+        assertFalse(service.isCollegeDispatchInFlightForOrg(
+                COLLEGE_ORG_ID, CYCLE_ID, OTHER_FUNCTIONAL_ORG_ID));
+
+        // 同一条线（归口甲）发起异动 → 同一个在途下发单 → 拦下
+        stubInFlightCount(1);
+        assertTrue(service.isCollegeDispatchInFlightForOrg(
+                COLLEGE_ORG_ID, CYCLE_ID, FUNCTIONAL_ORG_ID));
+    }
+
+    /**
      * 2026-11-10（学院下发审批独立流程）：学院下发改走 PLAN_DISPATCH_COLLEGE 后，
      * 在途流程码集合必须包含新码——否则新流程的在途下发拦不住异动（守卫空窗）。
      * 同时保留 STRATEGY（过渡期在途实例）与 FUNCDEPT（历史在途实例）防守卫空窗。
@@ -205,7 +298,7 @@ class CollegeDispatchGuardServiceTest {
     void shouldMatchAllDispatchFlowCodesIncludingNewCollegeFlow() {
         stubInFlightCount(0);
 
-        service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID);
+        service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID, FUNCTIONAL_ORG_ID);
 
         ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
         verify(jdbcTemplate).queryForObject(sqlCaptor.capture(), eq(Integer.class), any(Object[].class));
@@ -233,10 +326,11 @@ class CollegeDispatchGuardServiceTest {
     void shouldRejectBothDirectionsForSameCollege() {
         // 下发侧：学院指标在异动审批中 → 拒绝下发
         stubTargetOrgIds(COLLEGE_ORG_ID);
+        stubPlanFunctionalOrgId(FUNCTIONAL_ORG_ID);
         stubInFlightCount(1);
         assertTrue(service.isSourceOrgMutationInFlight(PLAN_ID, CYCLE_ID));
 
-        // 异动侧：同一学院有下发审批在途 → 拒绝异动
-        assertTrue(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID));
+        // 异动侧：同一学院同一归口有下发审批在途 → 拒绝异动
+        assertTrue(service.isCollegeDispatchInFlightForOrg(COLLEGE_ORG_ID, CYCLE_ID, FUNCTIONAL_ORG_ID));
     }
 }

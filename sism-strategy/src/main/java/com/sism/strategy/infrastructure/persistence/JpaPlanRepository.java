@@ -104,6 +104,30 @@ public class JpaPlanRepository implements PlanRepository {
         );
     }
 
+    /**
+     * 2026-11-17（学院线粒度改造）：按线身份（含归口部门）取存活计划，命中多条取 id 最大。
+     */
+    @Override
+    public Optional<Plan> findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+            Long cycleId,
+            PlanLevel planLevel,
+            Long createdByOrgId,
+            Long targetOrgId,
+            Long functionalOrgId
+    ) {
+        List<Plan> plans = jpaRepository
+                .findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                        cycleId,
+                        planLevel,
+                        createdByOrgId,
+                        targetOrgId,
+                        functionalOrgId);
+        if (plans == null || plans.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(plans.get(0));
+    }
+
     @Override
     public List<Plan> findByStatuses(List<String> statuses) {
         if (statuses == null || statuses.isEmpty()) {
