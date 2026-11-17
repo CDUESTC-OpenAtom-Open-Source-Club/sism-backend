@@ -345,11 +345,13 @@ class StrategyApplicationServiceTest {
         when(indicatorRepository.findById(501L)).thenReturn(Optional.of(parentIndicator));
         when(taskRepository.findById(903L)).thenReturn(Optional.of(parentTask));
         when(planRepository.findById(7002L)).thenReturn(Optional.of(distributedParentPlan));
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+        // 2026-11-17（学院线粒度）：查线改走 5 键 finder（归口 = 父级核心指标 target=党委学工部 41）
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
                 2026L,
                 PlanLevel.FUNC_TO_COLLEGE,
                 35L,
-                61L
+                61L,
+                41L
         )).thenReturn(Optional.empty());
         when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
             Plan saved = invocation.getArgument(0);
@@ -411,11 +413,13 @@ class StrategyApplicationServiceTest {
         when(taskRepository.findById(41022L)).thenReturn(Optional.of(upstreamTask));
         when(planRepository.findById(4044L)).thenReturn(Optional.of(upstreamDraftPlan));
         // 下游"战略部→学院"计划尚不存在，应被创建
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+        // 2026-11-17（学院线粒度）：查线改走 5 键 finder（归口 = 父级核心指标 target=教务处 44）
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
                 2026L,
                 PlanLevel.FUNC_TO_COLLEGE,
                 35L,
-                57L
+                57L,
+                44L
         )).thenReturn(Optional.empty());
         when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
             Plan saved = invocation.getArgument(0);
@@ -464,9 +468,14 @@ class StrategyApplicationServiceTest {
         collegeOrg.setId(57L);
 
         // 请求的 task 已属于下游计划（同 FUNC_TO_COLLEGE 计划），且该计划未下发 -> 沿用
+        // 2026-11-17（学院线粒度）：「同一条线」判定含归口——下游线与父级核心指标的
+        // 归口（教务处 44）一致才沿用 taskId。
+        SysOrg functionalOrg = SysOrg.create("教务处", OrgType.functional);
+        functionalOrg.setId(44L);
         StrategicTask downstreamTask = createTask(41023L, 404457L, collegeOrg, strategyOrg);
         Plan downstreamPlan = createPlan(404457L, PlanStatus.DRAFT, PlanLevel.FUNC_TO_COLLEGE, 57L, 35L);
-        Indicator parentIndicator = Indicator.create("父级核心指标", strategyOrg, strategyOrg, "定量");
+        downstreamPlan.setFunctionalOrgId(44L);
+        Indicator parentIndicator = Indicator.create("父级核心指标", strategyOrg, functionalOrg, "定量");
         parentIndicator.setId(2042L);
         parentIndicator.setTaskId(41023L);
 
@@ -881,6 +890,152 @@ class StrategyApplicationServiceTest {
         assertNotNull(created);
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(any(), any());
         verify(eventStore, times(1)).save(any());
+    }
+
+    // ==================== 2026-11-17 学院线粒度（异动链新增子指标按 5 键建线） ====================
+    //
+    // 口径：异动链新增子指标（createIndicator 带 parentIndicatorId）查建下游
+    // FUNC_TO_COLLEGE 计划时必须按线身份 5 键（cycle + level + created_by + 学院 + 归口），
+    // 归口 = 父级核心指标的 target_org_id。原 4 键口径在学院多线并存时会命中/创建
+    // 不带归口的线，与 assertDownstreamCollegeContext 的 5 键断言组合后先建无线计划
+    // 再被拒或串线（data 代理发现的规格书漏项）。
+
+    /** 父级核心指标：战略部 → 归口职能部门（其 target_org_id 即线的归口来源）。 */
+    private Indicator createParentCoreIndicator(SysOrg strategyOrg, SysOrg functionalOrg) {
+        Indicator parent = Indicator.create("核心指标", strategyOrg, functionalOrg, "定量");
+        parent.setId(201L);
+        return parent;
+    }
+
+    /** 打桩「新建下游线」的公共链路：新线落库 → 新任务落库 → 新线 DRAFT（不在审、不触发权重校验）。 */
+    private void stubFreshDownstreamLineCreation(long newLineId, long newTaskId, SysOrg collegeOrg, SysOrg strategyOrg) {
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> {
+            Plan saved = invocation.getArgument(0);
+            saved.setId(newLineId);
+            return saved;
+        });
+        when(taskRepository.findByPlanIdAndCycleId(newLineId, 2026L)).thenReturn(List.of());
+        when(taskRepository.save(any(StrategicTask.class))).thenAnswer(invocation -> {
+            StrategicTask saved = invocation.getArgument(0);
+            saved.setId(newTaskId);
+            return saved;
+        });
+        StrategicTask savedTask = createTask(newTaskId, newLineId, collegeOrg, strategyOrg);
+        when(taskRepository.findById(newTaskId)).thenReturn(Optional.of(savedTask));
+        Plan savedLineView = Plan.create(2026L, collegeOrg.getId(), strategyOrg.getId(), PlanLevel.FUNC_TO_COLLEGE);
+        savedLineView.setId(newLineId);
+        when(planRepository.findById(newLineId)).thenReturn(Optional.of(savedLineView));
+        when(indicatorRepository.save(any(Indicator.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    @Test
+    @DisplayName("2026-11-17：该学院该归口的线不存在时，按 5 键建线成功且归口=父级核心指标目标部门")
+    void shouldCreateDownstreamLineWithFunctionalOrgWhenMissing() {
+        StrategyApplicationService service = createService();
+
+        SysOrg strategyOrg = SysOrg.create("战略发展部", OrgType.admin);
+        strategyOrg.setId(35L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(61L);
+        SysOrg functionalOrg = SysOrg.create("数字校园办公室", OrgType.functional);
+        functionalOrg.setId(44L);
+        when(indicatorRepository.findById(201L))
+                .thenReturn(Optional.of(createParentCoreIndicator(strategyOrg, functionalOrg)));
+
+        // 该学院该归口（44）的线不存在 → 5 键查空 → 建新线
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, 35L, 61L, 44L))
+                .thenReturn(Optional.empty());
+        stubFreshDownstreamLineCreation(8001L, 41001L, collegeOrg, strategyOrg);
+
+        Indicator created = service.createIndicator(
+                "学院子指标",
+                strategyOrg,
+                collegeOrg,
+                null,
+                201L,
+                "定量",
+                BigDecimal.valueOf(10),
+                1,
+                "备注",
+                0,
+                2026L
+        );
+
+        // 建出来的线必须带正确归口（父级核心指标的 target_org_id）
+        ArgumentCaptor<Plan> planCaptor = ArgumentCaptor.forClass(Plan.class);
+        verify(planRepository).save(planCaptor.capture());
+        Plan createdLine = planCaptor.getValue();
+        assertEquals(PlanLevel.FUNC_TO_COLLEGE, createdLine.getPlanLevel());
+        assertEquals(35L, createdLine.getCreatedByOrgId());
+        assertEquals(61L, createdLine.getTargetOrgId());
+        assertEquals(44L, createdLine.getFunctionalOrgId(),
+                "新建的线必须带上父级核心指标指出的归口部门（不得建不带归口的线）");
+        // 子指标挂到新建线的任务上
+        assertEquals(41001L, created.getTaskId());
+    }
+
+    @Test
+    @DisplayName("2026-11-17：该学院另一归口的线已存在时不串线——新建本归口的线，不命中别人的线")
+    void shouldNotReuseOtherFunctionalOrgLineWhenCreatingDownstreamLine() {
+        StrategyApplicationService service = createService();
+
+        SysOrg strategyOrg = SysOrg.create("战略发展部", OrgType.admin);
+        strategyOrg.setId(35L);
+        SysOrg collegeOrg = SysOrg.create("计算机学院", OrgType.academic);
+        collegeOrg.setId(61L);
+        SysOrg functionalOrg = SysOrg.create("数字校园办公室", OrgType.functional);
+        functionalOrg.setId(44L);
+        when(indicatorRepository.findById(201L))
+                .thenReturn(Optional.of(createParentCoreIndicator(strategyOrg, functionalOrg)));
+
+        // 别人的线（归口乙=45）已存在：旧 4 键口径会命中它（串线根因），
+        // 两个旧 finder 都打上桩，断言新口径不再触碰（不被消费正是断言目标 → lenient）
+        Plan otherFunctionalOrgLine = Plan.create(2026L, 61L, 35L, PlanLevel.FUNC_TO_COLLEGE, 45L);
+        otherFunctionalOrgLine.setId(7001L);
+        lenient().when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, 35L, 61L))
+                .thenReturn(List.of(otherFunctionalOrgLine));
+        lenient().when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, 35L, 61L))
+                .thenReturn(Optional.of(otherFunctionalOrgLine));
+        // 本归口（44）的线查空 → 建新线
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, 35L, 61L, 44L))
+                .thenReturn(Optional.empty());
+        stubFreshDownstreamLineCreation(8002L, 41002L, collegeOrg, strategyOrg);
+
+        Indicator created = service.createIndicator(
+                "学院子指标",
+                strategyOrg,
+                collegeOrg,
+                null,
+                201L,
+                "定量",
+                BigDecimal.valueOf(10),
+                1,
+                "备注",
+                0,
+                2026L
+        );
+
+        // 新建的是本归口（44）的新线，别人的线（7001）原样不动
+        ArgumentCaptor<Plan> planCaptor = ArgumentCaptor.forClass(Plan.class);
+        verify(planRepository).save(planCaptor.capture());
+        assertEquals(44L, planCaptor.getValue().getFunctionalOrgId(), "必须新建本归口的线");
+        verify(planRepository, never()).save(eq(otherFunctionalOrgLine));
+        // 旧 4 键口径的两个 finder 都不得再被查线链路触碰（串线根因已拔除）
+        verify(planRepository, never()).findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, 35L, 61L);
+        verify(planRepository, never()).findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, 35L, 61L);
+        // 子指标挂到新线的任务（plan=8002），绝不能落进别人的线（7001）
+        ArgumentCaptor<StrategicTask> taskCaptor = ArgumentCaptor.forClass(StrategicTask.class);
+        verify(taskRepository).save(taskCaptor.capture());
+        assertEquals(8002L, taskCaptor.getValue().getPlanId(),
+                "子指标任务必须挂在新线上，不得串进另一归口的线");
+        assertEquals(41002L, created.getTaskId());
     }
 
     private StrategyApplicationService createService() {
