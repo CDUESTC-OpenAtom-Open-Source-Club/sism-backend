@@ -51,6 +51,10 @@ class IndicatorMutationServiceTest {
     private static final Long OPERATOR_ID = 9L;
     private static final Long STRATEGY_ORG_ID = 35L;
     private static final Long TARGET_ORG_ID = 41003L;
+    /** 2026-11-17（学院线粒度）：归口甲（一条线）。 */
+    private static final Long FUNCTIONAL_DEPT_ORG_ID = 38L;
+    /** 2026-11-17（学院线粒度）：归口乙（同学院的另一条线）。 */
+    private static final Long OTHER_FUNCTIONAL_ORG_ID = 39L;
 
     @Mock
     private JdbcTemplate jdbcTemplate;
@@ -166,11 +170,14 @@ class IndicatorMutationServiceTest {
                 .thenReturn(List.of(Map.of("target_org_id", TARGET_ORG_ID, "cycle_id", 2026L)));
         // 2026-11-13：上报互斥先反查异动指标归口（返回空 → 无相关在审上报，互斥放行），
         // 本测试的拦截点落在下发审批守卫
+        // 2026-11-17：匹配串改成上报反查的 SELECT 头（"SELECT t.plan_id"）——
+        // 下发侧反查也 JOIN 父级指标（含 parent_indicator_id 字样），沿用旧匹配串会串台。
         when(jdbcTemplate.queryForList(
-                contains("parent_indicator_id"), eq(INDICATOR_ID)))
+                contains("SELECT t.plan_id"), eq(INDICATOR_ID)))
                 .thenReturn(List.of());
         // 2026-11-05：该职能部门正在被下发到学院（下发审批在途）
-        when(collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(TARGET_ORG_ID, 2026L))
+        // 2026-11-17：守卫加归口维度（本例归口未落值 → 与归口未落值的线同组）
+        when(collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(TARGET_ORG_ID, 2026L, null))
                 .thenReturn(true);
 
         // 2026-10-30：单条异动入口已整体移除（batch_id 为 null → 快照落库 JOIN 不上 →
@@ -1671,7 +1678,9 @@ class IndicatorMutationServiceTest {
 
     /** 打桩：异动指标归口反查（plan=4040，父级核心指标 target_org=38，自身 target=TARGET_ORG_ID）。 */
     private void stubIndicatorFunctionalDept(Long functionalDeptOrgId) {
-        when(jdbcTemplate.queryForList(contains("parent_indicator_id"), eq(INDICATOR_ID)))
+        // 2026-11-17：匹配串改成上报反查的 SELECT 头（"SELECT t.plan_id"）——
+        // 下发侧反查也 JOIN 父级指标（含 parent_indicator_id 字样），沿用旧匹配串会串台。
+        when(jdbcTemplate.queryForList(contains("SELECT t.plan_id"), eq(INDICATOR_ID)))
                 .thenReturn(List.of(Map.of(
                         "plan_id", 4040L,
                         "parent_target_org_id", functionalDeptOrgId,
@@ -1701,6 +1710,71 @@ class IndicatorMutationServiceTest {
                 any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
         verify(jdbcTemplate).update(
                 contains("SET mutation_status"), eq("IN_MUTATION"), eq(INDICATOR_ID));
+    }
+
+    // ==================== 2026-11-17 学院线粒度（下发/异动互斥收窄到线级） ====================
+    //
+    // 口径：一个学院在同一考核年度可以有多个归口部门各自的线（线身份 =
+    // cycle + plan_level + created_by=35 + 学院 + 归口部门）。互斥锁收窄到线级——
+    // A 线下发在审不拦 B 线（同学院、不同归口）的指标异动。
+
+    /** 打桩：下发侧反查（学院指标所属线的归口 = plan.functional_org_id）。 */
+    private void stubDispatchGuardLookup(Long functionalOrgId) {
+        when(jdbcTemplate.queryForList(
+                contains("SELECT i.target_org_id, p.cycle_id"), eq(INDICATOR_ID)))
+                .thenReturn(List.of(Map.of(
+                        "target_org_id", TARGET_ORG_ID,
+                        "cycle_id", 2026L,
+                        "plan_functional_org_id", functionalOrgId)));
+    }
+
+    @Test
+    @DisplayName("2026-11-17：A 线下发在审不拦 B 线（同学院、另一归口）的指标异动")
+    void initiateBatch_shouldAllowMutationWhenOtherFunctionalOrgLineDispatchInFlight() {
+        stubReporter();
+        stubIndicatorRow("DISTRIBUTED", "DISTRIBUTED");
+        // 上报互斥：反查不到归口 → 保守全锁；此处无在审上报 → 放行
+        when(jdbcTemplate.queryForList(contains("SELECT t.plan_id"), eq(INDICATOR_ID)))
+                .thenReturn(List.of());
+        // 本指标属于归口乙（B 线）
+        stubDispatchGuardLookup(OTHER_FUNCTIONAL_ORG_ID);
+        // 归口乙的线下发不在审（A 线在审，与归口乙不是同一条线）→ 放行
+        when(collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(
+                TARGET_ORG_ID, 2026L, OTHER_FUNCTIONAL_ORG_ID)).thenReturn(false);
+        stubWorkflowStart("801");
+
+        service.initiateBatch(
+                List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述")),
+                OPERATOR_ID);
+
+        // 放行：异动链正常启动
+        verify(businessWorkflowApplicationService).startWorkflow(
+                any(StartWorkflowRequest.class), eq(OPERATOR_ID), eq(STRATEGY_ORG_ID));
+        // 守卫必须按「本指标所属线的归口」判定，而不是学院级
+        verify(collegeDispatchGuardService).isCollegeDispatchInFlightForOrg(
+                TARGET_ORG_ID, 2026L, OTHER_FUNCTIONAL_ORG_ID);
+    }
+
+    @Test
+    @DisplayName("2026-11-17：同一条线（归口甲）下发在审仍拦该线指标异动")
+    void initiateBatch_shouldRejectMutationWhenSameFunctionalOrgLineDispatchInFlight() {
+        stubReporter();
+        stubIndicatorRow("DISTRIBUTED", "DISTRIBUTED");
+        when(jdbcTemplate.queryForList(contains("SELECT t.plan_id"), eq(INDICATOR_ID)))
+                .thenReturn(List.of());
+        // 本指标属于归口甲（A 线）
+        stubDispatchGuardLookup(FUNCTIONAL_DEPT_ORG_ID);
+        when(collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(
+                TARGET_ORG_ID, 2026L, FUNCTIONAL_DEPT_ORG_ID)).thenReturn(true);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                service.initiateBatch(
+                        List.of(Map.of("id", INDICATOR_ID, "indicator_desc", "新描述")),
+                        OPERATOR_ID));
+
+        assertTrue(error.getMessage().contains("下发审批正在进行中"));
+        verify(businessWorkflowApplicationService, never())
+                .startWorkflow(any(StartWorkflowRequest.class), any(), any());
     }
 
     @Test
