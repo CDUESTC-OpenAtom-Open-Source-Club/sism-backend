@@ -220,7 +220,10 @@ public class PlanApplicationService {
                 ? request.getTargetOrgId()
                 : 1L; // 默认值
 
-        assertNoActivePlanConflict(request.getCycleId(), planLevel, createdByOrgId, targetOrgId, null);
+        // 2026-11-17（学院线粒度）：冲突判定加归口维度——同学院的不同归口线允许并存。
+        // 本 REST 创建入口不落归口（归口由导入链 / 提交前补写落 plan.functional_org_id），
+        // 故按「归口未落值」口径校验：只与同学院同归口未落值的线冲突。
+        assertNoActivePlanConflict(request.getCycleId(), planLevel, createdByOrgId, targetOrgId, null, null);
 
         Plan plan = Plan.create(
                 request.getCycleId(),
@@ -274,7 +277,10 @@ public class PlanApplicationService {
 
         Long nextTargetOrgId = request.getTargetOrgId() != null ? request.getTargetOrgId() : plan.getTargetOrgId();
         Long nextCreatedByOrgId = request.getCreatedByOrgId() != null ? request.getCreatedByOrgId() : plan.getCreatedByOrgId();
-        assertNoActivePlanConflict(plan.getCycleId(), plan.getPlanLevel(), nextCreatedByOrgId, nextTargetOrgId, plan.getId());
+        // 2026-11-17（学院线粒度）：归口是线的身份，不随更新改写（学院下发计划的
+        // created_by / target 本就不可改，归口同理），故按计划当前归口参与冲突判定。
+        assertNoActivePlanConflict(plan.getCycleId(), plan.getPlanLevel(), nextCreatedByOrgId, nextTargetOrgId,
+                plan.getFunctionalOrgId(), plan.getId());
 
         if (request.getTargetOrgId() != null) {
             plan.setTargetOrgId(request.getTargetOrgId());
@@ -609,6 +615,12 @@ public class PlanApplicationService {
      * 异动的 target_org_id 是学院，永远不命中该条件。按定案补齐级联分支：同一考核周期
      * 内存在任意「目标组织为学院」的异动审批在审时，任何以学院（sys_org.type='academic'）
      * 为目标的下发一律拒绝（学院级联全锁，不限下发方）。
+     *
+     * 2026-11-17（学院线粒度改造，用户 2026-11-16 拍板）：学院级联全锁<b>收窄到线级</b>。
+     * 一个学院可以有多个归口部门各自的线（线身份 = cycle + plan_level + created_by=35 +
+     * 学院 + 归口部门），A 线的异动在审不应拦死 B 线（同学院、另一归口）的下发。
+     * 判定改为「同 cycle + 同学院 + 同归口」的异动在审才算冲突，
+     * 归口用 {@code IS NOT DISTINCT FROM} 语义（NULL 与 NULL 视作同一归口）。
      */
     private void assertFunctionalDeptMutationNotInFlight(Plan plan) {
         if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
@@ -622,15 +634,18 @@ public class PlanApplicationService {
         // 其目标部门（职能部门）的指标是否正在异动审批中。
         // 原口径用 plan.created_by_org_id 圈定「该职能部门」：改造后 created_by 恒为战略部（35），
         // 条件恒不成立 → 守卫静默失效（既不报错也不拦截）。
+        // 2026-11-17：守卫本身已收窄到线级（同学院 + 同归口），文案同步带上归口。
         if (collegeDispatchGuardService.isSourceOrgMutationInFlight(plan.getId(), plan.getCycleId())) {
             throw new IllegalStateException(
-                    "下发所依赖的职能部门的指标正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
+                    describeCollegeLineConflict(plan)
+                            + "正在异动审批中，暂不能下发；请等异动审批结束或撤回后再操作");
         }
 
-        // 学院级联全锁（2026-10-31 补齐）：下发目标 org 是学院时，同周期内任意
-        // 「目标为学院」的异动在审即拒——异动审批改的是学院子计划的口径快照，
-        // 期间向任何学院下发都会与在审口径冲突。
-        // 该分支不依赖 created_by_org_id 语义，口径本身是显式的，保留不变。
+        // 学院级联锁（2026-10-31 补齐 → 2026-11-17 收窄到线级）：
+        // 下发目标 org 是学院时，同周期内「同学院 + 同归口」的异动在审即拒——
+        // 异动审批改的是该学院该归口这条线的口径快照，期间下发同一条线会与在审口径冲突。
+        // 2026-11-17 之前是「同周期内任意学院的异动在审即拒所有学院下发」（过度锁，
+        // 会把 A 线的在审异动扩散到同学院的 B 线）。
         Integer collegeCascadeCount = jdbcTemplate.queryForObject(
                 """
                 SELECT COUNT(*)
@@ -642,15 +657,51 @@ public class PlanApplicationService {
                 JOIN public.sys_org o ON o.id = i.target_org_id AND o.type = 'academic'
                 WHERE ai.status = 'IN_REVIEW'
                   AND p.cycle_id = ?
+                  -- 2026-11-17（学院线粒度）：锁收窄到线级——同学院 + 同归口。
+                  AND p.target_org_id = ?
+                  AND p.functional_org_id IS NOT DISTINCT FROM CAST(? AS BIGINT)
                   AND COALESCE(i.is_deleted, false) = false
                 """,
                 Integer.class,
-                plan.getCycleId()
+                plan.getCycleId(),
+                plan.getTargetOrgId(),
+                plan.getFunctionalOrgId()
         );
         if (collegeCascadeCount != null && collegeCascadeCount > 0) {
             throw new IllegalStateException(
-                    "学院子计划的异动正在审批中，暂不能向学院下发；请等异动审批结束或撤回后再操作");
+                    describeCollegeLineConflict(plan)
+                            + "正在异动审批中，暂不能向该学院下发；请等异动审批结束或撤回后再操作");
         }
+    }
+
+    /**
+     * 2026-11-17（学院线粒度）：冲突文案里说清楚是「哪个学院、哪个归口部门」的线在冲突。
+     *
+     * <p>为什么必须点名归口：锁收窄到线级之后，用户看到的冲突不再是「整个学院被锁」，
+     * 而是「归口教务处的那条线在异动审批中」——文案不点名就会让人误以为所有线都被锁，
+     * 进而去线下核查或误操作。
+     *
+     * <p>归口未落值（{@code functional_org_id} 为 NULL）时如实说明「归口未落值」，
+     * 不编造部门名。
+     */
+    private String describeCollegeLineConflict(Plan plan) {
+        Long collegeOrgId = plan == null ? null : plan.getTargetOrgId();
+        Long functionalOrgId = plan == null ? null : plan.getFunctionalOrgId();
+        List<Long> orgIds = new ArrayList<>();
+        if (collegeOrgId != null) {
+            orgIds.add(collegeOrgId);
+        }
+        if (functionalOrgId != null) {
+            orgIds.add(functionalOrgId);
+        }
+        Map<Long, String> orgNames = loadOrgNamesByIds(orgIds);
+        String collegeName = collegeOrgId == null ? null : orgNames.get(collegeOrgId);
+        String functionalName = functionalOrgId == null ? null : orgNames.get(functionalOrgId);
+        String collegePart = collegeName != null ? collegeName : (collegeOrgId == null ? "目标学院" : "学院#" + collegeOrgId);
+        String functionalPart = functionalOrgId == null
+                ? "归口未落值"
+                : (functionalName != null ? functionalName : "归口部门#" + functionalOrgId);
+        return "该学院（" + collegePart + "，归口部门：" + functionalPart + "）的线";
     }
 
     /**
@@ -1200,7 +1251,23 @@ public class PlanApplicationService {
                 .filter(Objects::nonNull)
                 .distinct()
                 .toList();
-        if (orgIds.isEmpty()) {
+        return loadOrgNamesByIds(orgIds);
+    }
+
+    /**
+     * 2026-11-17（学院线粒度）：按组织 ID 批量取名称（冲突文案要点名学院与归口部门）。
+     *
+     * <p>取不到名称不报错——调用方负责回退到「学院#id / 归口部门#id」的表述。
+     */
+    private Map<Long, String> loadOrgNamesByIds(Collection<Long> orgIds) {
+        if (orgIds == null || orgIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> distinctOrgIds = orgIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (distinctOrgIds.isEmpty()) {
             return Map.of();
         }
 
@@ -1210,7 +1277,7 @@ public class PlanApplicationService {
                 FROM public.sys_org
                 WHERE id IN (:orgIds)
                 """,
-                new MapSqlParameterSource("orgIds", orgIds)
+                new MapSqlParameterSource("orgIds", distinctOrgIds)
         );
         return rows.stream()
                 .filter(row -> row.get("id") instanceof Number)
@@ -1294,26 +1361,71 @@ public class PlanApplicationService {
         return value instanceof Number number ? number.intValue() : 0;
     }
 
+    /**
+     * 计划「线身份」冲突校验（2026-11-17 学院线粒度改造）。
+     *
+     * <p><b>原口径（4 键）的问题</b>：cycle + plan_level + created_by + target 把
+     * 「某职能部门 → 某学院」的下发计划当成唯一一条线，于是同学院的第二条线
+     * （另一个归口部门）在创建时就被判冲突 —— 而一个学院在同一考核年度
+     * <b>本来就可以有多个归口部门各自的线</b>（线身份 = cycle + plan_level +
+     * created_by=35 战略部 + 学院 + 归口部门）。
+     *
+     * <p><b>新口径（5 键）</b>：同 cycle + 同 plan_level + 同 created_by + 同 target
+     * + 同 {@code functional_org_id}（归口）才算冲突。归口用
+     * {@code IS NOT DISTINCT FROM} 语义（NULL 与 NULL 同组），与 V105 唯一索引
+     * {@code COALESCE(functional_org_id, 0)} 的分组口径一致。
+     *
+     * <p><b>为什么用内联 SQL 而不是 Repository 方法</b>：5 键 finder 由数据层改造单独落地
+     * （方法名固定），计划域不得改 Repository、也不得声明同名方法，否则必然合并冲突；
+     * 这里用 {@code jdbcTemplate} 内联 SQL 实现同口径判定。
+     *
+     * <p><b>flow1（战略部 → 职能部门）零回归</b>：{@code functional_org_id} 只在
+     * FUNC_TO_COLLEGE 计划上使用（V102/V104 明确「仅 FUNC_TO_COLLEGE 计划使用」），
+     * STRAT_TO_FUNC 计划该列恒为 NULL，5 键判定与原 4 键判定等价。
+     *
+     * @param functionalOrgId 归口部门；null = 归口未落值（与其它归口未落值的线同组）
+     */
     private void assertNoActivePlanConflict(Long cycleId,
                                             PlanLevel planLevel,
                                             Long createdByOrgId,
                                             Long targetOrgId,
+                                            Long functionalOrgId,
                                             Long currentPlanId) {
-        List<Plan> activePlans = planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+        List<Long> conflictingPlanIds = jdbcTemplate.queryForList(
+                """
+                SELECT p.id
+                FROM public.plan p
+                WHERE p.cycle_id = ?
+                  AND CAST(p.plan_level AS VARCHAR) = ?
+                  AND p.created_by_org_id = ?
+                  AND p.target_org_id = ?
+                  AND COALESCE(p.is_deleted, false) = false
+                  -- 2026-11-17（学院线粒度）：同归口才算同一条线；
+                  -- IS NOT DISTINCT FROM 语义：NULL 与 NULL 视为同一归口。
+                  -- 非学院线（STRAT_TO_FUNC 等）不带归口维度，行为与改造前逐字一致。
+                  AND (
+                        CAST(? AS VARCHAR) <> 'FUNC_TO_COLLEGE'
+                     OR p.functional_org_id IS NOT DISTINCT FROM CAST(? AS BIGINT)
+                  )
+                """,
+                Long.class,
                 cycleId,
-                planLevel,
+                planLevel == null ? null : planLevel.name(),
                 createdByOrgId,
-                targetOrgId
+                targetOrgId,
+                planLevel == null ? null : planLevel.name(),
+                functionalOrgId
         );
-        boolean hasConflict = activePlans.stream()
-                .anyMatch(plan -> currentPlanId == null || !currentPlanId.equals(plan.getId()));
+        boolean hasConflict = conflictingPlanIds.stream()
+                .anyMatch(planId -> currentPlanId == null || !currentPlanId.equals(planId));
         if (hasConflict) {
             throw new ConflictException(String.format(
-                    "Plan already exists for cycleId=%s, planLevel=%s, createdByOrgId=%s, targetOrgId=%s",
+                    "Plan already exists for cycleId=%s, planLevel=%s, createdByOrgId=%s, targetOrgId=%s, functionalOrgId=%s",
                     cycleId,
                     planLevel,
                     createdByOrgId,
-                    targetOrgId
+                    targetOrgId,
+                    functionalOrgId
             ));
         }
     }
@@ -1323,11 +1435,12 @@ public class PlanApplicationService {
             return planRepository.save(plan);
         } catch (DataIntegrityViolationException exception) {
             throw new ConflictException(String.format(
-                    "Plan already exists for cycleId=%s, planLevel=%s, createdByOrgId=%s, targetOrgId=%s",
+                    "Plan already exists for cycleId=%s, planLevel=%s, createdByOrgId=%s, targetOrgId=%s, functionalOrgId=%s",
                     plan.getCycleId(),
                     plan.getPlanLevel(),
                     plan.getCreatedByOrgId(),
-                    plan.getTargetOrgId()
+                    plan.getTargetOrgId(),
+                    plan.getFunctionalOrgId()
             ));
         }
     }
@@ -1730,13 +1843,28 @@ public class PlanApplicationService {
             return List.of();
         }
 
-        Map<Long, Long> taskIdToCycle = taskRepository.findAllById(fallbackTaskIds).stream()
+        List<StrategicTask> fallbackTasks = taskRepository.findAllById(fallbackTaskIds);
+        Map<Long, Long> taskIdToCycle = fallbackTasks.stream()
                 .filter(task -> task != null && task.getId() != null)
                 .collect(Collectors.toMap(
                         StrategicTask::getId,
                         StrategicTask::getCycleId,
                         (existing, ignored) -> existing
                 ));
+
+        // 2026-11-17（学院线粒度）：兜底查询按 owner_org_id + target_org_id 取指标，
+        // 命中的是「该学院所有归口线」的指标——A 线计划详情会混入 B 线指标。
+        // 这里按归口收口：指标所属计划（indicator → task → plan）的归口必须与本线一致
+        // （归口为 NULL 时按「NULL 与 NULL 同组」处理，与 V105 唯一索引口径一致）。
+        Map<Long, Long> taskIdToPlanId = fallbackTasks.stream()
+                .filter(task -> task != null && task.getId() != null)
+                .collect(Collectors.toMap(
+                        StrategicTask::getId,
+                        StrategicTask::getPlanId,
+                        (existing, ignored) -> existing
+                ));
+        Map<Long, Long> planIdToFunctionalOrgId = loadFunctionalOrgIdByPlanIds(taskIdToPlanId.values());
+        Long functionalOrgId = plan.getFunctionalOrgId();
 
         return fallbackIndicators.stream()
                 .filter(indicator -> {
@@ -1745,9 +1873,43 @@ public class PlanApplicationService {
                         return false;
                     }
                     Long taskCycleId = taskIdToCycle.get(taskId);
-                    return Objects.equals(taskCycleId, cycleId);
+                    if (!Objects.equals(taskCycleId, cycleId)) {
+                        return false;
+                    }
+                    Long planId = taskIdToPlanId.get(taskId);
+                    if (planId == null) {
+                        return false;
+                    }
+                    Long indicatorFunctionalOrgId = planIdToFunctionalOrgId.get(planId);
+                    return Objects.equals(indicatorFunctionalOrgId, functionalOrgId);
                 })
                 .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    /**
+     * 2026-11-17（学院线粒度）：按计划 ID 批量取归口部门（{@code plan.functional_org_id}）。
+     *
+     * <p>用于计划指标兜底查询按归口收口：只有归口与本线一致的线的指标才进本线详情。
+     */
+    private Map<Long, Long> loadFunctionalOrgIdByPlanIds(Collection<Long> planIds) {
+        if (planIds == null || planIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> distinctPlanIds = planIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (distinctPlanIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Long> result = new HashMap<>();
+        for (Plan line : planRepository.findAllByIds(distinctPlanIds)) {
+            if (line == null || line.getId() == null) {
+                continue;
+            }
+            result.put(line.getId(), line.getFunctionalOrgId());
+        }
+        return result;
     }
 
     /**
