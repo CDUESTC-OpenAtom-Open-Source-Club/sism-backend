@@ -1,7 +1,9 @@
 package com.sism.analytics.interfaces.rest;
 
+import com.sism.analytics.application.AppraisalSummaryService;
 import com.sism.analytics.application.CollegeLevelDashboardService;
 import com.sism.analytics.application.DashboardSummaryService;
+import com.sism.analytics.interfaces.dto.AppraisalSummaryResponseDTO;
 import com.sism.analytics.interfaces.dto.CollegeLevelsResponseDTO;
 import com.sism.analytics.interfaces.dto.CollegeLevelTrendResponseDTO;
 import com.sism.analytics.interfaces.dto.DashboardSummaryDTO;
@@ -34,6 +36,7 @@ public class DashboardSummaryController {
 
     private final DashboardSummaryService dashboardSummaryService;
     private final CollegeLevelDashboardService collegeLevelDashboardService;
+    private final AppraisalSummaryService appraisalSummaryService;
 
     @GetMapping
     @Operation(summary = "获取仪表盘汇总", description = "获取聚合的仪表盘数据，包括得分、完成率和预警数量")
@@ -93,6 +96,19 @@ public class DashboardSummaryController {
             @RequestParam(required = false) Integer month) {
         DelayedIndicatorsResponseDTO response =
                 collegeLevelDashboardService.getDelayedIndicators(year, month);
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    @GetMapping("/appraisal-summary")
+    @Operation(summary = "获取审核鉴定口径的看板汇总", description = "一次返回职能部门等级分布（含 1 月至选中月份的月度快照）、"
+            + "滞后任务清单与年度简报汇总；三处同源于 plan_report_indicator.appraisal_level，"
+            + "每个指标取不晚于选中月份的最近一次鉴定，当月未上报的部门沿用上次结论")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse<AppraisalSummaryResponseDTO>> getAppraisalSummary(
+            @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) Integer month,
+            @RequestParam(required = false) Integer limit) {
+        AppraisalSummaryResponseDTO response = appraisalSummaryService.getAppraisalSummary(year, month, limit);
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 
