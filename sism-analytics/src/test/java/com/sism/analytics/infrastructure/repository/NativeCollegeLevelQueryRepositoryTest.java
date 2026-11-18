@@ -115,6 +115,7 @@ class NativeCollegeLevelQueryRepositoryTest {
         insertOrg(4, "无数据学院", "academic");
         insertOrg(5, "战略发展部", "functional");
         // 指标：106 软删除，107 非 DISTRIBUTED；均挂在 cycle 2026
+        // 108 的 target=职能部门（学生处）——滞后清单全量口径（2026-11-18 拍板）用例
         insertIndicator(101, 1, 5, false, "DISTRIBUTED");
         insertIndicator(102, 1, 5, false, "DISTRIBUTED");
         insertIndicator(103, 1, 5, false, "DISTRIBUTED");
@@ -122,14 +123,15 @@ class NativeCollegeLevelQueryRepositoryTest {
         insertIndicator(105, 3, 5, false, "DISTRIBUTED");
         insertIndicator(106, 1, 5, true, "DISTRIBUTED");
         insertIndicator(107, 1, 5, false, "DRAFT");
-        for (long id = 101; id <= 107; id++) {
+        insertIndicator(108, 3, 5, false, "DISTRIBUTED");
+        for (long id = 101; id <= 108; id++) {
             insertIndicatorYearChain(id, 2026);
         }
     }
 
     @Test
-    @DisplayName("单月聚合应只算已提交/已审批月报并排除草稿/驳回/两级等级均NULL/非学院/软删与非在发指标")
-    void fetchCollegeLevelCountsShouldApplyConfirmedScope() {
+    @DisplayName("单月聚合只认 APPROVED 月报（2026-11-18 按月快照：审批中/草稿/驳回/软删/两级等级均NULL/非学院/非在发指标都不计）")
+    void fetchCollegeLevelCountsShouldApplyApprovedOnlyScope() {
         // 202610：APPROVED 主报告
         insertReport(11, "202610", "APPROVED", false, 1L);
         insertPlanReportIndicator(111, 11, 101, "AHEAD", "NORMAL"); // appraisal 优先于 self
@@ -144,12 +146,18 @@ class NativeCollegeLevelQueryRepositoryTest {
         // 202610：REJECTED 不计入
         insertReport(13, "202610", "REJECTED", false, 1L);
         insertPlanReportIndicator(131, 13, 101, "AHEAD", null);
-        // 202610：IN_REVIEW 是 SUBMITTED 的 legacy 落库别名，按已提交口径计入
+        // 202610：IN_REVIEW（legacy 已提交别名）= 审批中，按 2026-11-18 快照口径不产生鉴定值
         insertReport(14, "202610", "IN_REVIEW", false, 2L);
         insertPlanReportIndicator(141, 14, 104, "DELAYED", null);
+        // 202610：SUBMITTED 同样是审批中，不计入
+        insertReport(17, "202610", "SUBMITTED", false, 4L);
+        insertPlanReportIndicator(171, 17, 101, "DELAYED", null);
         // 202610：软删月报不计入
         insertReport(15, "202610", "APPROVED", true, 1L);
         insertPlanReportIndicator(151, 15, 101, "AHEAD", null);
+        // 202610：org2 的 APPROVED 报告是唯一计入电子学院的鉴定值
+        insertReport(16, "202610", "APPROVED", false, 2L);
+        insertPlanReportIndicator(161, 16, 104, "DELAYED", null);
 
         List<CollegeLevelCountRow> rows = repository.fetchCollegeLevelCounts("202610");
 
@@ -168,8 +176,8 @@ class NativeCollegeLevelQueryRepositoryTest {
 
         CollegeLevelCountRow college2 = byOrg.get(2L);
         assertThat(college2.orgName()).isEqualTo("电子学院");
-        assertThat(college2.ahead()).isEqualTo(0L); // 草稿里的 AHEAD 不计入
-        assertThat(college2.delayed()).isEqualTo(1L); // legacy IN_REVIEW 按 SUBMITTED 口径计入
+        assertThat(college2.ahead()).isEqualTo(0L);        // 草稿里的 AHEAD 不计入
+        assertThat(college2.delayed()).isEqualTo(1L);      // 只有 APPROVED 月报计入（IN_REVIEW 的 DELAYED 不算）
         assertThat(college2.total()).isEqualTo(1L);
     }
 
@@ -190,7 +198,7 @@ class NativeCollegeLevelQueryRepositoryTest {
     }
 
     @Test
-    @DisplayName("trend 应只含有可计数等级的月份且年份区间外数据不出现")
+    @DisplayName("trend 应只含有可计数等级（APPROVED）的月份且年份区间外数据不出现")
     void fetchCollegeLevelMonthlyCountsShouldOnlyIncludeMonthsWithData() {
         insertReport(31, "202610", "APPROVED", false, 1L);
         insertPlanReportIndicator(311, 31, 101, "AHEAD", null);
@@ -201,16 +209,19 @@ class NativeCollegeLevelQueryRepositoryTest {
         // 202611：只有草稿，该月不应出现
         insertReport(33, "202611", "DRAFT", false, 1L);
         insertPlanReportIndicator(331, 33, 101, "AHEAD", null);
-        // 202611：两级等级均 NULL 的已提交明细不产生该月行
+        // 202611：两级等级均 NULL 的 APPROVED 明细不产生该月行
         insertReport(35, "202611", "APPROVED", false, 1L);
         insertPlanReportIndicator(351, 35, 102, null, null);
+        // 202611：审批中（IN_REVIEW）月份按 2026-11-18 快照口径无鉴定值，该月不出现
+        insertReport(36, "202611", "IN_REVIEW", false, 2L);
+        insertPlanReportIndicator(361, 36, 104, "DELAYED", null);
         // 上一年数据不应进入 2026 区间
         insertReport(34, "202511", "APPROVED", false, 1L);
         insertPlanReportIndicator(341, 34, 101, "DELAYED", null);
 
         List<CollegeLevelMonthlyCountRow> rows = repository.fetchCollegeLevelMonthlyCounts("202601", "202612");
 
-        // 1~9 月无数据不出现，只有 10 与 12 有数据月出现
+        // 1~9 月无数据不出现，只有 10 与 12 有数据月出现（11 月全是草稿/审批中/无鉴定）
         assertThat(rows.stream().map(CollegeLevelMonthlyCountRow::month).distinct().toList())
                 .containsExactly(10, 12);
 
@@ -245,7 +256,7 @@ class NativeCollegeLevelQueryRepositoryTest {
 
         Map<Long, CollegeDispatchCountRow> byOrg = rows2026.stream()
                 .collect(Collectors.toMap(CollegeDispatchCountRow::orgId, Function.identity()));
-        // 只统计学院（org.type=academic）；指向职能部门的 105（org3）不计入
+        // 只统计学院（org.type=academic）；指向职能部门的 105/108（org3）不计入
         assertThat(byOrg).containsOnlyKeys(1L, 2L);
         assertThat(byOrg.get(1L).dispatchedCount()).isEqualTo(3L); // 101/102/103
         assertThat(byOrg.get(1L).undispatchedCount()).isEqualTo(2L); // 107 DRAFT + 202 PENDING（2025/软删不计）
@@ -260,38 +271,45 @@ class NativeCollegeLevelQueryRepositoryTest {
     }
 
     @Test
-    @DisplayName("已上报月份应只含已提交/已审批月报（DRAFT/REJECTED 不算已上报）且按月提取")
+    @DisplayName("已上报月份应带月报状态标记：APPROVED 优先于审批中（SUBMITTED/IN_REVIEW），草稿/驳回不算已上报")
     void fetchCollegeReportedMonthsShouldApplySubmittedScope() {
         insertReport(41, "202610", "APPROVED", false, 1L);
         insertReport(42, "202610", "SUBMITTED", false, 2L);
-        insertReport(43, "202610", "IN_REVIEW", false, 1L); // legacy 别名算已上报（同 org 去重）
+        insertReport(43, "202610", "IN_REVIEW", false, 1L); // legacy 别名算已上报（同 org 去重，APPROVED 优先）
         insertReport(44, "202610", "DRAFT", false, 2L); // 草稿不算
         insertReport(45, "202610", "REJECTED", false, 4L); // 驳回不算
         insertReport(46, "202611", "APPROVED", false, 1L);
         insertReport(47, "202611", "APPROVED", true, 2L); // 软删不算
+        insertReport(49, "202611", "SUBMITTED", false, 2L); // org2 在 11 月仅审批中 → IN_REVIEW
         insertReport(48, "202512", "APPROVED", false, 1L); // 区间外
 
         List<CollegeReportedMonthRow> rows =
                 repository.fetchCollegeReportedMonths("202601", "202612");
 
-        assertThat(rows).hasSize(3);
+        assertThat(rows).hasSize(4);
         assertThat(rows).extracting(CollegeReportedMonthRow::month)
-                .containsExactly(10, 10, 11);
+                .containsExactly(10, 10, 11, 11);
         // 同月内按组织名升序：电子学院 < 计算机学院
         assertThat(rows.get(0).orgId()).isEqualTo(2L); // SUBMITTED 算已上报
         assertThat(rows.get(0).orgName()).isEqualTo("电子学院");
+        assertThat(rows.get(0).monthState()).isEqualTo("IN_REVIEW"); // 仅审批中 → IN_REVIEW
         assertThat(rows.get(1).orgId()).isEqualTo(1L); // APPROVED + IN_REVIEW 同 org 去重
         assertThat(rows.get(1).orgName()).isEqualTo("计算机学院");
-        assertThat(rows.get(2).orgId()).isEqualTo(1L);
+        assertThat(rows.get(1).monthState()).isEqualTo("APPROVED"); // 有 APPROVED 月报 → APPROVED 优先
+        // 11 月按组织名升序：电子学院 < 计算机学院
+        assertThat(rows.get(2).orgId()).isEqualTo(2L); // org2 在 11 月仅 SUBMITTED
+        assertThat(rows.get(2).monthState()).isEqualTo("IN_REVIEW");
+        assertThat(rows.get(3).orgId()).isEqualTo(1L);
+        assertThat(rows.get(3).monthState()).isEqualTo("APPROVED");
     }
 
     @Test
-    @DisplayName("滞后清单应只取鉴定 DELAYED（appraisal 优先 self 兜底）并带来源部门与自评/鉴定留痕")
-    void fetchDelayedIndicatorsShouldApplyEffectiveDelayLevel() {
-        // 11：APPROVED，101（appraisal=DELAYED）入清单
+    @DisplayName("滞后清单全量口径：职能部门线（target=职能部门）+ 学院线都记录；只认 APPROVED 月报")
+    void fetchDelayedIndicatorsShouldCoverBothOrgLinesWithApprovedOnly() {
+        // 51：APPROVED，101（target=计算机学院，appraisal=DELAYED）入清单 —— 学院线
         insertReport(51, "202610", "APPROVED", false, 1L);
         insertPlanReportIndicator(511, 51, 101, "DELAYED", "DELAYED");
-        // 52：IN_REVIEW（legacy 已提交），102（appraisal 空、self=DELAYED）入清单
+        // 52：IN_REVIEW（审批中），102（appraisal 空、self=DELAYED）按 2026-11-18 快照口径不入清单
         insertReport(52, "202610", "IN_REVIEW", false, 1L);
         insertPlanReportIndicator(521, 52, 102, null, "DELAYED");
         // 53：非 DELAYED 不入清单
@@ -303,19 +321,29 @@ class NativeCollegeLevelQueryRepositoryTest {
         // 55：其他月份不入清单
         insertReport(55, "202611", "APPROVED", false, 1L);
         insertPlanReportIndicator(551, 55, 101, "DELAYED", null);
+        // 56：APPROVED 职能部门线月报（report_org_type=FUNC_DEPT），108 target=学生处 → 入清单（2026-11-18 拍板）
+        exec("INSERT INTO plan_report (id, plan_id, report_month, report_org_type, report_org_id, status, is_deleted)"
+                + " VALUES (56, 1, '202610', 'FUNC_DEPT', 3, 'APPROVED', false)");
+        insertPlanReportIndicator(561, 56, 108, "DELAYED", null);
 
         List<DelayedIndicatorRow> rows = repository.fetchDelayedIndicators("202610");
 
+        // 职能部门线（学生处）+ 学院线（计算机学院）都在清单内；按责任单位名+指标ID排序
         assertThat(rows).hasSize(2);
-        assertThat(rows.get(0).indicatorId()).isEqualTo(101L);
-        assertThat(rows.get(0).orgName()).isEqualTo("计算机学院");
+        assertThat(rows.get(0).indicatorId()).isEqualTo(108L);
+        assertThat(rows.get(0).orgId()).isEqualTo(3L);
+        assertThat(rows.get(0).orgName()).isEqualTo("学生处");
         assertThat(rows.get(0).ownerOrgName()).isEqualTo("战略发展部");
         assertThat(rows.get(0).appraisalLevel()).isEqualTo("DELAYED");
-        assertThat(rows.get(0).selfRating()).isEqualTo("DELAYED");
-        assertThat(rows.get(1).indicatorId()).isEqualTo(102L);
-        assertThat(rows.get(1).appraisalLevel()).isNull();
-        assertThat(rows.get(1).selfRating()).isEqualTo("DELAYED");
+        // 学院线不回归：101 仍在清单
+        assertThat(rows.get(1).indicatorId()).isEqualTo(101L);
+        assertThat(rows.get(1).orgId()).isEqualTo(1L);
+        assertThat(rows.get(1).orgName()).isEqualTo("计算机学院");
         assertThat(rows.get(1).ownerOrgName()).isEqualTo("战略发展部");
+        assertThat(rows.get(1).appraisalLevel()).isEqualTo("DELAYED");
+        assertThat(rows.get(1).selfRating()).isEqualTo("DELAYED");
+        // 语义变化（2026-11-18 快照口径）：102 只有审批中月报，不再进清单
+        assertThat(rows).extracting(DelayedIndicatorRow::indicatorId).doesNotContain(102L);
     }
 
     // ------------------------------------------------------------------
