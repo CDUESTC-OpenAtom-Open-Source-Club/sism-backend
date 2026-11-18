@@ -8,7 +8,8 @@ import lombok.NoArgsConstructor;
 
 /**
  * CollegeLevelDTO - 单个学院的鉴定等级计数 + 督办上下文。
- * Matches frontend dashboard college-levels contract (2026-11-17 拍板口径)
+ * Matches frontend dashboard college-levels contract
+ * (2026-11-18 拍板口径：按月快照，只有 APPROVED 月报计入鉴定值)
  */
 @Data
 @Builder
@@ -44,6 +45,12 @@ public class CollegeLevelDTO {
     @Schema(description = "当年未下发到该学院的指标数（status=DRAFT/PENDING）")
     private long undispatchedCount;
 
-    @Schema(description = "未填报标记：false=当月无已提交/已审批月报（灰柱督办），true=已填报")
+    @Schema(description = "已填报标记：false=当月无已提交/审批中/已审批月报（灰柱督办），true=已填报"
+            + "（含审批中，审批状态看 monthState）")
     private boolean reported;
+
+    @Schema(description = "当月快照状态（2026-11-18 拍板）：APPROVED=该月月报已审批通过（等级计数有效）；"
+            + "IN_REVIEW=该月已填报但审批未通过（等级计数全 0，前端置灰标「审批中」）；"
+            + "NOT_REPORTED=该月未填报（灰柱督办）")
+    private MonthState monthState;
 }
