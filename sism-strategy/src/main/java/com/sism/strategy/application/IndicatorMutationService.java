@@ -779,15 +779,33 @@ public class IndicatorMutationService {
      * 才与学院下发审批共享同一份快照。职能部门的指标属于「战略部 → 职能部门」链，
      * 与学院下发审批无关，直接放行 —— 不限定的话，这个守卫要么对职能部门误拦、要么对学院漏拦。
      *
+     * <p><b>2026-11-17（学院线粒度）：补归口维度 → 互斥锁收窄到线级</b>。
+     * 一个学院可以同时有多个归口部门各自的线（线身份 = cycle + plan_level +
+     * created_by=35 + 学院 + 归口部门），A 线的下发审批在审时，B 线（同学院、另一归口）
+     * 的指标异动<b>不应</b>被拦。因此这里把「本指标所属线的归口」一并传给守卫，
+     * 守卫只把「归口相同」的下发在审单算作冲突。
+     *
+     * <p><b>归口怎么反查</b>（优先级从高到低）：
+     * <ol>
+     *   <li><b>所属计划的 {@code functional_org_id}</b>：线身份本身（导入链落值、
+     *       提交前按父级反查补写）；</li>
+     *   <li><b>父级核心指标的 {@code target_org_id}</b>：归口部门的准确答案
+     *       （异动新增的子指标必带父级，其父级的目标部门即归口）；</li>
+     *   <li>都没有 → 归口未落值（NULL），按「NULL 与 NULL 同组」处理。</li>
+     * </ol>
+     *
      * <p>仅作用于 INDICATOR 路径；任务改名不改指标值，不在此拦截。
      */
     private void assertDispatchApprovalNotInFlightForIndicator(Long indicatorId) {
         java.util.List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 """
-                SELECT i.target_org_id, p.cycle_id
+                SELECT i.target_org_id, p.cycle_id,
+                       p.functional_org_id AS plan_functional_org_id,
+                       parent.target_org_id AS parent_target_org_id
                 FROM public.indicator i
                 JOIN public.sys_task t ON t.task_id = i.task_id
                 JOIN public.plan p ON p.id = t.plan_id
+                LEFT JOIN public.indicator parent ON parent.id = i.parent_indicator_id
                 -- 2026-11-09（单层口径）：限定指标属于「学院下发计划」（即学院指标）。
                 -- 原口径限定 sys_org.type='functional'（目标组织是职能部门）——
                 -- 单层后学院指标的目标组织是学院，该条件恒不成立 → rows 为空 → 守卫对学院指标
@@ -799,18 +817,27 @@ public class IndicatorMutationService {
         if (rows.isEmpty()) {
             return;
         }
-        Object targetOrgId = rows.get(0).get("target_org_id");
-        Object cycleId = rows.get(0).get("cycle_id");
+        Map<String, Object> row = rows.get(0);
+        Object targetOrgId = row.get("target_org_id");
+        Object cycleId = row.get("cycle_id");
         if (!(targetOrgId instanceof Number) || !(cycleId instanceof Number)) {
             return;
         }
 
+        // 2026-11-17（学院线粒度）：反查本指标所属线的归口部门。
+        Long functionalOrgId = toNullableLong(row.get("plan_functional_org_id"));
+        if (functionalOrgId == null) {
+            functionalOrgId = toNullableLong(row.get("parent_target_org_id"));
+        }
+
         boolean dispatchInFlight = collegeDispatchGuardService.isCollegeDispatchInFlightForOrg(
                 ((Number) targetOrgId).longValue(),
-                ((Number) cycleId).longValue());
+                ((Number) cycleId).longValue(),
+                functionalOrgId);
         if (dispatchInFlight) {
             throw new IllegalStateException(
-                    "该学院的下发审批正在进行中，暂不能发起异动；请等下发审批结束或撤回后再操作");
+                    "该学院归口线（归口部门 ID=" + functionalOrgId + "）的下发审批正在进行中，"
+                            + "暂不能发起异动；请等下发审批结束或撤回后再操作");
         }
     }
 

@@ -9,6 +9,7 @@ import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
 import com.sism.shared.application.dto.CurrentUser;
 import com.sism.strategy.application.BasicTaskWeightValidationService;
+import com.sism.strategy.domain.cycle.Cycle;
 import com.sism.strategy.application.CollegeDispatchGuardService;
 import com.sism.strategy.application.StrategyApplicationService;
 import com.sism.strategy.domain.indicator.Indicator;
@@ -17,6 +18,7 @@ import com.sism.strategy.domain.plan.Plan;
 import com.sism.strategy.domain.plan.PlanLevel;
 import com.sism.strategy.domain.plan.PlanStatus;
 import com.sism.strategy.domain.repository.IndicatorRepository;
+import com.sism.strategy.domain.repository.CycleRepository;
 import com.sism.strategy.domain.repository.PlanRepository;
 import com.sism.strategy.infrastructure.StrategyOrgProperties;
 import com.sism.task.domain.repository.TaskRepository;
@@ -43,6 +45,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -60,7 +63,9 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -98,6 +103,9 @@ class BusinessImportApplicationServiceTest {
      */
     @Mock
     private CollegeDispatchGuardService collegeDispatchGuardService;
+    /** 2026-11-17（学院线粒度改造）：「已下发」阻断文案要点名考核年度 */
+    @Mock
+    private CycleRepository cycleRepository;
 
     private BusinessImportApplicationService service;
 
@@ -122,7 +130,8 @@ class BusinessImportApplicationServiceTest {
                 // 2026-11-13：归口反查收口到共享 Resolver（真实实例——候选集合来自导入批内，
                 // 不依赖 jdbcTemplate 打桩；回退 DB 反查时才落到 importBatchJdbcTemplate 上）
                 new com.sism.strategy.application.PlanFunctionalOrgResolver(
-                        importBatchJdbcTemplate, planRepository));
+                        importBatchJdbcTemplate, planRepository),
+                cycleRepository);
     }
 
     @Test
@@ -141,6 +150,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -180,6 +190,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         var result = service.commit(
@@ -213,6 +224,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 reporterOnly);
 
         var result = service.commit(
@@ -244,6 +256,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -278,21 +291,22 @@ class BusinessImportApplicationServiceTest {
     @DisplayName("Should block auto approval when imported plan weight is valid but already distributed")
     void shouldBlockAutoApprovalWhenImportedPlanWeightIsValidButAlreadyDistributed() {
         Fixture fixture = fixture();
+        // 2026-11-17（学院线粒度改造）：「线」=（cycle, FUNC_TO_COLLEGE, 战略发展部, 学院, 归口部门），
+        // 已下发判定与文案都按线点名归口（dogfood 带归口的建线重载）
         Plan distributedPlan = Plan.create(
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
-                PlanLevel.FUNC_TO_COLLEGE);
+                PlanLevel.FUNC_TO_COLLEGE,
+                fixture.functionalOrg().getId());
         distributedPlan.setId(900L);
         distributedPlan.setStatus(PlanStatus.DISTRIBUTED.value());
         distributedPlan.setAuditInstanceId(7001L);
 
-        stubPreviewDependencies(fixture);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L,
-                PlanLevel.FUNC_TO_COLLEGE,
-                fixture.strategyOrg().getId(),
-                fixture.college().getId()))
+        stubPreviewAnchorsAndOrgs(fixture);
+        stubBlockedMessageDependencies(fixture);
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
                 .thenReturn(Optional.empty(), Optional.of(distributedPlan));
 
         var preview = service.previewDistribution(
@@ -301,6 +315,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -319,7 +334,7 @@ class BusinessImportApplicationServiceTest {
         assertNotNull(result.workflow());
         assertEquals("BLOCKED", result.workflow().status());
         assertEquals(7001L, result.workflow().instanceId());
-        assertEquals("该部门计划已下发，不能再通过导入修改。如需新增或调整指标，请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批", result.workflow().message());
+        assertEquals("该学院 2026 年度的「人力资源部」这条线已下发，不能再通过导入新增指标；如需补充，请点「新增行」或双击编辑后点「发起异动」", result.workflow().message());
         verify(transactionTemplate, never()).execute(any());
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(anyLong(), anyLong());
         verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
@@ -329,21 +344,22 @@ class BusinessImportApplicationServiceTest {
     @DisplayName("Should report already distributed before weight validation")
     void shouldReportAlreadyDistributedBeforeWeightValidation() {
         Fixture fixture = fixture();
+        // 2026-11-17（学院线粒度改造）：「线」=（cycle, FUNC_TO_COLLEGE, 战略发展部, 学院, 归口部门），
+        // 已下发判定与文案都按线点名归口（dogfood 带归口的建线重载）
         Plan distributedPlan = Plan.create(
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
-                PlanLevel.FUNC_TO_COLLEGE);
+                PlanLevel.FUNC_TO_COLLEGE,
+                fixture.functionalOrg().getId());
         distributedPlan.setId(900L);
         distributedPlan.setStatus(PlanStatus.DISTRIBUTED.value());
         distributedPlan.setAuditInstanceId(7001L);
 
-        stubPreviewDependencies(fixture);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L,
-                PlanLevel.FUNC_TO_COLLEGE,
-                fixture.strategyOrg().getId(),
-                fixture.college().getId()))
+        stubPreviewAnchorsAndOrgs(fixture);
+        stubBlockedMessageDependencies(fixture);
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
                 .thenReturn(Optional.empty(), Optional.of(distributedPlan));
 
         var preview = service.previewDistribution(
@@ -352,6 +368,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -367,7 +384,7 @@ class BusinessImportApplicationServiceTest {
         assertEquals("COMMIT_BLOCKED", result.status());
         assertNotNull(result.workflow());
         assertEquals("BLOCKED", result.workflow().status());
-        assertEquals("该部门计划已下发，不能再通过导入修改。如需新增或调整指标，请在表格中双击指标编辑或点「新增行」，改完后点击顶部「发起异动」提交审批", result.workflow().message());
+        assertEquals("该学院 2026 年度的「人力资源部」这条线已下发，不能再通过导入新增指标；如需补充，请点「新增行」或双击编辑后点「发起异动」", result.workflow().message());
         verify(transactionTemplate, never()).execute(any());
         verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(anyLong(), anyLong());
         verify(workflowApplicationService, never()).getAuditFlowDefByCode(anyString());
@@ -405,6 +422,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         var blocked = assertThrows(IllegalArgumentException.class, () -> service.commit(
@@ -426,13 +444,13 @@ class BusinessImportApplicationServiceTest {
     @DisplayName("2026-10-31: same parent + same child name updates, new name creates (name-key matching)")
     void shouldMatchByNameForUpdateAndCreate() {
         Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
+        stubPreviewAnchorsAndOrgs(fixture);
         stubCommitDependencies(fixture, false);
         // 既有子指标（id=5001，名称「子指标A」，同父级、本学院范围）
         Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Plan plan = planWithId(900L, fixture);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
                 .thenReturn(Optional.of(plan));
         when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
         when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
@@ -456,6 +474,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         // 同名（同父级组内）= 更新；新名称 = 新增
@@ -477,12 +496,12 @@ class BusinessImportApplicationServiceTest {
     @DisplayName("2026-10-31: update target vanished between preview and commit is skipped safely")
     void shouldSkipRowWhenUpdateTargetVanishedBeforeCommit() {
         Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
+        stubPreviewAnchorsAndOrgs(fixture);
         stubCommitDependencies(fixture, false);
         Indicator existingChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Plan plan = planWithId(900L, fixture);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
                 .thenReturn(Optional.of(plan));
         when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
         when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
@@ -496,6 +515,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -516,7 +536,7 @@ class BusinessImportApplicationServiceTest {
     @DisplayName("2026-10-31: UPDATE mode soft-deletes existing children not covered by file (name-key)")
     void shouldSoftDeleteUncoveredIndicatorsOnUpdateMode() {
         Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
+        stubPreviewAnchorsAndOrgs(fixture);
         // 本用例全部行都是 UPDATE，不触达 createIndicator：transaction/落库依赖单独最小 stub
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
             @SuppressWarnings("unchecked")
@@ -532,8 +552,8 @@ class BusinessImportApplicationServiceTest {
         Indicator coveredChild = existingChildIndicator(fixture, 5001L, "子指标A");
         Indicator uncoveredChild = existingChildIndicator(fixture, 5002L, "子指标B");
         Plan plan = planWithId(900L, fixture);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId()))
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
                 .thenReturn(Optional.of(plan));
         when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
         when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
@@ -552,6 +572,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -584,6 +605,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -636,6 +658,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         assertTrue(preview.blocking());
@@ -660,6 +683,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -689,6 +713,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -723,6 +748,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         assertFalse(preview.blocking());
@@ -755,6 +781,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -794,6 +821,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -835,6 +863,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         // 父级任务类别可解析 → 不出现任务类别警告
@@ -873,6 +902,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -986,6 +1016,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         var result = service.commit(
@@ -1028,6 +1059,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         var result = service.commit(
@@ -1061,6 +1093,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         assertTrue(preview.blocking());
@@ -1090,6 +1123,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -1129,6 +1163,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -1303,6 +1338,7 @@ class BusinessImportApplicationServiceTest {
                         fixture.college().getId(),
                         fixture.strategyOrg().getId(),
                         null,
+                        null,
                         fixture.currentUser())
         );
 
@@ -1332,6 +1368,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser()));
     }
 
@@ -1356,6 +1393,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser()));
     }
@@ -1390,6 +1428,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -1427,6 +1466,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -1467,6 +1507,7 @@ class BusinessImportApplicationServiceTest {
                         fixture.college().getId(),
                         fixture.strategyOrg().getId(),
                         null,
+                        null,
                         fixture.currentUser())
         );
 
@@ -1494,6 +1535,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -1523,6 +1565,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         assertTrue(preview.blocking());
@@ -1547,7 +1590,7 @@ class BusinessImportApplicationServiceTest {
     @DisplayName("HIGH④：学院下发导入叠加已有草稿权重 → 预览 warnings 提示合并合计 170/100")
     void shouldWarnOnDistributionPreviewWhenImportedWeightsStackOnExistingDraft() {
         Fixture fixture = fixture();
-        stubPreviewDependencies(fixture);
+        stubPreviewAnchorsAndOrgs(fixture);
 
         // 目标学院已有草稿下发计划（战略部创建），基础性子指标 55+45
         Plan draftPlan = Plan.create(
@@ -1556,11 +1599,8 @@ class BusinessImportApplicationServiceTest {
                 fixture.strategyOrg().getId(),
                 PlanLevel.FUNC_TO_COLLEGE);
         draftPlan.setId(900L);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L,
-                PlanLevel.FUNC_TO_COLLEGE,
-                fixture.strategyOrg().getId(),
-                fixture.college().getId()))
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
                 .thenReturn(Optional.of(draftPlan));
 
         StrategicTask draftTask = StrategicTask.create(
@@ -1595,6 +1635,7 @@ class BusinessImportApplicationServiceTest {
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
                 null,
+                null,
                 fixture.currentUser());
 
         assertFalse(preview.blocking(), "只加警告不阻断预览（用户可能正是要勾覆盖替换旧数据）");
@@ -1621,11 +1662,8 @@ class BusinessImportApplicationServiceTest {
                 fixture.strategyOrg().getId(),
                 PlanLevel.FUNC_TO_COLLEGE);
         draftPlan.setId(900L);
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L,
-                PlanLevel.FUNC_TO_COLLEGE,
-                fixture.strategyOrg().getId(),
-                fixture.college().getId()))
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
                 .thenReturn(Optional.of(draftPlan));
 
         // 计划下没有任何存活子指标（首次导入）
@@ -1641,6 +1679,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -1709,6 +1748,46 @@ class BusinessImportApplicationServiceTest {
     }
 
     private void stubPreviewDependencies(Fixture fixture, Indicator... parents) {
+        stubPreviewAnchorsAndOrgs(fixture, parents);
+        // 2026-11-17（学院线粒度改造）：预览/提交取线一律走 5 键 finder（含归口维度）。
+        // 归口来自文件父级反查（fixture 父级核心指标的目标部门 = fixture.functionalOrg）。
+        // 两个桩都 lenient：父级匹配成功的用例命中 4L 桩，匹配失败的用例（锚点歧义/名称被改/
+        // 未下发名册，行级错误本来就阻断整批）推导归口为 null、命中 null 桩——不会互相判未使用。
+        lenient().when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L,
+                PlanLevel.FUNC_TO_COLLEGE,
+                fixture.strategyOrg().getId(),
+                fixture.college().getId(),
+                fixture.functionalOrg().getId()))
+                .thenReturn(Optional.empty());
+        lenient().when(planRepository
+                .findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                        2026L,
+                        PlanLevel.FUNC_TO_COLLEGE,
+                        fixture.strategyOrg().getId(),
+                        fixture.college().getId(),
+                        null))
+                .thenReturn(Optional.empty());
+    }
+
+    /**
+     * 2026-11-17（学院线粒度改造）：「已下发」阻断文案依赖（点名归口部门与考核年度）。
+     */
+    private void stubBlockedMessageDependencies(Fixture fixture) {
+        when(organizationRepository.findById(fixture.functionalOrg().getId()))
+                .thenReturn(Optional.of(fixture.functionalOrg()));
+        Cycle cycle2026 = Cycle.create(
+                "2026年度战略目标考核", 2026, LocalDate.of(2026, 1, 1), LocalDate.of(2026, 12, 31));
+        cycle2026.setId(2026L);
+        when(cycleRepository.findById(2026L)).thenReturn(Optional.of(cycle2026));
+    }
+
+    /** 只 stub 组织与父级锚点，不 stub 线查询——需要自定义线计划的用例用这个。 */
+    private void stubPreviewAnchorsAndOrgs(Fixture fixture) {
+        stubPreviewAnchorsAndOrgs(fixture, fixture.parentIndicator());
+    }
+
+    private void stubPreviewAnchorsAndOrgs(Fixture fixture, Indicator... parents) {
         // 2026-11-05（学院指标直发改造）：来源组织 = 战略发展部；
         // 2026-11-05（BL3）：父级锚点按「同一考核周期 + 目标为职能部门 + 无父级 + 未删除」收敛，
         // 由仓储层的原生查询完成（指标表不带 cycle，需经 sys_task → plan → cycle_id 关联）。
@@ -1718,12 +1797,6 @@ class BusinessImportApplicationServiceTest {
                 .thenReturn(Optional.of(fixture.college()));
         when(indicatorRepository.findCoreDispatchAnchors(fixture.strategyOrg().getId(), 2026L))
                 .thenReturn(List.of(parents));
-        when(planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
-                2026L,
-                PlanLevel.FUNC_TO_COLLEGE,
-                fixture.strategyOrg().getId(),
-                fixture.college().getId()))
-                .thenReturn(Optional.empty());
     }
 
     private void stubCommitDependencies(Fixture fixture) {
@@ -1791,6 +1864,7 @@ class BusinessImportApplicationServiceTest {
                         fixture.college().getId(),
                         fixture.functionalOrg().getId(),
                         null,
+                        null,
                         fixture.currentUser()));
 
         assertTrue(error.getMessage().contains("职能部门不再向学院分发指标"),
@@ -1811,6 +1885,7 @@ class BusinessImportApplicationServiceTest {
                 2026L,
                 fixture.college().getId(),
                 fixture.strategyOrg().getId(),
+                null,
                 null,
                 fixture.currentUser());
 
@@ -2069,5 +2144,180 @@ class BusinessImportApplicationServiceTest {
             StrategicTask childTask,
             CurrentUser currentUser
     ) {
+    }
+    // ==================== 2026-11-17（学院线粒度改造）：学院 × 归口部门 = 一条线 ====================
+
+    @Test
+    @DisplayName("学院线粒度：文件父级分属两个归口部门 → 阻断，提示按归口部门分别导入")
+    void shouldBlockWhenFileParentsSpanTwoFunctionalOrgs() {
+        Fixture fixture = fixture();
+        // 另一归口部门（数字校园）
+        SysOrg otherFunctional = SysOrg.create("数字校园建设办公室", OrgType.functional);
+        otherFunctional.setId(5L);
+        Indicator parentB = Indicator.create("父级核心指标B", fixture.strategyOrg(), otherFunctional, "定量");
+        parentB.setId(2002L);
+        parentB.setTaskId(fixture.parentTask().getId());
+        stubPreviewAnchorsAndOrgs(fixture, fixture.parentIndicator(), parentB);
+        when(organizationRepository.findById(fixture.functionalOrg().getId()))
+                .thenReturn(Optional.of(fixture.functionalOrg()));
+        when(organizationRepository.findById(otherFunctional.getId()))
+                .thenReturn(Optional.of(otherFunctional));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.previewDistribution(
+                        multiParentDistributionWorkbook("cross-functional-org.xlsx", "马克思主义学院", new String[][]{
+                                {"父级核心指标A", "定量", "子指标A1", "定量", "60"},
+                                {"父级核心指标B", "定量", "子指标B1", "定量", "40"}
+                        }),
+                        2026L,
+                        fixture.college().getId(),
+                        fixture.strategyOrg().getId(),
+                        // 未指定归口：由文件父级反查推导
+                        null,
+                        null,
+                        fixture.currentUser()));
+
+        assertTrue(error.getMessage().contains("多个归口部门"),
+                "应点名文件跨了多个归口: " + error.getMessage());
+        assertTrue(error.getMessage().contains("请按归口部门分别导入"),
+                "应给出分流指引: " + error.getMessage());
+    }
+
+    @Test
+    @DisplayName("学院线粒度：所选归口部门与文件父级反查结果不一致 → 阻断")
+    void shouldBlockWhenRequestedFunctionalOrgDiffersFromFile() {
+        Fixture fixture = fixture();
+        SysOrg otherFunctional = SysOrg.create("数字校园建设办公室", OrgType.functional);
+        otherFunctional.setId(5L);
+        stubPreviewAnchorsAndOrgs(fixture);
+        when(organizationRepository.findById(fixture.functionalOrg().getId()))
+                .thenReturn(Optional.of(fixture.functionalOrg()));
+        when(organizationRepository.findById(otherFunctional.getId()))
+                .thenReturn(Optional.of(otherFunctional));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.previewDistribution(
+                        distributionWorkbook("wrong-functional-org.xlsx",
+                                "马克思主义学院", "定量", "子指标A", "子指标B"),
+                        2026L,
+                        fixture.college().getId(),
+                        fixture.strategyOrg().getId(),
+                        // 页面所选归口 = 数字校园（5），文件父级反查 = 人力资源部（4）
+                        otherFunctional.getId(),
+                        null,
+                        fixture.currentUser()));
+
+        assertTrue(error.getMessage().contains("不一致"), "应点名不一致: " + error.getMessage());
+        assertTrue(error.getMessage().contains("人力资源部"), "应点名文件反查出的归口: " + error.getMessage());
+        assertTrue(error.getMessage().contains("请按归口部门分别导入"),
+                "应给出分流指引: " + error.getMessage());
+    }
+
+    @Test
+    @DisplayName("学院线粒度：同学院同归口重复导入命中同一条线（同名子指标=更新，不重复建线）")
+    void shouldHitSameLineOnRepeatedImportForSameFunctionalOrg() {
+        Fixture fixture = fixture();
+        stubPreviewAnchorsAndOrgs(fixture);
+        // 本线：归口 = 人力资源部（fixture.functionalOrg），首次导入时不存在的 → 预览为空，第二次命中
+        Plan existingLine = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE,
+                fixture.functionalOrg().getId());
+        existingLine.setId(900L);
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE,
+                fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
+                .thenReturn(Optional.empty(), Optional.of(existingLine));
+
+        var firstPreview = service.previewDistribution(
+                distributionWorkbook("same-line-first.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                null,
+                fixture.currentUser());
+        assertEquals(ImportAction.CREATE, firstPreview.rows().get(0).action());
+        assertEquals(fixture.functionalOrg().getId(), firstPreview.functionalOrgId(),
+                "归口应从文件父级反查推导，随批次落上下文");
+
+        // 模拟首次导入后：这条线上已有同名子指标
+        Indicator childA = existingChildIndicator(fixture, 5001L, "子指标A");
+        when(taskRepository.findByPlanId(900L)).thenReturn(List.of(fixture.childTask()));
+        when(indicatorRepository.findByTaskIds(List.of(fixture.childTask().getId())))
+                .thenReturn(List.of(childA));
+
+        var secondPreview = service.previewDistribution(
+                distributionWorkbook("same-line-second.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                null,
+                fixture.currentUser());
+        assertEquals(ImportAction.UPDATE, secondPreview.rows().get(0).action(),
+                "同学院同归口重复导入必须命中同一条线的同名子指标（而不是新建一条线/重复建指标）");
+        assertEquals(fixture.functionalOrg().getId(), secondPreview.functionalOrgId());
+
+        verify(planRepository, times(2))
+                .findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                        2026L, PlanLevel.FUNC_TO_COLLEGE,
+                        fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId());
+    }
+
+    @Test
+    @DisplayName("学院线粒度核心回归：另一归口的线已下发，不得拦本线导入（旧缺陷：整学院导入入口被关死）")
+    void shouldAllowImportWhenAnotherFunctionalOrgLineIsDistributed() {
+        Fixture fixture = fixture();
+        stubPreviewAnchorsAndOrgs(fixture);
+        // 另一归口（数字校园 id=5）的线：已下发
+        Plan otherLine = Plan.create(
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                PlanLevel.FUNC_TO_COLLEGE,
+                5L);
+        otherLine.setId(950L);
+        otherLine.setStatus(PlanStatus.DISTRIBUTED.value());
+        // 本线（人力资源部 4L）：无计划（这正是要导入的新线）
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE,
+                fixture.strategyOrg().getId(), fixture.college().getId(), fixture.functionalOrg().getId()))
+                .thenReturn(Optional.empty());
+        // lenient：另一条线的桩只是「布景」（旧实现会按 4 键查到它并拦死本线；新实现根本不会查它）
+        lenient().when(planRepository
+                .findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                        2026L, PlanLevel.FUNC_TO_COLLEGE,
+                        fixture.strategyOrg().getId(), fixture.college().getId(), 5L))
+                .thenReturn(Optional.of(otherLine));
+        stubCommitDependencies(fixture);
+
+        var preview = service.previewDistribution(
+                distributionWorkbook("other-line-distributed.xlsx",
+                        "马克思主义学院", "定量", "子指标A", "子指标B"),
+                2026L,
+                fixture.college().getId(),
+                fixture.strategyOrg().getId(),
+                null,
+                null,
+                fixture.currentUser());
+        assertFalse(preview.blocking(), "另一归口的线已下发不影响本线预览");
+        assertEquals(ImportAction.CREATE, preview.rows().get(0).action());
+
+        var result = service.commit(
+                preview.batchId(),
+                new ImportCommitRequest(preview.confirmToken(), ConflictMode.APPEND, false, "确认导入"),
+                fixture.currentUser());
+        assertEquals("COMMITTED", result.status(),
+                "本线（人力资源部）无已下发计划，导入不应被另一归口已下发的线拦住——这正是曹老师反馈的缺陷");
+        assertEquals(2, result.createdCount());
+        // 关键契约：学院导入取线只走 5 键（带归口维度），不存在不带归口的学院查询兜底
+        verify(planRepository, never()).findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE,
+                fixture.strategyOrg().getId(), fixture.college().getId());
     }
 }

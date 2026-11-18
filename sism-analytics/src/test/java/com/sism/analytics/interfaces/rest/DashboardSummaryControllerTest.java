@@ -30,8 +30,10 @@ class DashboardSummaryControllerTest {
 
     private final DashboardSummaryService dashboardSummaryService = mock(DashboardSummaryService.class);
     private final CollegeLevelDashboardService collegeLevelDashboardService = mock(CollegeLevelDashboardService.class);
+    private final com.sism.analytics.application.AppraisalSummaryService appraisalSummaryService =
+            mock(com.sism.analytics.application.AppraisalSummaryService.class);
     private final DashboardSummaryController controller =
-            new DashboardSummaryController(dashboardSummaryService, collegeLevelDashboardService);
+            new DashboardSummaryController(dashboardSummaryService, collegeLevelDashboardService, appraisalSummaryService);
 
     @Test
     @DisplayName("getCollegeLevels should delegate year/month to service and wrap into ApiResponse")

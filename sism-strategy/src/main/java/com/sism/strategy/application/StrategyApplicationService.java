@@ -754,6 +754,17 @@ public class StrategyApplicationService {
             throw new IllegalArgumentException("目标组织不能为空");
         }
         assertDispatchScopeAllowed(ownerOrg, targetOrg);
+        // 2026-11-17（学院线粒度）：线的归口 = 父级核心指标的 target_org_id
+        // （与 IndicatorMutationService.assertDownstreamCollegeContext 同源）。
+        // 本链路只在 parentIndicatorId 非空时进入（createIndicator），父级必然已解析；
+        // 父级缺目标组织（脏数据）时明确拒绝——数据层 5 键 finder 对 null 归口不命中任何行，
+        // 静默放行会退化成每次新建一条不带归口的线（V105 要归档的空壳问题的复刻）。
+        Long functionalOrgId = parent == null || parent.getTargetOrg() == null
+                ? null
+                : parent.getTargetOrg().getId();
+        if (functionalOrgId == null) {
+            throw new IllegalArgumentException("无法确定新增子指标的归口部门（父级核心指标缺少目标组织）");
+        }
         StrategicTask requestedTask = null;
         Plan requestedPlan = null;
 
@@ -767,7 +778,8 @@ public class StrategyApplicationService {
             // 只有请求的 task 已属于本次下发的下游计划（同一 FUNC_TO_COLLEGE 计划）时才直接沿用；
             // 若它属于上游计划（如战略部下发给职能部门的 STRAT_TO_FUNC 计划），
             // 必须在下游计划中另建任务行，否则下游计划会因"不存在基础性任务"而无法下发。
-            boolean requestedTaskBelongsToDownstreamPlan = isDownstreamPlanFor(requestedPlan, ownerOrg, targetOrg);
+            boolean requestedTaskBelongsToDownstreamPlan =
+                    isDownstreamPlanFor(requestedPlan, ownerOrg, targetOrg, functionalOrgId);
             if (requestedTaskBelongsToDownstreamPlan
                     && PlanStatus.fromRaw(requestedPlan.getStatus()) != PlanStatus.DISTRIBUTED) {
                 return requestedTaskId;
@@ -793,7 +805,8 @@ public class StrategyApplicationService {
                 cycleId,
                 PlanLevel.FUNC_TO_COLLEGE,
                 ownerOrg.getId(),
-                targetOrg.getId()
+                targetOrg.getId(),
+                functionalOrgId
         );
         if (PlanStatus.fromRaw(downstreamPlan.getStatus()) == PlanStatus.DISTRIBUTED) {
             // 2026-10-23 用户定案：学院子指标也允许在已下发计划上新增，与职能部门侧口径一致——
@@ -822,8 +835,11 @@ public class StrategyApplicationService {
     /**
      * 判断给定计划是否为本次"职能部门下发学院"的目标下游计划：
      * 计划级别为 FUNC_TO_COLLEGE，且创建组织=当前职能部门、目标组织=目标学院。
+     *
+     * <p>2026-11-17（学院线粒度）：追加归口一致性——同一学院可并存多个归口部门各自的线，
+     * 请求任务挂在别的归口的线上时不得沿用（否则子指标会串进别人的线）。
      */
-    private boolean isDownstreamPlanFor(Plan plan, SysOrg ownerOrg, SysOrg targetOrg) {
+    private boolean isDownstreamPlanFor(Plan plan, SysOrg ownerOrg, SysOrg targetOrg, Long expectedFunctionalOrgId) {
         if (plan == null || plan.getPlanLevel() != PlanLevel.FUNC_TO_COLLEGE) {
             return false;
         }
@@ -831,17 +847,36 @@ public class StrategyApplicationService {
                 && Objects.equals(plan.getCreatedByOrgId(), ownerOrg.getId());
         boolean sameTarget = targetOrg != null
                 && Objects.equals(plan.getTargetOrgId(), targetOrg.getId());
-        return sameOwner && sameTarget;
+        boolean sameFunctionalOrg = Objects.equals(plan.getFunctionalOrgId(), expectedFunctionalOrgId);
+        return sameOwner && sameTarget && sameFunctionalOrg;
     }
 
-    private Plan findOrCreatePlan(Long cycleId, PlanLevel planLevel, Long createdByOrgId, Long targetOrgId) {
-        return planRepository.findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
+    /**
+     * 2026-11-17（学院线粒度）：按线身份（含归口部门）查建下游 FUNC_TO_COLLEGE 计划。
+     *
+     * <p>原 4 键口径（cycle + level + created_by + target，且可回退复用已删行）在学院
+     * 多线并存时会命中/创建<b>不带归口</b>的线：与
+     * {@code IndicatorMutationService.assertDownstreamCollegeContext} 的 5 键断言组合后，
+     * 「某归口线只有空壳」类场景会先被 4 键建成无线计划、再被断言拒绝或串线。
+     *
+     * <p>现改用数据层 5 键 finder（归口为 null 不命中任何行，不误命中 legacy 空壳）
+     * + {@code Plan.create} 五参重载落归口；只查存活行（{@code is_deleted=false}），
+     * 被 V105 归档的空壳不再复用，需要时按本线身份新建。
+     */
+    private Plan findOrCreatePlan(Long cycleId,
+                                  PlanLevel planLevel,
+                                  Long createdByOrgId,
+                                  Long targetOrgId,
+                                  Long functionalOrgId) {
+        return planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
                         cycleId,
                         planLevel,
                         createdByOrgId,
-                        targetOrgId
+                        targetOrgId,
+                        functionalOrgId
                 )
-                .orElseGet(() -> planRepository.save(Plan.create(cycleId, targetOrgId, createdByOrgId, planLevel)));
+                .orElseGet(() -> planRepository.save(
+                        Plan.create(cycleId, targetOrgId, createdByOrgId, planLevel, functionalOrgId)));
     }
 
     private StrategicTask findOrCreateTask(
