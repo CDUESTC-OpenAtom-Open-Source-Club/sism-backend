@@ -7,16 +7,17 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * AnnualLevelSummaryDTO - 「任务完成简报」年度口径汇总。
+ * AnnualLevelSummaryDTO - 「任务完成简报」汇总。
  *
- * <p>同一指标一年内可能多次上报，只取最近一次鉴定计入；completionRate =
- * (ahead + normal) / total * 100，四舍五入。</p>
+ * <p>2026-11-18 用户拍板（按月快照，废除沿用）：简报随选中月份的当月快照走，
+ * 只统计该月 APPROVED 鉴定，同一指标当月多轮上报按行序取最后一条；
+ * completionRate = (ahead + normal) / total * 100，四舍五入。</p>
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "年度鉴定等级汇总（简报口径）")
+@Schema(description = "鉴定等级汇总（简报口径，随选中月快照走）")
 public class AnnualLevelSummaryDTO {
 
     @Schema(description = "超前完成数")

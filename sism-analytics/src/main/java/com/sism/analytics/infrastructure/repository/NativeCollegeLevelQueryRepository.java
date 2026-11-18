@@ -15,11 +15,17 @@ import java.util.List;
  * IndicatorAppraisalApplicationService 既有写法（pri.report_id = pr.id + pr.is_deleted 过滤）；
  * 按年过滤走 indicator → sys_task → plan → cycle.year 关系链（与指标列表 findByYear 同口径）。</p>
  *
- * <p>口径备注（2026-11-17 拍板升级，基础事实 2026-10-31 核实）：</p>
+ * <p>口径备注（2026-11-18 用户拍板「按月快照 + 未出结果置灰」，升级自 2026-11-17 版，
+ * 基础事实 2026-10-31 核实）：</p>
  * <ul>
- *   <li>plan_report.status 落库枚举为 DRAFT/SUBMITTED/IN_REVIEW/APPROVED/REJECTED
- *       （V70 约束）；"IN_REVIEW" 是 SUBMITTED 的 legacy 别名（V70 已迁移历史值，但约束仍允许落库），
- *       故 SQL 按「已提交」口径一并计入。</li>
+ *   <li><b>只有 APPROVED 月报计入鉴定值</b>（按月快照口径：SUBMITTED/IN_REVIEW 月报为
+ *       「审批中」，不出等级计数；DRAFT/REJECTED 一律不计）。
+ *       plan_report.status 落库枚举为 DRAFT/SUBMITTED/IN_REVIEW/APPROVED/REJECTED（V70 约束）；
+ *       "IN_REVIEW" 是 SUBMITTED 的 legacy 别名（V70 已迁移历史值，但约束仍允许落库），
+ *       两者统一按「审批中」处理。</li>
+ *   <li><b>滞后清单不设目标组织类型过滤</b>（2026-11-18 拍板）：职能部门线
+ *       （指标 target=职能部门）与学院线（target=学院）的滞后都记录，
+ *       JOIN sys_org 仅为取「责任单位」名称。</li>
  *   <li>plan_report.report_month 为 'yyyyMM' 六位文本（baseline CHECK ^[0-9]{6}$）。</li>
  *   <li>plan_report_indicator.appraisal_level / self_rating 为 VARCHAR，CHECK 约束均仅允许
  *       NULL / AHEAD / NORMAL / DELAYED（V88）。等级取值优先级 appraisal_level &gt; self_rating：
@@ -35,12 +41,14 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
     private static final int COLLEGE_LEVEL_COLUMN_COUNT = 6;
     private static final int COLLEGE_LEVEL_MONTHLY_COLUMN_COUNT = 7;
     private static final int DISPATCH_COUNT_COLUMN_COUNT = 4;
-    private static final int REPORTED_MONTH_COLUMN_COUNT = 3;
+    private static final int REPORTED_MONTH_COLUMN_COUNT = 4;
     private static final int DELAYED_INDICATOR_COLUMN_COUNT = 7;
 
     private static final String STATUS_SUBMITTED = "SUBMITTED";
     private static final String STATUS_SUBMITTED_LEGACY = "IN_REVIEW";
     private static final String STATUS_APPROVED = "APPROVED";
+    private static final String MONTH_STATE_APPROVED = "APPROVED";
+    private static final String MONTH_STATE_IN_REVIEW = "IN_REVIEW";
     private static final String INDICATOR_STATUS_DISTRIBUTED = "DISTRIBUTED";
     private static final String ORG_TYPE_ACADEMIC = "academic";
     private static final String REPORT_ORG_TYPE_COLLEGE = "COLLEGE";
@@ -65,8 +73,13 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
                    AND COALESCE(o.is_deleted, false) = false
             """;
 
+    /**
+     * 2026-11-18 用户拍板（按月快照）：只有 APPROVED 月报计入鉴定值。
+     * SUBMITTED/IN_REVIEW（审批中）/DRAFT/REJECTED 月报一律不出等级计数，
+     * 审批中状态由 fetchCollegeReportedMonths 的 monthState 单独标记给前端置灰。
+     */
     private static final String COMMON_FILTERS = """
-              AND pr.status IN (:submittedStatus, :submittedLegacyStatus, :approvedStatus)
+              AND pr.status = :approvedStatus
               AND pr.is_deleted = false
             """;
 
@@ -133,11 +146,20 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
             ORDER BY o.name
             """;
 
+    /**
+     * 已填报（月份 × 学院）状态行。同 org 同月多轮上报时状态取优先级
+     * APPROVED &gt; IN_REVIEW：有过已审批月报即算 APPROVED（鉴定值以 APPROVED 月报为准），
+     * 否则视为审批中（2026-11-18 按月快照口径）。
+     */
     private static final String SQL_COLLEGE_REPORTED_MONTHS = """
             SELECT
                 CAST(SUBSTRING(pr.report_month, 5, 2) AS INT) AS report_mm,
                 pr.report_org_id AS org_id,
-                o.name AS org_name
+                o.name AS org_name,
+                CASE WHEN SUM(CASE WHEN pr.status = :approvedStatus THEN 1 ELSE 0 END) > 0
+                     THEN :monthStateApproved
+                     ELSE :monthStateInReview
+                END AS month_state
             FROM public.plan_report pr
             INNER JOIN public.sys_org o
                     ON o.id = pr.report_org_id
@@ -149,6 +171,12 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
             ORDER BY report_mm ASC, org_name ASC
             """;
 
+    /**
+     * 滞后任务清单（2026-11-18 用户拍板：职能部门线 + 学院线全量记录）。
+     * JOIN sys_org（o）仅为取指标目标组织（=「责任单位」）的名称，
+     * 不再过滤 o.type——职能部门线（target=职能部门）与学院线（target=学院）的滞后都进清单；
+     * owner 为指标来源职能部门。月报状态过滤沿用 COMMON_FILTERS（只有 APPROVED 计入鉴定值）。
+     */
     private static final String SQL_DELAYED_INDICATORS = """
             SELECT
                 pri.indicator_id AS indicator_id,
@@ -167,7 +195,6 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
                    AND i.status = :distributedStatus
             INNER JOIN public.sys_org o
                     ON o.id = i.target_org_id
-                   AND CAST(o.type AS varchar) = :academicType
                    AND COALESCE(o.is_deleted, false) = false
             LEFT JOIN public.sys_org owner
                     ON owner.id = i.owner_org_id
@@ -187,8 +214,6 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
     public List<CollegeLevelCountRow> fetchCollegeLevelCounts(String reportMonth) {
         List<Object[]> rows = entityManager.createNativeQuery(SQL_COLLEGE_LEVEL_COUNTS)
                 .setParameter("reportMonth", reportMonth)
-                .setParameter("submittedStatus", STATUS_SUBMITTED)
-                .setParameter("submittedLegacyStatus", STATUS_SUBMITTED_LEGACY)
                 .setParameter("approvedStatus", STATUS_APPROVED)
                 .setParameter("distributedStatus", INDICATOR_STATUS_DISTRIBUTED)
                 .setParameter("academicType", ORG_TYPE_ACADEMIC)
@@ -214,8 +239,6 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
         List<Object[]> rows = entityManager.createNativeQuery(SQL_COLLEGE_LEVEL_MONTHLY_COUNTS)
                 .setParameter("startMonth", startMonth)
                 .setParameter("endMonth", endMonth)
-                .setParameter("submittedStatus", STATUS_SUBMITTED)
-                .setParameter("submittedLegacyStatus", STATUS_SUBMITTED_LEGACY)
                 .setParameter("approvedStatus", STATUS_APPROVED)
                 .setParameter("distributedStatus", INDICATOR_STATUS_DISTRIBUTED)
                 .setParameter("academicType", ORG_TYPE_ACADEMIC)
@@ -266,6 +289,8 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
                 .setParameter("submittedStatus", STATUS_SUBMITTED)
                 .setParameter("submittedLegacyStatus", STATUS_SUBMITTED_LEGACY)
                 .setParameter("approvedStatus", STATUS_APPROVED)
+                .setParameter("monthStateApproved", MONTH_STATE_APPROVED)
+                .setParameter("monthStateInReview", MONTH_STATE_IN_REVIEW)
                 .getResultList();
         List<CollegeReportedMonthRow> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
@@ -273,7 +298,8 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
             result.add(new CollegeReportedMonthRow(
                     (int) toLong(row[0]),
                     toLong(row[1]),
-                    toStringOrNull(row[2])
+                    toStringOrNull(row[2]),
+                    toStringOrNull(row[3])
             ));
         }
         return result;
@@ -282,13 +308,12 @@ public class NativeCollegeLevelQueryRepository implements CollegeLevelQueryRepos
     @Override
     @SuppressWarnings("unchecked")
     public List<DelayedIndicatorRow> fetchDelayedIndicators(String reportMonth) {
+        // 2026-11-18 拍板：职能部门线（target=职能部门）与学院线（target=学院）的滞后全量记录，
+        // SQL 不再按目标组织类型过滤，故此处无 academicType 参数
         List<Object[]> rows = entityManager.createNativeQuery(SQL_DELAYED_INDICATORS)
                 .setParameter("reportMonth", reportMonth)
-                .setParameter("submittedStatus", STATUS_SUBMITTED)
-                .setParameter("submittedLegacyStatus", STATUS_SUBMITTED_LEGACY)
                 .setParameter("approvedStatus", STATUS_APPROVED)
                 .setParameter("distributedStatus", INDICATOR_STATUS_DISTRIBUTED)
-                .setParameter("academicType", ORG_TYPE_ACADEMIC)
                 .getResultList();
         List<DelayedIndicatorRow> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {

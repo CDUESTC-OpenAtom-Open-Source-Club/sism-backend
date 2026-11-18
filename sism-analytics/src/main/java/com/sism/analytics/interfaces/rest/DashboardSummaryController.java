@@ -64,9 +64,11 @@ public class DashboardSummaryController {
 
     @GetMapping("/college-levels")
     @Operation(summary = "获取学院指标完成情况", description = "按月聚合各学院鉴定等级计数（AHEAD/NORMAL/DELAYED）；"
-            + "只算已提交/已审批月报（DRAFT 不计），等级优先级 appraisal_level > self_rating；"
-            + "学院集合 = 当年有指标（下发/未下发）的学院 ∪ 当月已上报学院，"
-            + "未填报学院 reported=false 由前端画灰柱「下发 n 项·未填报」督办")
+            + "2026-11-18 按月快照口径：只有 APPROVED 月报计入鉴定值，"
+            + "已填报但审批中（SUBMITTED/IN_REVIEW）的月份等级计数全 0 且 monthState=IN_REVIEW（前端置灰标「审批中」），"
+            + "未填报学院 reported=false/monthState=NOT_REPORTED 由前端画灰柱「下发 n 项·未填报」督办；"
+            + "等级优先级 appraisal_level > self_rating；"
+            + "学院集合 = 当年有指标（下发/未下发）的学院 ∪ 当月已上报学院")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<CollegeLevelsResponseDTO>> getCollegeLevels(
             @RequestParam(required = false) Integer year,
@@ -77,8 +79,8 @@ public class DashboardSummaryController {
 
     @GetMapping("/college-levels-trend")
     @Operation(summary = "获取学院指标完成情况月度趋势", description = "按年聚合各月份各学院鉴定等级计数；"
-            + "months 固定返回 1-12 月全量（升序），每月含当年有指标/当月已上报的学院"
-            + "（未填报学院 reported=false）；口径同 /college-levels")
+            + "months 固定返回 1-12 月全量（升序，逐月独立快照互不沿用），每月含当年有指标/当月已上报的学院"
+            + "（未填报学院 reported=false）；口径同 /college-levels（只有 APPROVED 计入鉴定值，审批中置灰）")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<CollegeLevelTrendResponseDTO>> getCollegeLevelsTrend(
             @RequestParam(required = false) Integer year) {
@@ -88,8 +90,10 @@ public class DashboardSummaryController {
 
     @GetMapping("/delayed-indicators")
     @Operation(summary = "获取滞后任务清单", description = "按月列出鉴定为 DELAYED 的指标明细（催办用）；"
-            + "只算已提交/已审批月报，等级优先级 appraisal_level > self_rating，"
-            + "同一指标多轮上报按首条去重。看板「滞后任务响应清单」卡片专用数据源")
+            + "2026-11-18 拍板：职能部门线（target=职能部门）+ 学院线（target=学院）全量记录，"
+            + "orgId/orgName 语义为「责任单位」；按月快照口径只认 APPROVED 月报，"
+            + "等级优先级 appraisal_level > self_rating，同一指标多轮已审批上报按首条去重。"
+            + "看板「滞后任务响应清单」卡片专用数据源")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<DelayedIndicatorsResponseDTO>> getDelayedIndicators(
             @RequestParam(required = false) Integer year,
@@ -100,9 +104,12 @@ public class DashboardSummaryController {
     }
 
     @GetMapping("/appraisal-summary")
-    @Operation(summary = "获取审核鉴定口径的看板汇总", description = "一次返回职能部门等级分布（含 1 月至选中月份的月度快照）、"
-            + "滞后任务清单与年度简报汇总；三处同源于 plan_report_indicator.appraisal_level，"
-            + "每个指标取不晚于选中月份的最近一次鉴定，当月未上报的部门沿用上次结论")
+    @Operation(summary = "获取审核鉴定口径的看板汇总", description = "一次返回职能部门等级分布（含 1 月至选中月份的逐月快照）、"
+            + "滞后任务清单与简报汇总；三处同源于 plan_report_indicator.appraisal_level。"
+            + "2026-11-18 按月快照口径（废除沿用逻辑）：每个月的鉴定值只由该月自己的 APPROVED 月报决定，"
+            + "各月互不沿用；已填报但审批中的部门鉴定值为 0 且 monthState=IN_REVIEW（前端置灰标「审批中」），"
+            + "未填报部门不返回；每部门带当年已下发指标数 dispatchedCount（置灰灰柱高度取该字段）；"
+            + "latestMonth 定位本年度最近一个有鉴定数据（APPROVED 且等级非空）的月份")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<AppraisalSummaryResponseDTO>> getAppraisalSummary(
             @RequestParam(required = false) Integer year,

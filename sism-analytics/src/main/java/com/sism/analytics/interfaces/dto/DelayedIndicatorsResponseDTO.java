@@ -12,8 +12,11 @@ import java.util.List;
  * DelayedIndicatorsResponseDTO - 滞后任务清单（单月）响应。
  *
  * <p>2026-11-17 拍板：看板「滞后任务响应清单」的判定源切换为月报鉴定等级
- * （等级制填报后 indicator.progress 恒 0，旧的 progress&lt;50 判定已死），
- * 只取已提交/已审批月报、appraisal_level 优先 self_rating 兜底的 DELAYED 明细。</p>
+ * （等级制填报后 indicator.progress 恒 0，旧的 progress&lt;50 判定已死）。</p>
+ *
+ * <p>2026-11-18 拍板：①职能部门线 + 学院线全量记录——orgId/orgName 语义改为
+ * 「责任单位」（指标 target 组织：职能部门线即该职能部门，学院线即学院）；
+ * ②按月快照口径，月报只认 APPROVED（审批中月份无鉴定值，不进清单）。</p>
  */
 @Data
 @Builder
@@ -28,7 +31,7 @@ public class DelayedIndicatorsResponseDTO {
     @Schema(description = "月份")
     private int month;
 
-    @Schema(description = "滞后指标明细（按学院名+指标ID排序，指标ID去重）")
+    @Schema(description = "滞后指标明细（按责任单位名+指标ID排序，指标ID去重）")
     private List<DelayedIndicatorDTO> items;
 
     @Data
@@ -44,10 +47,10 @@ public class DelayedIndicatorsResponseDTO {
         @Schema(description = "指标描述")
         private String indicatorName;
 
-        @Schema(description = "责任学院组织ID")
+        @Schema(description = "责任单位组织ID（指标 target 组织：职能部门线=该职能部门，学院线=学院）")
         private long orgId;
 
-        @Schema(description = "责任学院名称")
+        @Schema(description = "责任单位名称（职能部门线=该职能部门，学院线=学院）")
         private String orgName;
 
         @Schema(description = "来源职能部门名称（可能为空）")
