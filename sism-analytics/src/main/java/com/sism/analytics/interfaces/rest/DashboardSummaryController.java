@@ -108,7 +108,8 @@ public class DashboardSummaryController {
             + "滞后任务清单与简报汇总；三处同源于 plan_report_indicator.appraisal_level。"
             + "2026-11-18 按月快照口径（废除沿用逻辑）：每个月的鉴定值只由该月自己的 APPROVED 月报决定，"
             + "各月互不沿用；已填报但审批中的部门鉴定值为 0 且 monthState=IN_REVIEW（前端置灰标「审批中」），"
-            + "未填报部门不返回；latestMonth 定位本年度最近一个有鉴定数据（APPROVED 且等级非空）的月份")
+            + "未填报部门不返回；每部门带当年已下发指标数 dispatchedCount（置灰灰柱高度取该字段）；"
+            + "latestMonth 定位本年度最近一个有鉴定数据（APPROVED 且等级非空）的月份")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ApiResponse<AppraisalSummaryResponseDTO>> getAppraisalSummary(
             @RequestParam(required = false) Integer year,

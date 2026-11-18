@@ -2,6 +2,7 @@ package com.sism.analytics.application;
 
 import com.sism.analytics.domain.repository.AppraisalSummaryQueryRepository;
 import com.sism.analytics.domain.repository.AppraisalSummaryQueryRepository.AppraisalRow;
+import com.sism.analytics.domain.repository.AppraisalSummaryQueryRepository.DispatchCountRow;
 import com.sism.analytics.interfaces.dto.AnnualLevelSummaryDTO;
 import com.sism.analytics.interfaces.dto.AppraisalSummaryResponseDTO;
 import com.sism.analytics.interfaces.dto.DepartmentLevelDTO;
@@ -57,6 +58,10 @@ class AppraisalSummaryServiceTest {
                 functionalRow("202611", 2L, "DELAYED", "APPROVED")
         );
         when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        // 灰柱高度：学生处当年已下发 7 项指标
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(100L, "学生处", 7L)
+        ));
 
         AppraisalSummaryResponseDTO october = service.getAppraisalSummary(2026, 10, null);
 
@@ -70,6 +75,7 @@ class AppraisalSummaryServiceTest {
         assertEquals(0L, octDept.getNormal());
         assertEquals(1L, octDept.getDelayed());
         assertEquals(2L, octDept.getTotal());
+        assertEquals(7L, octDept.getDispatchedCount()); // 灰柱高度数据源
         assertTrue(octDept.isReported());
         assertEquals(MonthState.APPROVED, octDept.getMonthState());
         // 10 月滞后清单只有指标1；年度简报 = 10 月快照
@@ -135,10 +141,15 @@ class AppraisalSummaryServiceTest {
                 functionalRow("202610", 1L, "DELAYED", "APPROVED")
         );
         when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        // 审批中月份灰柱高度来自当年已下发指标数（2026-11-18 验收补齐）
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(100L, "学生处", 4L),
+                new DispatchCountRow(999L, "未在分布图出现的学院", 9L)
+        ));
 
         AppraisalSummaryResponseDTO response = service.getAppraisalSummary(2026, 11, null);
 
-        // 审批中部门仍返回（供前端置灰标「审批中」），但鉴定值全 0
+        // 审批中部门仍返回（供前端置灰标「审批中」），但鉴定值全 0、灰柱高度取已下发数
         assertEquals(1, response.getDepartments().size());
         DepartmentLevelDTO dept = response.getDepartments().get(0);
         assertEquals(100L, dept.getOrgId());
@@ -149,6 +160,7 @@ class AppraisalSummaryServiceTest {
         assertEquals(0L, dept.getNormal());
         assertEquals(0L, dept.getDelayed());
         assertEquals(0L, dept.getTotal());
+        assertEquals(4L, dept.getDispatchedCount());
         // 审批中月份无鉴定值：滞后清单与简报为空，latestMonth 指向最近有鉴定数据的 10 月
         assertTrue(response.getLaggingTasks().isEmpty());
         assertEquals(0L, response.getAnnual().getTotal());

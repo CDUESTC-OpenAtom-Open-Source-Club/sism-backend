@@ -37,6 +37,25 @@ public interface AppraisalSummaryQueryRepository {
     List<AppraisalRow> fetchAppraisalRows(String startMonth, String endMonth);
 
     /**
+     * 按年统计各组织「已下发指标数」（指标 target=该组织 且 status=DISTRIBUTED，
+     * 年份经 indicator → sys_task → plan → cycle.year 关系链过滤）。
+     *
+     * <p>2026-11-18 灰柱高度口径（与 CollegeLevelDTO.dispatchedCount 对齐）：
+     * appraisal-summary 部门分布的置灰灰柱高度取该部门当年已下发指标数；
+     * 不设组织类型过滤——职能部门线（target=职能部门）与学院线（target=学院）都统计，
+     * 上层按 orgId 取用。</p>
+     */
+    List<DispatchCountRow> fetchDispatchCounts(Integer year);
+
+    /** 已下发指标计数行（orgId → dispatchedCount；orgName 仅供排查，上层部门名取自上报行） */
+    record DispatchCountRow(
+            long orgId,
+            String orgName,
+            long dispatchedCount
+    ) {
+    }
+
+    /**
      * 已填报上报明细行。
      *
      * @param reportOrgId      上报组织 ID（月报的 report_org_id）

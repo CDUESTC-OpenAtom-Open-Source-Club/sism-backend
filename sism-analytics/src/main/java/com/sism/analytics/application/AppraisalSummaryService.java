@@ -2,6 +2,7 @@ package com.sism.analytics.application;
 
 import com.sism.analytics.domain.repository.AppraisalSummaryQueryRepository;
 import com.sism.analytics.domain.repository.AppraisalSummaryQueryRepository.AppraisalRow;
+import com.sism.analytics.domain.repository.AppraisalSummaryQueryRepository.DispatchCountRow;
 import com.sism.analytics.interfaces.dto.AnnualLevelSummaryDTO;
 import com.sism.analytics.interfaces.dto.AppraisalSummaryResponseDTO;
 import com.sism.analytics.interfaces.dto.DepartmentLevelDTO;
@@ -95,13 +96,15 @@ public class AppraisalSummaryService {
         String startMonth = toReportMonth(year, MIN_MONTH);
         String endMonth = toReportMonth(year, MAX_MONTH);
         List<AppraisalRow> rows = appraisalSummaryQueryRepository.fetchAppraisalRows(startMonth, endMonth);
+        // 灰柱高度数据源（2026-11-18 验收补齐）：当年已下发指标数，口径对齐 CollegeLevelDTO.dispatchedCount
+        Map<Long, Long> dispatchByOrgId = indexDispatchCounts(year);
 
         // 逐月独立快照：第 m 月的部门分布只由第 m 月自己的月报决定（2026-11-18 拍板，废除沿用）
         List<DepartmentLevelMonthDTO> departmentMonths = new ArrayList<>(month);
         for (int m = MIN_MONTH; m <= month; m++) {
             departmentMonths.add(DepartmentLevelMonthDTO.builder()
                     .month(m)
-                    .departments(departmentLevels(rows, m))
+                    .departments(departmentLevels(rows, m, dispatchByOrgId))
                     .build());
         }
 
@@ -143,8 +146,12 @@ public class AppraisalSummaryService {
      *   <li>该月未填报的部门不返回（无鉴定值，前端按缺省置灰）；</li>
      *   <li>APPROVED 但当月没有任何已鉴定指标的部门仍不返回（无内容可画）。</li>
      * </ul>
+     *
+     * <p>{@code dispatchByOrgId}：当年已下发指标数（灰柱高度数据源，
+     * 口径对齐 CollegeLevelDTO.dispatchedCount；无下发记录的部门计 0）。</p>
      */
-    private static List<DepartmentLevelDTO> departmentLevels(List<AppraisalRow> rows, int month) {
+    private static List<DepartmentLevelDTO> departmentLevels(
+            List<AppraisalRow> rows, int month, Map<Long, Long> dispatchByOrgId) {
         Map<Long, String> orgNames = new LinkedHashMap<>();
         Map<Long, Boolean> approvedByOrg = new HashMap<>();
         Map<Long, Map<Long, String>> levelByOrgAndIndicator = new HashMap<>();
@@ -190,6 +197,7 @@ public class AppraisalSummaryService {
                     .normal(normal)
                     .delayed(delayed)
                     .total(total)
+                    .dispatchedCount(dispatchByOrgId.getOrDefault(org.getKey(), 0L))
                     .reported(true)
                     .monthState(monthState)
                     .build());
@@ -197,6 +205,15 @@ public class AppraisalSummaryService {
         result.sort(Comparator.comparing(DepartmentLevelDTO::getOrgName,
                 Comparator.nullsLast(Comparator.naturalOrder())));
         return result;
+    }
+
+    /** 当年各组织已下发指标数（灰柱高度数据源）：orgId → dispatchedCount */
+    private Map<Long, Long> indexDispatchCounts(Integer year) {
+        Map<Long, Long> byOrgId = new HashMap<>();
+        for (DispatchCountRow row : appraisalSummaryQueryRepository.fetchDispatchCounts(year)) {
+            byOrgId.put(row.orgId(), row.dispatchedCount());
+        }
+        return byOrgId;
     }
 
     /**
