@@ -41,10 +41,11 @@ public class AppraisalSummaryResponseDTO {
     private int latestMonth;
 
     @Schema(description = "职能部门鉴定等级计数（选中月当月快照，只统计该月 APPROVED 鉴定；"
-            + "审批中部门鉴定值为 0 且 monthState=IN_REVIEW，未填报部门不返回，各月互不沿用）")
+            + "审批中部门鉴定值为 0 且 monthState=IN_REVIEW，未填报部门不返回，各月互不沿用；"
+            + "每部门带当年已下发指标数 dispatchedCount，置灰灰柱高度取该字段）")
     private List<DepartmentLevelDTO> departments;
 
-    @Schema(description = "1 月至选中月份的逐月独立快照（下钻趋势用；各月互不沿用）")
+    @Schema(description = "1 月至选中月份的逐月独立快照（下钻趋势用；各月互不沿用，字段同 departments）")
     private List<DepartmentLevelMonthDTO> departmentMonths;
 
     @Schema(description = "滞后任务清单（选中月 APPROVED 鉴定为 DELAYED，按权重降序；"

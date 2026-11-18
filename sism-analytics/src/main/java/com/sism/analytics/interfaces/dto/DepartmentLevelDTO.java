@@ -38,6 +38,11 @@ public class DepartmentLevelDTO {
     @Schema(description = "计数合计（ahead + normal + delayed）")
     private long total;
 
+    @Schema(description = "当年已下发到该部门的指标数（指标 target=该部门 且 status=DISTRIBUTED，"
+            + "口径与 college-levels 的 CollegeLevelDTO.dispatchedCount 对齐）；"
+            + "2026-11-18 验收补齐：部门分布置灰灰柱高度取该字段（鉴定值全 0 时灰柱仍有高度）")
+    private long dispatchedCount;
+
     @Schema(description = "已填报标记：true=该部门当月有已提交/审批中的月报（配合 monthState 区分审批状态）；"
             + "当月未填报的部门不出现在列表中")
     private boolean reported;
