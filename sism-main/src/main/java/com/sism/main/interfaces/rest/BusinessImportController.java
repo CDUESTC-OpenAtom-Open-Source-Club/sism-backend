@@ -2,6 +2,8 @@ package com.sism.main.interfaces.rest;
 
 import com.sism.common.ApiResponse;
 import com.sism.main.application.BusinessImportApplicationService;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportCommitResponse;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportPreviewResponse;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportCommitRequest;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportCommitResponse;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportPreviewResponse;
@@ -103,6 +105,51 @@ public class BusinessImportController {
         assertStrategyOrgScope(currentUser);
         return ResponseEntity.ok(ApiResponse.success(
                 businessImportApplicationService.commit(batchId, request, currentUser)));
+    }
+
+    /**
+     * 2026-11-19（学院「全部导入」）：一张 Excel 含多个职能部门给同一学院的指标行 → 按「职能部门」列拆 N 组。
+     *
+     * <p>权限与组织校验与既有 {@code /distribution/preview} 完全一致（同一 {@code @PreAuthorize} +
+     * {@code assertStrategyOrgScope}）。
+     */
+    @PostMapping(value = "/distribution/all-preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
+    @Operation(summary = "预览学院子指标全部导入",
+            description = "2026-11-19（学院「全部导入」）：文件内可含多个职能部门给同一学院的指标行，"
+                    + "按「职能部门」列分组拆 N 批，每批独立走单条导入链路（行级校验 → 组级权重 100 → 独立成线 → flow6）")
+    public ResponseEntity<ApiResponse<AllImportPreviewResponse>> previewAllDistribution(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam Long cycleId,
+            @RequestParam Long targetCollegeOrgId,
+            @RequestParam(required = false) Long sourceOrgId,
+            @RequestParam(required = false) String sheetName,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        assertStrategyOrgScope(currentUser);
+        return ResponseEntity.ok(ApiResponse.success(
+                businessImportApplicationService.previewAllDistribution(
+                        file,
+                        cycleId,
+                        targetCollegeOrgId,
+                        sourceOrgId,
+                        sheetName,
+                        currentUser)));
+    }
+
+    /**
+     * 2026-11-19（学院「全部导入」）：逐组提交（组间独立事务——一组失败不影响他组）。
+     */
+    @PostMapping("/distribution/{batchId}/all-commit")
+    @PreAuthorize("hasAnyRole('REPORTER','STRATEGY_DEPT_HEAD','VICE_PRESIDENT','SYSTEM_ADMIN')")
+    @Operation(summary = "确认学院子指标全部导入",
+            description = "逐组独立事务执行：跳过组（线已下发）不落库；可下发组依次建线、落库并按开关发起 flow6 审批")
+    public ResponseEntity<ApiResponse<AllImportCommitResponse>> commitAllDistribution(
+            @PathVariable String batchId,
+            @RequestBody ImportCommitRequest request,
+            @AuthenticationPrincipal CurrentUser currentUser) {
+        assertStrategyOrgScope(currentUser);
+        return ResponseEntity.ok(ApiResponse.success(
+                businessImportApplicationService.commitAllDistribution(batchId, request, currentUser)));
     }
 
     /**
