@@ -338,9 +338,12 @@ public class UserNotificationService implements NotificationProvider {
                 : "/messages?approvalInstanceId=" + approvalInstanceId;
 
         String title = resolveApprovalResultTitle(normalizedEntityType, approved);
+        // 2026-11-18 口吻修正：本通知收件人是提交人（requesterId），旧文案「你已审批
+        // 通过/驳回」是审批人口吻，读起来像发给审批人的；改按填报人口吻表述，与
+        // createStepAdvancedNotification（"您提交的…"）同口径。驳回时给出可行动指引。
         String content = approved
-                ? "你已审批通过“" + resolvedBusinessName + "”，处理环节为“" + resolvedStepName + "”。"
-                : "你已审批驳回“" + resolvedBusinessName + "”，处理环节为“" + resolvedStepName + "”。";
+                ? "您提交的“" + resolvedBusinessName + "”已通过审批（审批环节：" + resolvedStepName + "）。"
+                : "您提交的“" + resolvedBusinessName + "”已被驳回（审批环节：" + resolvedStepName + "），请完善后重新提交。";
         if (!normalizedComment.isBlank()) {
             content = content + " 审批意见：" + normalizedComment;
         }
