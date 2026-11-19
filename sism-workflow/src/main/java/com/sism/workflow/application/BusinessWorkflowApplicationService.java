@@ -416,6 +416,8 @@ public class BusinessWorkflowApplicationService {
                 effectiveLevels.putAll(normalizedLevels);
                 // 2026-10-30 用户定案：拦截文案里的填报部门优先取报告的填报组织名，
                 // 上下文不可得时兜底用审批卡的目标部门名（detailBeforeApproval 在本链路非空）。
+                // 2026-11-18：文案只用于点名「为哪个学院的全部指标」完成鉴定，不再点名具体页面
+                // （页面名由前端按角色分流给出），此处取名逻辑不变。
                 assertAllIndicatorsAppraised(instance, effectiveLevels,
                         detailBeforeApproval.getTargetOrgName());
             }
@@ -472,6 +474,9 @@ public class BusinessWorkflowApplicationService {
      * 2026-10-30 用户定案（文案）：拦截消息不报指标 ID（报名称）、不出现「资源冲突」、
      * 要讲清楚去哪里做什么（见 {@link #buildUnappraisedAuditMessage}）。
      *
+     * 2026-11-18 文案修正：拦截文案不再点名具体页面（后端只给中性表述，
+     * 页面名由前端按角色分流给出），见 {@link #buildUnappraisedAuditMessage} 的说明。
+     *
      * @param instance        本次审批的实例（entityType=PLAN_REPORT）
      * @param effectiveLevels 已评定的有效等级（历史 + 本次提交）
      * @param fallbackOrgName 端上取不到填报组织名时的兜底（如审批卡的目标部门名）
@@ -520,8 +525,16 @@ public class BusinessWorkflowApplicationService {
     /**
      * 2026-10-30 用户定案的拦截文案（三处修正：不讲资源冲突、不报指标 ID、讲清去哪做什么）：
      * 「未完成审核：还有 2 项指标的审核进度未鉴定（『教学运行质量』『科研产出增长率』）。
-     *   请到 XX学院 的指标填报页完成全部指标的审核进度鉴定，再回到审批中心通过。」
-     * 取不到填报组织名时退化为「请到指标填报页完成…」；名称缺失兜底「未知指标」。
+     *   请为XX学院的全部指标完成审核进度鉴定（超前完成 / 正常 / 滞后），再回到审批中心通过。」
+     *
+     * 2026-11-18 文案修正（指错页面）：旧文案硬写「请到 XX学院 的指标填报页…」，但职能部门审批人
+     * （归口审核人 / 校领导）在「指标填报页」只能看到本部门指标，看不到待鉴定的学院子指标行，
+     * 照指引走会落到**无法完成鉴定**的页面（职能部门审批人的评级入口在「指标审批」页签）。
+     * 因此后端改为中性表述：只说明「为哪个学院的全部指标完成鉴定 + 三档等级 + 完成后再通过」，
+     * **不再点名具体页面**，页面名与按角色分流的指引交由前端按角色给出。
+     *
+     * 取不到填报组织名时退化为「请为全部指标完成审核进度鉴定（超前完成 / 正常 / 滞后），
+     * 再回到审批中心通过。」；指标名称缺失兜底「未知指标」。
      *
      * 2026-10-30 门禁前移改造：指标点名/20 字截断/「等 N 项」/未知指标兜底的取数与拼装
      * 抽到 {@link com.sism.shared.domain.indicator.IndicatorGateMessages}，
@@ -530,15 +543,15 @@ public class BusinessWorkflowApplicationService {
     private String buildUnappraisedAuditMessage(java.util.List<Long> unappraised,
                                                 java.util.Map<Long, String> indicatorNames,
                                                 String reportOrgName) {
-        String goWhere = reportOrgName == null || reportOrgName.isBlank()
-                ? "请到指标填报页"
-                : "请到 " + reportOrgName + " 的指标填报页";
+        String scope = reportOrgName == null || reportOrgName.isBlank()
+                ? "全部指标"
+                : reportOrgName + "的全部指标";
         return com.sism.shared.domain.indicator.IndicatorGateMessages.buildNamedGateMessage(
                 "未完成审核",
                 "审核进度未鉴定",
                 unappraised,
                 indicatorNames,
-                goWhere + "完成全部指标的审核进度鉴定，再回到审批中心通过。");
+                "请为" + scope + "完成审核进度鉴定（超前完成 / 正常 / 滞后），再回到审批中心通过。");
     }
 
     @Transactional
