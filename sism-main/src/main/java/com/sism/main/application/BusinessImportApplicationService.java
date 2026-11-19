@@ -599,6 +599,19 @@ public class BusinessImportApplicationService {
     /**
      * 2026-11-19：组装单个归口分组的预览信息（行级校验 + 组级权重 + 线状态）。
      *
+     * <p><b>判定顺序（2026-11-19 修正）</b>：先判「线状态」，再判「组内权重 / 行级错误」。
+     * <ul>
+     *   <li><b>DISTRIBUTED（已下发）</b> → <b>将跳过</b>（黄色）：{@code willDispatch=false} +
+     *       {@code skipReason}，**groupError 恒为 null**。该组本来就不下发，其权重/行级问题
+     *       不应产生组级错误、更不应阻断整单提交——「跳过就是跳过，不该拦住别的组」。
+     *       组内行级错误仍在 rows 里照常展示（前端逐行渲染 errors），只是不计入阻断。</li>
+     *   <li><b>PENDING / IN_REVIEW（审批中）</b> → <b>错误组</b>（红色）：groupError 非空，阻断整单。</li>
+     *   <li><b>DRAFT / NONE（无线 / 草稿线）</b> → 再判组内行级错误 → 组级权重合计 ≠ 100 →
+     *       命中则错误组（阻断）；都无 → willDispatch=true（将下发）。</li>
+     * </ul>
+     * 旧实现先算权重/行级错误再判线状态，导致「已下发线 + 权重≠100」的组被算成错误组，
+     * 前端 blocking 置灰 → 整单无法提交（语义矛盾 + 误阻断）。</p>
+     *
      * @param enrichedRows 该组 enrich 后的行（行级校验已完成，action 已定型）
      */
     private AllImportGroup buildAllImportGroup(AllImportSplitGroup splitGroup,
@@ -610,31 +623,32 @@ public class BusinessImportApplicationService {
 
         // 组级权重：每组各自 100（不与其他组合并）——按该组有效行（CREATE/UPDATE）合计
         BigDecimal basicWeightTotal = sumGroupBasicWeight(splitGroup.anchorContext().anchors(), enrichedRows);
-        String groupError = null;
         boolean hasRowError = enrichedRows.stream().anyMatch(ImportRowPreview::hasErrors);
-        if (hasRowError) {
-            groupError = "该组存在行级错误，请修正后重新上传";
-        } else if (basicWeightTotal.compareTo(REQUIRED_BASIC_WEIGHT_TOTAL) != 0) {
-            groupError = orgName + "组基础性权重合计 "
-                    + basicWeightTotal.stripTrailingZeros().toPlainString() + "/"
-                    + REQUIRED_BASIC_WEIGHT_TOTAL.toPlainString()
-                    + "，不能下发；请修正该组权重或删除该组行后重新上传";
-        }
 
         AllImportLineStatus lineStatus = resolveAllImportLineStatus(cycleId, scope.targetOrg().getId(), functionalOrgId);
+        String groupError = null;
         String skipReason = null;
         boolean willDispatch;
-        if (groupError != null) {
-            willDispatch = false;
-        } else if (lineStatus == AllImportLineStatus.DISTRIBUTED) {
+        if (lineStatus == AllImportLineStatus.DISTRIBUTED) {
+            // 已下发 → 将跳过：不产生组级错误、不阻断整单
             willDispatch = false;
             skipReason = "该学院 " + resolveCycleLabel(cycleId) + "的「" + orgName + "」这条线已下发，本次将跳过";
         } else if (lineStatus == AllImportLineStatus.PENDING || lineStatus == AllImportLineStatus.IN_REVIEW) {
+            // 审批中 → 错误组：阻断整单
             willDispatch = false;
             groupError = "该学院 " + resolveCycleLabel(cycleId) + "的「" + orgName
                     + "」这条线正在审批中，不能下发；请等审批结束或撤回后再操作";
         } else {
-            willDispatch = true;
+            // 无线 / 草稿线 → 再判组内权重与行级错误
+            if (hasRowError) {
+                groupError = "该组存在行级错误，请修正后重新上传";
+            } else if (basicWeightTotal.compareTo(REQUIRED_BASIC_WEIGHT_TOTAL) != 0) {
+                groupError = orgName + "组基础性权重合计 "
+                        + basicWeightTotal.stripTrailingZeros().toPlainString() + "/"
+                        + REQUIRED_BASIC_WEIGHT_TOTAL.toPlainString()
+                        + "，不能下发；请修正该组权重或删除该组行后重新上传";
+            }
+            willDispatch = groupError == null;
         }
 
         return new AllImportGroup(

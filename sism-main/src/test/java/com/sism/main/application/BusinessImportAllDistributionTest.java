@@ -8,6 +8,7 @@ import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportLineStatus;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ConflictMode;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportAction;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportCommitRequest;
+import com.sism.main.interfaces.dto.BusinessImportDtos.ImportRowPreview;
 import com.sism.organization.domain.OrgType;
 import com.sism.organization.domain.OrganizationRepository;
 import com.sism.organization.domain.SysOrg;
@@ -399,6 +400,173 @@ class BusinessImportAllDistributionTest {
         assertNull(group.skipReason());
     }
 
+    // ==================== 2026-11-19 修正：先判线状态，再判组内权重/行级错误 ====================
+    //
+    // 旧实现的判定顺序是「先算组级权重/行级错误 → 再判线状态」，导致：
+    //   ①「已下发线 + 组内权重≠100」被判成错误组（groupError 非空）→ 前端 blocking 置灰 → 整单无法提交；
+    //   ②「已下发线」同时被算进「错误组」与「将跳过」两个计数 → 语义矛盾。
+    // 修正后的口径（规划书第二节）：
+    //   · 已下发线（DISTRIBUTED）→ 将跳过（黄色），**groupError 恒为 null、不阻断整单**；
+    //   · 审批中（PENDING/IN_REVIEW）→ 错误组（红色），阻断整单；
+    //   · 无线/草稿线（DRAFT/NONE）→ 再判组内权重≠100 / 行级错误 → 错误组，阻断整单。
+
+    @Test
+    @DisplayName("修正：已下发线 + 组内权重=100 → 将跳过、groupError=null、整单不阻断")
+    void shouldSkipDistributedLineWithoutGroupError() {
+        stubBaseDependencies();
+        stubDistributedLine(jiaowu.getId());
+
+        var preview = service.previewAllDistribution(
+                allImportWorkbook("distributed-weight-100.xlsx", new String[][]{
+                        {"1", "教务处", "父级核心指标A", "定量", "子指标A1", "定量", "100"},
+                        {"2", "数字校园建设办公室", "父级核心指标B", "定量", "子指标B1", "定量", "100"}
+                }),
+                2026L, college.getId(), strategyOrg.getId(), null, currentUser);
+
+        AllImportGroup groupA = preview.groups().stream()
+                .filter(group -> jiaowu.getId().equals(group.functionalOrgId())).findFirst().orElseThrow();
+
+        assertEquals(AllImportLineStatus.DISTRIBUTED, groupA.lineStatus());
+        assertFalse(groupA.willDispatch());
+        assertNotNull(groupA.skipReason());
+        assertTrue(groupA.skipReason().contains("已下发"), groupA.skipReason());
+        assertNull(groupA.groupError(), "已下发线不产生组级错误");
+        assertFalse(preview.blocking(), "已下发线不阻断整单提交");
+    }
+
+    @Test
+    @DisplayName("修正：已下发线 + 组内权重=60 → 仍是「将跳过」（groupError=null、不阻断），权重提示不拦整单")
+    void shouldSkipDistributedLineEvenWhenGroupWeightNotHundred() {
+        stubBaseDependencies();
+        stubDistributedLine(jiaowu.getId());
+
+        var preview = service.previewAllDistribution(
+                allImportWorkbook("distributed-weight-60.xlsx", new String[][]{
+                        {"1", "教务处", "父级核心指标A", "定量", "子指标A1", "定量", "60"},
+                        {"2", "数字校园建设办公室", "父级核心指标B", "定量", "子指标B1", "定量", "100"}
+                }),
+                2026L, college.getId(), strategyOrg.getId(), null, currentUser);
+
+        AllImportGroup groupA = preview.groups().stream()
+                .filter(group -> jiaowu.getId().equals(group.functionalOrgId())).findFirst().orElseThrow();
+        AllImportGroup groupB = preview.groups().stream()
+                .filter(group -> shuzixiaoyuan.getId().equals(group.functionalOrgId())).findFirst().orElseThrow();
+
+        assertEquals(AllImportLineStatus.DISTRIBUTED, groupA.lineStatus());
+        assertFalse(groupA.willDispatch());
+        assertNotNull(groupA.skipReason());
+        assertNull(groupA.groupError(), "已下发线的组内权重不足不产生组级错误: " + groupA.groupError());
+        assertEquals(60, groupA.basicWeightTotal().intValue(), "权重合计仍如实展示");
+        assertFalse(preview.blocking(), "已下发线不阻断整单提交");
+
+        // 其他组照常下发
+        assertTrue(groupB.willDispatch());
+        assertNull(groupB.groupError());
+    }
+
+    @Test
+    @DisplayName("修正：已下发线 + 组内行级错误 → 仍是「将跳过」、不阻断；行级错误在组内行里照常可见")
+    void shouldSkipDistributedLineEvenWhenRowHasError() {
+        stubBaseDependencies();
+        stubDistributedLine(jiaowu.getId());
+
+        // 「职能部门」填了但父级核心指标在系统里不存在 → 行级错误（父级锚点匹配不上），
+        // 但因为「职能部门」列显式给了归口，该行仍留在教务处组内。
+        var preview = service.previewAllDistribution(
+                allImportWorkbook("distributed-row-error.xlsx", new String[][]{
+                        {"1", "教务处", "不存在的核心指标", "定量", "子指标A1", "定量", "100"},
+                        {"2", "数字校园建设办公室", "父级核心指标B", "定量", "子指标B1", "定量", "100"}
+                }),
+                2026L, college.getId(), strategyOrg.getId(), null, currentUser);
+
+        AllImportGroup groupA = preview.groups().stream()
+                .filter(group -> jiaowu.getId().equals(group.functionalOrgId())).findFirst().orElseThrow();
+
+        assertEquals(AllImportLineStatus.DISTRIBUTED, groupA.lineStatus());
+        assertFalse(groupA.willDispatch());
+        assertNotNull(groupA.skipReason());
+        assertNull(groupA.groupError(), "已下发线的行级错误不产生组级错误: " + groupA.groupError());
+        assertFalse(preview.blocking(), "已下发线的行级错误不阻断整单提交");
+
+        // 行级错误仍在组内行里照常展示（前端 rows 逐行渲染 errors）
+        assertTrue(groupA.rows().stream().anyMatch(ImportRowPreview::hasErrors),
+                "行级错误应仍在组内行上可见");
+        assertTrue(groupA.rows().stream()
+                        .flatMap(row -> row.errors().stream())
+                        .anyMatch(msg -> msg.contains("父级核心指标")),
+                "行级错误文案应保留: " + groupA.rows().get(0).errors());
+    }
+
+    @Test
+    @DisplayName("修正：两条线都已下发 → 错误组 0、将跳过 2、整单可提交（不阻断）")
+    void shouldNotBlockWhenBothLinesAlreadyDistributed() {
+        stubBaseDependencies();
+        stubDistributedLine(jiaowu.getId());
+        stubDistributedLine(shuzixiaoyuan.getId());
+
+        var preview = service.previewAllDistribution(
+                allImportWorkbook("both-distributed.xlsx", new String[][]{
+                        {"1", "教务处", "父级核心指标A", "定量", "子指标A1", "定量", "100"},
+                        {"2", "数字校园建设办公室", "父级核心指标B", "定量", "子指标B1", "定量", "100"}
+                }),
+                2026L, college.getId(), strategyOrg.getId(), null, currentUser);
+
+        assertEquals(2, preview.groups().size());
+        assertEquals(0, preview.groups().stream().filter(group -> group.groupError() != null).count(),
+                "两组都不该有组级错误");
+        assertEquals(2, preview.groups().stream().filter(group -> group.skipReason() != null).count(),
+                "两组都该是「将跳过」");
+        assertFalse(preview.blocking(), "整单不得被已下发线阻断");
+        assertTrue(preview.unassignedRows().isEmpty());
+    }
+
+    @Test
+    @DisplayName("修正：在审线 + 权重=100 → 错误组、groupError 含「正在审批中」、阻断整单")
+    void shouldBlockInReviewLineEvenWhenWeightHundred() {
+        stubBaseDependencies();
+        Plan inReview = Plan.create(2026L, college.getId(), strategyOrg.getId(),
+                PlanLevel.FUNC_TO_COLLEGE, jiaowu.getId());
+        inReview.setId(903L);
+        inReview.setStatus("IN_REVIEW");
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, strategyOrg.getId(), college.getId(), jiaowu.getId()))
+                .thenReturn(Optional.of(inReview));
+
+        var preview = service.previewAllDistribution(
+                allImportWorkbook("in-review-weight-100.xlsx", new String[][]{
+                        {"1", "教务处", "父级核心指标A", "定量", "子指标A1", "定量", "100"}
+                }),
+                2026L, college.getId(), strategyOrg.getId(), null, currentUser);
+
+        AllImportGroup group = preview.groups().get(0);
+        assertEquals(AllImportLineStatus.IN_REVIEW, group.lineStatus());
+        assertFalse(group.willDispatch());
+        assertNotNull(group.groupError());
+        assertTrue(group.groupError().contains("正在审批中"), group.groupError());
+        assertNull(group.skipReason(), "在审组不是跳过组");
+        assertTrue(preview.blocking(), "在审组必须阻断整单提交");
+    }
+
+    @Test
+    @DisplayName("修正：无线 + 权重=60 → 错误组（groupError 含 60/100）、阻断整单（既有行为不回归）")
+    void shouldStillBlockWhenNoLineAndWeightNotHundred() {
+        stubBaseDependencies();
+
+        var preview = service.previewAllDistribution(
+                allImportWorkbook("no-line-weight-60.xlsx", new String[][]{
+                        {"1", "教务处", "父级核心指标A", "定量", "子指标A1", "定量", "60"}
+                }),
+                2026L, college.getId(), strategyOrg.getId(), null, currentUser);
+
+        AllImportGroup group = preview.groups().get(0);
+        assertEquals(AllImportLineStatus.NONE, group.lineStatus());
+        assertFalse(group.willDispatch());
+        assertNotNull(group.groupError());
+        assertTrue(group.groupError().contains("60/100"), group.groupError());
+        assertNull(group.skipReason());
+        assertTrue(preview.blocking(), "无线 + 权重不足必须阻断整单提交");
+    }
+
     // ==================== 提交：组间独立事务 ====================
 
     @Test
@@ -615,6 +783,17 @@ class BusinessImportAllDistributionTest {
                         "2026年度战略目标考核", 2026, LocalDate.of(2026, 1, 1), LocalDate.of(2026, 12, 31));
         cycle.setId(2026L);
         return cycle;
+    }
+
+    /** 2026-11-19：把某归口部门的「线」桩成已下发（DISTRIBUTED）。 */
+    private void stubDistributedLine(Long functionalOrgId) {
+        Plan distributed = Plan.create(2026L, college.getId(), strategyOrg.getId(),
+                PlanLevel.FUNC_TO_COLLEGE, functionalOrgId);
+        distributed.setId(900L + functionalOrgId);
+        distributed.setStatus(PlanStatus.DISTRIBUTED.value());
+        when(planRepository.findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                2026L, PlanLevel.FUNC_TO_COLLEGE, strategyOrg.getId(), college.getId(), functionalOrgId))
+                .thenReturn(Optional.of(distributed));
     }
 
     private void stubCommitDependencies() {
