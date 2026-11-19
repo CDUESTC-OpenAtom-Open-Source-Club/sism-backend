@@ -1016,7 +1016,9 @@ class BusinessWorkflowApplicationServiceTest {
     @Test
     void approveTask_shouldBlockWithIndicatorNamesAndGuidanceWhenAppraisalMissing() {
         // 2026-10-30 用户定案：审批拦截文案要报指标名称（不报 ID）、不讲「资源冲突」、
-        // 讲清楚去哪里做什么（到填报部门的指标填报页完成鉴定）。
+        // 讲清楚去哪里做什么（为该学院的全部指标完成鉴定）。
+        // 2026-11-18 文案修正：后端不再点名具体页面（「指标填报页」曾指错页面，
+        // 职能部门审批人在该页看不到待鉴定的学院子指标行），只给中性表述，页面名由前端按角色分流给出。
         AuditInstance instance = approvableInstance(8300L, 831L, AuditInstance.STATUS_PENDING);
         AuditFlowDef flowDef = stepDefOf(instance);
         flowDef.getSteps().get(0).setStepOrder(4); // FUNCDEPT 链的可评级节点
@@ -1051,7 +1053,10 @@ class BusinessWorkflowApplicationServiceTest {
 
         String message = exception.getMessage();
         assertTrue(message.contains("未完成审核：还有 1 项指标的审核进度未鉴定（『科研产出增长率』）"));
-        assertTrue(message.contains("请到 计算机学院 的指标填报页完成全部指标的审核进度鉴定，再回到审批中心通过"));
+        assertTrue(message.contains("请为计算机学院的全部指标完成审核进度鉴定（超前完成 / 正常 / 滞后），再回到审批中心通过"));
+        // 2026-11-18：后端不再点名具体页面（曾指错到「指标填报页」，职能部门审批人在该页看不到待鉴定行）
+        assertFalse(message.contains("指标填报页"));
+        assertFalse(message.contains("请到 "));
         // 不报指标 ID（老板看不懂数字行列，界面不显示 ID）
         assertFalse(message.contains("2007"));
         assertFalse(message.contains("2008"));
@@ -1106,7 +1111,52 @@ class BusinessWorkflowApplicationServiceTest {
         assertTrue(message.contains("…")); // 超长指标名已截断
         assertFalse(message.contains("督查考核评价机制建设」")); // 完整长名不出现在文案
         assertFalse(message.contains("资源冲突"));
-        assertTrue(message.contains("请到 计算机学院 的指标填报页完成全部指标的审核进度鉴定"));
+        // 2026-11-18：后端不再点名具体页面（曾指错到「指标填报页」）
+        assertTrue(message.contains("请为计算机学院的全部指标完成审核进度鉴定（超前完成 / 正常 / 滞后）"));
+        assertFalse(message.contains("指标填报页"));
+    }
+
+    @Test
+    void approveTask_shouldUseNeutralGuidanceWithoutOrgNameWhenReportOrgUnavailable() {
+        // 2026-11-18：填报组织名与审批卡目标部门名都取不到时，文案退化为中性表述
+        // 「请为全部指标完成审核进度鉴定（超前完成 / 正常 / 滞后），再回到审批中心通过。」，
+        // 仍然不出现任何页面名（页面名由前端按角色分流给出）。
+        AuditInstance instance = approvableInstance(8500L, 851L, AuditInstance.STATUS_PENDING);
+        AuditFlowDef flowDef = stepDefOf(instance);
+        flowDef.getSteps().get(0).setStepOrder(4);
+
+        WorkflowInstanceDetailResponse detail = new WorkflowInstanceDetailResponse();
+        detail.setInstanceId("8500");
+        detail.setFlowCode("PLAN_APPROVAL_FUNCDEPT");
+        detail.setTargetOrgName(null);
+
+        ApprovalRequest request = new ApprovalRequest();
+        request.setComment("同意");
+
+        when(auditInstanceRepository.findByStepInstanceId(851L)).thenReturn(Optional.of(instance));
+        when(workflowReadModelService.getInstanceDetail("8500")).thenReturn(detail);
+        when(workflowDefinitionQueryService.getAuditFlowDefById(1L)).thenReturn(flowDef);
+        when(approverResolver.canUserApprove(any(AuditStepDef.class), eq(52L), eq(instance))).thenReturn(true);
+        when(workflowApplicationService.approveAuditInstance(instance, 52L, "同意", null)).thenReturn(instance);
+
+        com.sism.shared.domain.workflow.WorkflowBusinessContextPort port =
+                org.mockito.Mockito.mock(com.sism.shared.domain.workflow.WorkflowBusinessContextPort.class);
+        when(port.findIndicatorAppraisalLevels(8500L)).thenReturn(java.util.Map.of());
+        when(port.findIndicatorIdsByReport(8500L)).thenReturn(java.util.List.of(2007L));
+        when(port.findIndicatorNamesByReport(8500L)).thenReturn(java.util.Map.of(2007L, "教学运行质量"));
+        when(port.findReportOrgName(8500L)).thenReturn(Optional.empty());
+
+        BusinessWorkflowApplicationService service = serviceWithPorts(List.of(port));
+
+        com.sism.exception.BusinessConflictException exception = assertThrows(
+                com.sism.exception.BusinessConflictException.class,
+                () -> service.approveTask("851", request, 52L, null));
+
+        String message = exception.getMessage();
+        assertTrue(message.contains("未完成审核：还有 1 项指标的审核进度未鉴定（『教学运行质量』）"));
+        assertTrue(message.contains("请为全部指标完成审核进度鉴定（超前完成 / 正常 / 滞后），再回到审批中心通过"));
+        assertFalse(message.contains("指标填报页"));
+        assertFalse(message.contains("null"));
     }
 
     /**
