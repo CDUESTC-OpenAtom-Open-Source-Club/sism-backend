@@ -139,4 +139,41 @@ class UserNotificationServiceTest {
         assertEquals("审批待处理", captor.getAllValues().get(2).getTitle());
         assertEquals("审批待处理", captor.getAllValues().get(3).getTitle());
     }
+
+    // 2026-11-18 口吻修正：审批结果通知收件人是提交人（requesterId），旧文案
+    // 「你已审批驳回/通过」是审批人口吻，读起来像发给审批人的；回归锁定填报人口吻。
+    @Test
+    void approvalRejectionNotificationShouldUseSubmitterVoice() {
+        stubSave();
+
+        service.createApprovalResultNotification(401L, 9001L, 35L, 88L, "PLAN_REPORT", 910L,
+                "XX学院2026年10月上报", "部门审核", false, "数据与台账不一致，请核对后重新填报");
+
+        ArgumentCaptor<UserNotification> captor = ArgumentCaptor.forClass(UserNotification.class);
+        org.mockito.Mockito.verify(userNotificationRepository).save(captor.capture());
+        UserNotification saved = captor.getValue();
+
+        assertEquals(401L, saved.getRecipientUserId());
+        assertEquals("上报审批已回退", saved.getTitle());
+        assertEquals("APPROVAL_REJECTED", saved.getNotificationType());
+        assertEquals("您提交的“XX学院2026年10月上报”已被驳回（审批环节：部门审核），请完善后重新提交。"
+                + " 审批意见：数据与台账不一致，请核对后重新填报", saved.getContent());
+    }
+
+    @Test
+    void approvalApprovedNotificationShouldUseSubmitterVoice() {
+        stubSave();
+
+        service.createApprovalResultNotification(401L, 9001L, 35L, 89L, "PLAN", 4036L,
+                "2026年度 计划", "分管领导审核", true, "  ");
+
+        ArgumentCaptor<UserNotification> captor = ArgumentCaptor.forClass(UserNotification.class);
+        org.mockito.Mockito.verify(userNotificationRepository).save(captor.capture());
+        UserNotification saved = captor.getValue();
+
+        assertEquals(401L, saved.getRecipientUserId());
+        assertEquals("计划审批已通过", saved.getTitle());
+        assertEquals("APPROVAL_APPROVED", saved.getNotificationType());
+        assertEquals("您提交的“2026年度 计划”已通过审批（审批环节：分管领导审核）。", saved.getContent());
+    }
 }
