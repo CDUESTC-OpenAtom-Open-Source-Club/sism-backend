@@ -99,6 +99,81 @@ class ExcelBusinessImportParserTest {
     }
 
     @Test
+    @DisplayName("2026-11-19（学院「全部导入」）：解析「职能部门」列（别名「归口部门」）")
+    void shouldParseFunctionalDeptColumn() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("学院子指标模板");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("学院");
+            header.createCell(2).setCellValue("职能部门");
+            header.createCell(3).setCellValue("核心指标");
+            header.createCell(4).setCellValue("子指标名称");
+            header.createCell(5).setCellValue("指标类型");
+            header.createCell(6).setCellValue("权重");
+
+            Row first = sheet.createRow(1);
+            first.createCell(0).setCellValue(1);
+            first.createCell(1).setCellValue("马克思主义学院");
+            first.createCell(2).setCellValue("教务处");
+            first.createCell(3).setCellValue("父级核心指标A");
+            first.createCell(4).setCellValue("子指标A1");
+            first.createCell(5).setCellValue("定量");
+            first.createCell(6).setCellValue(100);
+
+            // 第二行「职能部门」留空 → 空串（走父级反查兜底，不 sticky 继承上一组）
+            Row second = sheet.createRow(2);
+            second.createCell(0).setCellValue(2);
+            second.createCell(1).setCellValue("马克思主义学院");
+            second.createCell(3).setCellValue("父级核心指标B");
+            second.createCell(4).setCellValue("子指标B1");
+            second.createCell(5).setCellValue("定量");
+            second.createCell(6).setCellValue(100);
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(2, parsed.rows().size());
+            assertEquals("教务处", parsed.rows().get(0).normalized().functionalDept());
+            assertEquals("", parsed.rows().get(1).normalized().functionalDept(),
+                    "「职能部门」列留空不应从上一组 sticky 继承（留空=反查兜底语义）");
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-19（学院「全部导入」）：「归口部门」为「职能部门」的兼容别名")
+    void shouldParseFunctionalDeptAlias() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("学院子指标模板");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("序号");
+            header.createCell(1).setCellValue("学院");
+            header.createCell(2).setCellValue("归口部门");
+            header.createCell(3).setCellValue("核心指标");
+            header.createCell(4).setCellValue("子指标名称");
+            header.createCell(5).setCellValue("指标类型");
+            header.createCell(6).setCellValue("权重");
+
+            Row data = sheet.createRow(1);
+            data.createCell(0).setCellValue(1);
+            data.createCell(1).setCellValue("马克思主义学院");
+            data.createCell(2).setCellValue("数字校园建设办公室");
+            data.createCell(3).setCellValue("父级核心指标B");
+            data.createCell(4).setCellValue("子指标B1");
+            data.createCell(5).setCellValue("定量");
+            data.createCell(6).setCellValue(100);
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(1, parsed.rows().size());
+            assertEquals("数字校园建设办公室", parsed.rows().get(0).normalized().functionalDept());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
     @DisplayName("Should parse distribution export headers and ignore unknown columns")
     void shouldParseDistributionExportHeadersAndIgnoreUnknownColumns() {
         try (Workbook workbook = new XSSFWorkbook()) {

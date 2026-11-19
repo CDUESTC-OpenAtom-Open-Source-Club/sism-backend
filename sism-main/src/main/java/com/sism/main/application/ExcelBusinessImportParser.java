@@ -83,7 +83,11 @@ public class ExcelBusinessImportParser {
                     "权重（纯数字）", "权重(纯数字)")),
             Map.entry("remark", List.of("备注", "说明")),
             // 2026-10-31 层级化定案：序号=父级核心指标组号（组首行必填，组内留空=同上）；别名向后兼容
-            Map.entry("seq", List.of("序号", "序 号"))
+            Map.entry("seq", List.of("序号", "序 号")),
+            // 2026-11-19（学院「全部导入」）：新增「职能部门」列——该行指标由哪个职能部门下发。
+            // 三重作用：①拆批依据（显式按该列分组）②与父级核心指标归属交叉校验（防张冠李戴）
+            // ③用户可读。单条导入路径不读该字段（零行为变更）；「归口部门」为兼容别名。
+            Map.entry("functionalDept", List.of("职能部门", "归口部门"))
     );
 
     private static final List<DateTimeFormatter> DATE_TIME_FORMATTERS = List.of(
@@ -234,6 +238,10 @@ public class ExcelBusinessImportParser {
      * 回填到延续行，其余内容列保持本行填写值。
      * 2026-10-31 终版表头（学院模板加列）：组级类型改为按字段映射传入——
      * 职能部门继承「任务类型」；学院同时继承「任务类型」与「核心指标类型」。
+     *
+     * <p>2026-11-19（学院「全部导入」）：「职能部门」列<b>不参与 sticky 继承</b>——
+     * 该列为空时的语义是「走父级核心指标反查兜底」，若从上一组继承会把别的归口带进来
+     * （表现为「职能部门与核心指标归属不符」的假冲突），与「留空=反查兜底」的口径冲突。
      */
     private NormalizedImportRow withInheritedGroup(NormalizedImportRow row,
                                                    Integer groupSeq,
@@ -254,7 +262,8 @@ public class ExcelBusinessImportParser {
                     row.indicatorType(),
                     row.weight(),
                     row.remark(),
-                    row.parentIndicatorId()
+                    row.parentIndicatorId(),
+                    row.functionalDept()
             );
         }
         return new NormalizedImportRow(
@@ -270,7 +279,8 @@ public class ExcelBusinessImportParser {
                 row.indicatorType(),
                 row.weight(),
                 row.remark(),
-                row.parentIndicatorId()
+                row.parentIndicatorId(),
+                row.functionalDept()
         );
     }
 
@@ -460,6 +470,9 @@ public class ExcelBusinessImportParser {
         BigDecimal weight = parseWeight(value(source, aliases, "weight")).orElse(null);
         String remark = clean(value(source, aliases, "remark"));
         Integer seq = parsePositiveInt(value(source, aliases, "seq"));
+        // 2026-11-19（学院「全部导入」）：「职能部门」列（别名「归口部门」）——拆批依据 + 交叉校验。
+        // 单条导入路径不读该字段（保持零行为变更）；旧文件无该列时取空串（回导兼容）。
+        String functionalDept = clean(value(source, aliases, "functionalDept"));
         return new NormalizedImportRow(
                 seq,
                 department,
@@ -473,7 +486,8 @@ public class ExcelBusinessImportParser {
                 indicatorType,
                 weight,
                 remark,
-                null
+                null,
+                functionalDept
         );
     }
 
