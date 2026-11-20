@@ -59,7 +59,8 @@ class MessageCenterApplicationServiceTest {
         UserNotification reminder = notification(101L, "REMINDER", "催办提醒", "请尽快更新进展", "UNREAD", "/indicators/88", "INDICATOR", 88L);
         UserNotification duplicateApprovalNotification = notification(
                 102L,
-                "SYSTEM",
+                // 2026-11-20 分类重构：审批类只按 type 枚举判定，fixture 用真实落库类型
+                "APPROVAL_SUBMITTED",
                 "有新的计划待审批",
                 "请及时处理。",
                 "UNREAD",
@@ -181,7 +182,8 @@ class MessageCenterApplicationServiceTest {
     void shouldOptimizeSystemCategoryWithoutFullAggregation() {
         UserNotification system = notification(401L, "SYSTEM", "系统公告", "维护通知", "UNREAD", "/messages", null, null);
         UserNotification reminder = notification(402L, "REMINDER", "催办提醒", "请尽快处理", "UNREAD", "/indicators/11", "INDICATOR", 11L);
-        UserNotification approval = notification(403L, "SYSTEM", "有新的计划待审批", "请及时处理。", "UNREAD", "/strategic-tasks?tab=approval&approvalInstanceId=88", "PLAN", 88L);
+        // 2026-11-20 分类重构：审批类只按 type 枚举判定，fixture 用真实落库类型 APPROVAL_SUBMITTED
+        UserNotification approval = notification(403L, "APPROVAL_SUBMITTED", "有新的计划待审批", "请及时处理。", "UNREAD", "/strategic-tasks?tab=approval&approvalInstanceId=88", "PLAN", 88L);
 
         when(userNotificationRepository.countByRecipientUserId(6L)).thenReturn(3L);
         when(userNotificationRepository.countReminderByRecipientUserId(6L)).thenReturn(1L);
@@ -195,6 +197,35 @@ class MessageCenterApplicationServiceTest {
         assertEquals(1, listResponse.items().size());
         assertEquals("SYSTEM_NOTICE", listResponse.items().get(0).bizType());
         verify(workflowReadModelService, never()).getMyPendingTasks(6L, 1);
+    }
+
+    @Test
+    @DisplayName("Classification should follow notification type enum, not title/content keywords")
+    void shouldClassifyByNotificationTypeInsteadOfTitleKeywords() {
+        // 标题含「审批」但 type 不是 APPROVAL_* → 不归审批类，落系统通知
+        UserNotification mislabeledSystem = notification(601L, "SYSTEM", "有新的计划待审批", "请及时处理。", "UNREAD", "/messages", null, null);
+        // type=APPROVAL_* 但标题/正文不含「审批」字样 → 仍归审批类
+        UserNotification approvalResult = notification(602L, "APPROVAL_APPROVED", "《2026 年重点任务》流转结果", "请查看最新状态。", "UNREAD", "/messages?approvalInstanceId=99", "PLAN", 99L);
+
+        when(userNotificationRepository.countByRecipientUserId(7L)).thenReturn(2L);
+        when(userNotificationRepository.countReminderByRecipientUserId(7L)).thenReturn(0L);
+        when(userNotificationRepository.countApprovalLikeByRecipientUserId(7L)).thenReturn(1L);
+        when(userNotificationRepository.findByRecipientUserId(eq(7L), any(PageRequest.class)))
+                .thenReturn(new PageImpl<>(List.of(mislabeledSystem, approvalResult), PageRequest.of(0, 200), 2));
+
+        MessageCenterModels.ListResponse systemList = messageCenterApplicationService.getMessages(7L, "SYSTEM", 1, 100, null, false);
+        assertEquals(1, systemList.items().size());
+        assertEquals("SYSTEM_NOTICE", systemList.items().get(0).bizType());
+        assertEquals("有新的计划待审批", systemList.items().get(0).title());
+
+        when(userNotificationRepository.findApprovalLikeByRecipientUserId(eq(7L), any(PageRequest.class)))
+                .thenReturn(new PageImpl<>(List.of(approvalResult), PageRequest.of(0, 200), 1));
+        when(workflowReadModelService.countMyPendingTodoMessages(7L)).thenReturn(0L);
+        when(workflowReadModelService.listPendingTaskIdentities(7L)).thenReturn(List.of());
+        when(workflowReadModelService.getMyPendingTasks(7L, 1))
+                .thenReturn(PageResult.of(List.of(), 0, 1, 10));
+        MessageCenterModels.ListResponse approvalList = messageCenterApplicationService.getMessages(7L, "APPROVAL", 1, 100, null, false);
+        assertTrue(approvalList.items().stream().anyMatch(item -> "APPROVAL_RESULT".equals(item.bizType())));
     }
 
     @Test
