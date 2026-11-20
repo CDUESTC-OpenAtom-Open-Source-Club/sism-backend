@@ -1122,15 +1122,14 @@ public class MessageCenterApplicationService {
         return BIZ_SYSTEM_NOTICE;
     }
 
+    // 2026-11-20 分类重构：审批类判定只看 notification_type 枚举（APPROVAL_*），
+    // 不再按标题/正文含「审批/审核」字样匹配——文案调整（如 2026-11-18 口吻修正）
+    // 不应隐性改变消息归类、筛选列表与未读计数。落库类型全集见
+    // UserNotificationService 类型常量；与持久层 APPROVAL_LIKE_PREDICATE
+    // （JpaUserNotificationRepositoryInternal）保持同源同口径。
     private boolean isApprovalLikeNotification(UserNotification notification) {
         String notificationType = normalize(notification.getNotificationType());
-        String title = normalize(notification.getTitle());
-        String content = normalize(notification.getContent());
-        return notificationType.contains("APPROVAL")
-                || title.contains("审批")
-                || title.contains("审核")
-                || content.contains("审批")
-                || content.contains("审核");
+        return notificationType.contains("APPROVAL");
     }
 
     private String resolveCategoryByBizType(String bizType) {

@@ -18,14 +18,13 @@ import java.util.Optional;
 @Repository
 public interface JpaUserNotificationRepositoryInternal extends JpaRepository<UserNotification, Long> {
 
+    // 2026-11-20 分类重构：审批类口径只按 notification_type 枚举（APPROVAL_*）判定，
+    // 与聚合层 MessageCenterApplicationService#isApprovalLikeNotification 同源同口径，
+    // 保证「消息分类 / 筛选列表 / 未读计数」三者不受标题文案影响
+    // （原按标题/正文含「审批/审核」LIKE 匹配，文案调整会同时扰动三者）。
+    // 落库审批类型全集：APPROVAL_SUBMITTED / APPROVAL_NEXT_STEP / APPROVAL_APPROVED / APPROVAL_REJECTED。
     String APPROVAL_LIKE_PREDICATE = """
-            (
-                upper(n.notificationType) like '%APPROVAL%'
-                or n.title like '%审批%'
-                or n.title like '%审核%'
-                or n.content like '%审批%'
-                or n.content like '%审核%'
-            )
+            upper(n.notificationType) like '%APPROVAL%'
             """;
 
     String KEYWORD_PREDICATE = """
