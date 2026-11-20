@@ -628,7 +628,14 @@ public class UserNotificationService implements NotificationProvider {
                     gapPercent == null ? "N/A" : gapPercent.stripTrailingZeros().toPlainString()
             );
         }
-        String actionUrl = alertId == null ? "/alerts" : "/alerts?alertId=" + alertId;
+        // 2026-11-20 消息中心跳转修复：前端 /alerts 路由已随页面重构移除，
+        // 旧 action_url=/alerts?alertId=N 从消息中心点击落 404 死链。
+        // 告警跳转统一改落 /strategic-tasks 工作台并携带指标定位参数
+        // （前端 indicatorRouteFocus 按参数滚动/高亮到对应指标行）；
+        // 存量 /alerts 通知由前端 resolveMessageRouteTarget 兼容映射兜底。
+        String actionUrl = indicatorId == null
+                ? "/strategic-tasks"
+                : "/strategic-tasks?indicatorId=" + indicatorId;
 
         UserNotification notification = new UserNotification();
         notification.setRecipientUserId(recipientUserId);
