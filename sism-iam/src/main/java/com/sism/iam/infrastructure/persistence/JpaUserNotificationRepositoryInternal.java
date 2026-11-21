@@ -60,7 +60,7 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
             select n
               from UserNotification n
              where n.recipientUserId = :recipientUserId
-               and """ + KEYWORD_PREDICATE + """
+               and\s""" + KEYWORD_PREDICATE + """
              order by n.createdAt desc
             """)
     Page<UserNotification> findByRecipientUserIdAndKeyword(
@@ -73,7 +73,7 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
             select count(n)
               from UserNotification n
              where n.recipientUserId = :recipientUserId
-               and """ + KEYWORD_PREDICATE)
+               and\s""" + KEYWORD_PREDICATE)
     long countByRecipientUserIdAndKeyword(
             @Param("recipientUserId") Long recipientUserId,
             @Param("keyword") String keyword
@@ -83,7 +83,7 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
             select n
               from UserNotification n
              where n.recipientUserId = :recipientUserId
-               and """ + APPROVAL_LIKE_PREDICATE + """
+               and\s""" + APPROVAL_LIKE_PREDICATE + """
              order by n.createdAt desc
             """)
     Page<UserNotification> findApprovalLikeByRecipientUserId(
@@ -95,15 +95,15 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
             select count(n)
               from UserNotification n
              where n.recipientUserId = :recipientUserId
-               and """ + APPROVAL_LIKE_PREDICATE)
+               and\s""" + APPROVAL_LIKE_PREDICATE)
     long countApprovalLikeByRecipientUserId(@Param("recipientUserId") Long recipientUserId);
 
     @Query("""
             select n
               from UserNotification n
              where n.recipientUserId = :recipientUserId
-               and """ + APPROVAL_LIKE_PREDICATE + """
-               and """ + KEYWORD_PREDICATE + """
+               and\s""" + APPROVAL_LIKE_PREDICATE + """
+               and\s""" + KEYWORD_PREDICATE + """
              order by n.createdAt desc
             """)
     Page<UserNotification> findApprovalLikeByRecipientUserIdAndKeyword(
@@ -116,8 +116,8 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
             select count(n)
               from UserNotification n
              where n.recipientUserId = :recipientUserId
-               and """ + APPROVAL_LIKE_PREDICATE + """
-               and """ + KEYWORD_PREDICATE)
+               and\s""" + APPROVAL_LIKE_PREDICATE + """
+               and\s""" + KEYWORD_PREDICATE)
     long countApprovalLikeByRecipientUserIdAndKeyword(
             @Param("recipientUserId") Long recipientUserId,
             @Param("keyword") String keyword
@@ -128,7 +128,7 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
               from UserNotification n
              where n.recipientUserId = :recipientUserId
                and n.status = 'UNREAD'
-               and """ + APPROVAL_LIKE_PREDICATE)
+               and\s""" + APPROVAL_LIKE_PREDICATE)
     long countApprovalLikeUnreadByRecipientUserId(@Param("recipientUserId") Long recipientUserId);
 
     @Query("""
@@ -136,7 +136,7 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
               from UserNotification n
              where n.recipientUserId = :recipientUserId
                and n.notificationType = 'REMINDER'
-               and """ + KEYWORD_PREDICATE + """
+               and\s""" + KEYWORD_PREDICATE + """
              order by n.createdAt desc
             """)
     Page<UserNotification> findReminderByRecipientUserIdAndKeyword(
@@ -150,7 +150,7 @@ public interface JpaUserNotificationRepositoryInternal extends JpaRepository<Use
               from UserNotification n
              where n.recipientUserId = :recipientUserId
                and n.notificationType = 'REMINDER'
-               and """ + KEYWORD_PREDICATE)
+               and\s""" + KEYWORD_PREDICATE)
     long countReminderByRecipientUserIdAndKeyword(
             @Param("recipientUserId") Long recipientUserId,
             @Param("keyword") String keyword
