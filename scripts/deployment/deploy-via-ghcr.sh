@@ -31,7 +31,7 @@ BACKEND_SHA=""
 REMOTE="root@175.24.139.148"
 STACK_DIR="/opt/sism-stack/production"
 PULL_TIMEOUT=600
-HEALTH_WAIT=90
+HEALTH_WAIT=120
 
 log()  { printf '[deploy-ghcr] %s\n' "$1"; }
 fail() { printf '[deploy-ghcr] ERROR: %s\n' "$1" >&2; exit 1; }
@@ -86,6 +86,26 @@ if [[ -n "$BACKEND_SHA" ]]; then
   pull_on_server "ghcr.io/${BACKEND_REPO}:${BACKEND_SHA}"
 fi
 
+# --- 失败自动回滚（本机触发，服务器执行；供探活门禁失败时调用） ---
+# 背景（2026-11-21 事故）：后端镜像带坏 JPQL 崩溃循环，旧版脚本健康等待超时后
+# 不报错、登录冒烟不判状态码，把坏部署误报成「完成」。此处补齐真实门禁。
+rollback_remote() {
+  log "自动回滚：恢复最新 .env.bak 镜像行并重建容器"
+  ssh -o ConnectTimeout=15 "${REMOTE}" bash -s <<ROLLBACK_SCRIPT || log "回滚已执行"
+set -euo pipefail
+cd "${STACK_DIR}"
+BAK="\$(ls -t .env.bak-* | head -1)"
+echo "回滚源: \$BAK"
+grep '^FRONTEND_IMAGE=' "\$BAK" > .env.rollback.fe
+grep '^BACKEND_IMAGE=' "\$BAK" > .env.rollback.be
+sed -i '/^FRONTEND_IMAGE=/d;/^BACKEND_IMAGE=/d' .env
+cat .env.rollback.fe .env.rollback.be >> .env
+rm -f .env.rollback.fe .env.rollback.be
+grep -E '^FRONTEND_IMAGE|^BACKEND_IMAGE' .env
+docker compose up -d --no-deps frontend backend 2>&1 | tail -2
+ROLLBACK_SCRIPT
+}
+
 # --- 2/3. 改 .env 镜像行 + compose up（不动 postgres） ---
 log "更新 .env 镜像行并重建服务"
 # heredoc 故意不加引号：本地变量（STACK_DIR/镜像 tag/HEALTH_WAIT）在本机展开，
@@ -115,28 +135,49 @@ if [[ -n "${BACKEND_SHA}" ]]; then
   docker compose up -d --no-deps backend 2>&1 | tail -2
 fi
 
+# 失败自动回滚（覆盖 sed/up 阶段的任何失败）
+rollback() {
+  echo "[deploy] 自动回滚：恢复旧镜像行并重建容器"
+  sed -i "s|^FRONTEND_IMAGE=.*|FRONTEND_IMAGE=\$OLD_FRONTEND|" .env
+  sed -i "s|^BACKEND_IMAGE=.*|BACKEND_IMAGE=\$OLD_BACKEND|" .env
+  docker compose up -d --no-deps frontend backend 2>&1 | tail -2
+}
+trap rollback ERR
+
 # 等待 healthy
 echo "--- 等待健康 ---"
+HEALTHY=0
 for i in \$(seq 1 ${HEALTH_WAIT}); do
   st="\$(docker compose ps --format '{{.Name}} {{.Status}}' | grep -E 'frontend|backend' || true)"
   echo "[\$i] \$st"
-  if ! echo "\$st" | grep -qE 'starting|unhealthy|created'; then
+  if ! echo "\$st" | grep -qE 'starting|unhealthy|created|Restarting'; then
     if echo "\$st" | grep -q 'healthy'; then
+      HEALTHY=1
       echo "HEALTHY_OK"
       break
     fi
   fi
   sleep 1
 done
+if [[ "\$HEALTHY" != "1" ]]; then
+  echo "[deploy] 健康门禁未过：${HEALTH_WAIT}s 内未全部 healthy"
+  rollback
+  exit 1
+fi
+trap - ERR
 REMOTE_SCRIPT
 
-# --- 4. 外部探活 + 登录冒烟 ---
+# --- 4. 外部探活 + 登录冒烟（非 200 视为失败并自动回滚） ---
 log "探活：域名 + 登录"
-curl -s -o /dev/null -w "  https=%{http_code}\n" -m 15 https://sism.blackevil.cn/ \
-  || fail "domain check failed"
-curl -s -m 15 -X POST https://sism.blackevil.cn/api/v1/auth/login \
+DOMAIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 https://sism.blackevil.cn/)" || DOMAIN_CODE=000
+log "  https=${DOMAIN_CODE}"
+LOGIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST https://sism.blackevil.cn/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"zlb_admin","password":"admin123"}' \
-  -o /dev/null -w "  login=%{http_code}\n" || fail "login smoke failed"
+  -d '{"username":"zlb_admin","password":"admin123"}')" || LOGIN_CODE=000
+log "  login=${LOGIN_CODE}"
+if [[ "$DOMAIN_CODE" != "200" || "$LOGIN_CODE" != "200" ]]; then
+  rollback_remote
+  fail "探活未通过（https=${DOMAIN_CODE} login=${LOGIN_CODE}），已自动回滚到旧版本"
+fi
 
 log "完成。若任一步失败：用服务器上的 .env.bak-* 恢复镜像行后 docker compose up -d --no-deps <svc> 回滚。"
