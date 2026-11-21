@@ -1,6 +1,13 @@
 package com.sism.main.application;
 
 import com.sism.main.application.ExcelBusinessImportParser.ParsedWorkbook;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportCommitResponse;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportCommitSummary;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportGroup;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportGroupResult;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportGroupStatus;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportLineStatus;
+import com.sism.main.interfaces.dto.BusinessImportDtos.AllImportPreviewResponse;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ConflictMode;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportAction;
 import com.sism.main.interfaces.dto.BusinessImportDtos.ImportCommitRequest;
@@ -116,6 +123,12 @@ public class BusinessImportApplicationService {
      */
     private final com.sism.strategy.domain.repository.CycleRepository cycleRepository;
     private final Map<String, PreviewContext> previews = new ConcurrentHashMap<>();
+    /**
+     * 2026-11-19（学院「全部导入」）：全部导入批次的上下文（按归口分组）。
+     * 与单条导入的 {@code previews} 分开存放——两条路径的批次 id 空间独立，
+     * 避免互相覆盖（单条端点的 getPreview 拿不到全部导入的批次，反之亦然）。
+     */
+    private final Map<String, AllImportPreviewContext> allPreviews = new ConcurrentHashMap<>();
 
     public ImportPreviewResponse previewStrategicTasks(MultipartFile file,
                                                        Long cycleId,
@@ -141,6 +154,45 @@ public class BusinessImportApplicationService {
                                                      Long functionalOrgId,
                                                      String sheetName,
                                                      CurrentUser currentUser) {
+        // 2026-11-19（学院「全部导入」）：把「下发口径校验」抽成共享方法——
+        // 单条导入与全部导入的下发方合法性、操作者组织归属、目标学院类型、存量计划拦截
+        // 四道前置闸门完全一致，抽出来避免两条路径漂移（单条路径行为保持原样）。
+        DistributionPreviewScope scope = resolveDistributionScope(cycleId, targetCollegeOrgId, sourceOrgId, currentUser);
+
+        ParsedWorkbook parsed = parser.parse(file, ImportType.DISTRIBUTION, sheetName);
+        // 2026-11-17（学院线粒度改造）：先做父级锚点匹配，反查文件里的归口部门集合，
+        // 再与请求入参 functionalOrgId 交叉校验（跨归口 / 不一致 → 阻断）。
+        // 顺序不能反：归口是「线身份」的一部分，取计划、建线都要用它，必须先定下来。
+        DistributionAnchorContext anchorContext = resolveDistributionAnchors(parsed.rows(), scope.targetOrg(), cycleId);
+        Long effectiveFunctionalOrgId = resolveEffectiveFunctionalOrgId(functionalOrgId, anchorContext.functionalOrgIds());
+        List<ImportRowPreview> rows = enrichDistributionRows(
+                anchorContext,
+                cycleId,
+                scope.sourceOrg(),
+                scope.targetOrg(),
+                effectiveFunctionalOrgId);
+        // 2026-11-05：来源组织一律记为战略发展部，避免批次上下文里残留职能部门来源
+        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, scope.sourceOrg().getId(), scope.targetOrg(), currentUser, effectiveFunctionalOrgId);
+    }
+
+    /**
+     * 2026-11-19（学院「全部导入」）：学院子指标下发的<b>前置闸门</b>（单条导入与全部导入共用）。
+     *
+     * <p>四道闸门（顺序即语义）：
+     * <ol>
+     *   <li>周期与登录态；</li>
+     *   <li>来源组织必须是战略发展部（职能部门不再向学院分发指标）；</li>
+     *   <li>操作者必须属于战略发展部（或系统管理员）；</li>
+     *   <li>目标必须是学院；</li>
+     *   <li>本周期该学院若已存在「职能部门创建的」存量下发计划 → 拒绝（只读历史）。</li>
+     * </ol>
+     *
+     * <p>抽出前后的行为完全一致——单条导入路径只是把同样的代码搬到了这里。
+     */
+    private DistributionPreviewScope resolveDistributionScope(Long cycleId,
+                                                              Long targetCollegeOrgId,
+                                                              Long sourceOrgId,
+                                                              CurrentUser currentUser) {
         requireCycleAndUser(cycleId, currentUser);
         // 2026-11-05（学院指标直发改造）：学院子指标的下发方唯一确定为战略发展部。
         // 校验顺序必须是「先来源组织合法性 → 再操作者组织归属」。
@@ -185,21 +237,693 @@ public class BusinessImportApplicationService {
                     "该学院本周期已存在历史下发计划（来源：职能部门），按只读历史保留，不能再通过导入下发；"
                             + "如需调整请走异动审批");
         }
+        return new DistributionPreviewScope(sourceOrg.getId(), sourceOrg, targetOrg);
+    }
+
+    // ==================== 2026-11-19（学院「全部导入」）：按归口部门分组拆批 ====================
+    //
+    // 业务形态：一张 Excel 里含**多个职能部门**给**同一学院**的指标行 → 按「职能部门」列拆 N 组
+    // → 每组独立走既有单条导入链路（行级校验 → 组级权重 100 → 独立成线 → flow6 下发审批）。
+    //
+    // 设计原则：**单条导入路径零行为变更**。既有 previewDistribution / commit 的代码路径只读复用，
+    // 跨归口阻断逻辑保持原样（单条端点仍阻断）。新增逻辑集中在：
+    //   ①分组（splitRowsByFunctionalOrg + 交叉校验）；
+    //   ②逐组编排（逐组 enrich + 组级权重 + 线状态 + 逐组独立事务提交）。
+
+    /**
+     * 2026-11-19：学院「全部导入」预览。
+     *
+     * <p>流程：parse → 父级锚点匹配 → 读「职能部门」列分组（交叉校验）→ 逐组 enrich（行级校验）
+     * → 组级权重校验 → 线状态判定 → 响应组装。
+     *
+     * @param file              Excel 文件（9 列，含「职能部门」列）
+     * @param cycleId           考核周期
+     * @param targetCollegeOrgId 目标学院
+     * @param sourceOrgId       来源部门（缺省 = 战略发展部）
+     * @param sheetName         工作表名（可选）
+     */
+    public AllImportPreviewResponse previewAllDistribution(MultipartFile file,
+                                                           Long cycleId,
+                                                           Long targetCollegeOrgId,
+                                                           Long sourceOrgId,
+                                                           String sheetName,
+                                                           CurrentUser currentUser) {
+        DistributionPreviewScope scope = resolveDistributionScope(cycleId, targetCollegeOrgId, sourceOrgId, currentUser);
 
         ParsedWorkbook parsed = parser.parse(file, ImportType.DISTRIBUTION, sheetName);
-        // 2026-11-17（学院线粒度改造）：先做父级锚点匹配，反查文件里的归口部门集合，
-        // 再与请求入参 functionalOrgId 交叉校验（跨归口 / 不一致 → 阻断）。
-        // 顺序不能反：归口是「线身份」的一部分，取计划、建线都要用它，必须先定下来。
-        DistributionAnchorContext anchorContext = resolveDistributionAnchors(parsed.rows(), targetOrg, cycleId);
-        Long effectiveFunctionalOrgId = resolveEffectiveFunctionalOrgId(functionalOrgId, anchorContext.functionalOrgIds());
-        List<ImportRowPreview> rows = enrichDistributionRows(
-                anchorContext,
+        // 第一步：父级锚点匹配（复用单条导入的同一实现）——父级匹配结果决定「该行归属哪个部门」
+        // （父级核心指标的 target_org 就是归口职能部门）。
+        // 注意：全部导入**不做全局相对顺序校验**——多部门的父级组是分块排列的，
+        // 跨部门顺序不该互相约束；顺序校验下沉到逐组（见 splitRowsByFunctionalOrg）。
+        DistributionAnchorContext anchorContext = matchDistributionAnchors(parsed.rows(), scope.targetOrg(), cycleId);
+        // 第二步：分组（新增）。交叉校验「职能部门」列 ↔ 父级核心指标 target_org。
+        AllImportSplit split = splitRowsByFunctionalOrg(anchorContext);
+        // 第三步：逐组 enrich（复用单条导入的行级校验链）+ 组级权重 + 线状态
+        List<AllImportGroup> groups = new ArrayList<>();
+        List<AllImportEnrichedGroup> enrichedGroups = new ArrayList<>();
+        for (AllImportSplitGroup splitGroup : split.groups()) {
+            List<ImportRowPreview> enrichedRows = enrichDistributionRows(
+                    splitGroup.anchorContext(),
+                    cycleId,
+                    scope.sourceOrg(),
+                    scope.targetOrg(),
+                    splitGroup.functionalOrgId());
+            groups.add(buildAllImportGroup(splitGroup, enrichedRows, scope, cycleId));
+            // 提交阶段用的是「enrich 后的行」（businessKey / action 已定型），
+            // 否则同线重名子指标会被当成新建而重复建行。
+            enrichedGroups.add(new AllImportEnrichedGroup(
+                    splitGroup.functionalOrgId(),
+                    splitGroup.functionalOrgName(),
+                    enrichedRows,
+                    splitGroup.anchorContext().anchors()));
+        }
+
+        boolean blocking = !split.unassignedRows().isEmpty()
+                || groups.stream().anyMatch(group -> group.groupError() != null);
+        String batchId = "IMP-" + UUID.randomUUID();
+        AllImportPreviewResponse response = new AllImportPreviewResponse(
+                batchId,
                 cycleId,
-                sourceOrg,
-                targetOrg,
-                effectiveFunctionalOrgId);
-        // 2026-11-05：来源组织一律记为战略发展部，避免批次上下文里残留职能部门来源
-        return storePreview(file, parsed, rows, ImportType.DISTRIBUTION, cycleId, sourceOrg.getId(), targetOrg, currentUser, effectiveFunctionalOrgId);
+                scope.targetOrg().getId(),
+                scope.targetOrg().getName(),
+                groups,
+                split.unassignedRows(),
+                blocking,
+                parsed.confirmToken());
+        allPreviews.put(batchId, new AllImportPreviewContext(
+                batchId,
+                cycleId,
+                scope.sourceOrg().getId(),
+                scope.targetOrg().getId(),
+                currentUser.getId(),
+                parsed.confirmToken(),
+                enrichedGroups,
+                blocking));
+        return response;
+    }
+
+    /**
+     * 2026-11-19：学院「全部导入」提交（逐组独立事务）。
+     *
+     * <p>组间事务隔离：一组失败不影响他组。跳过组（线已下发）直接记 SKIPPED，不落库。
+     */
+    public AllImportCommitResponse commitAllDistribution(String batchId,
+                                                           ImportCommitRequest request,
+                                                           CurrentUser currentUser) {
+        AllImportPreviewContext context = allPreviews.get(batchId);
+        if (context == null) {
+            throw new IllegalArgumentException("导入批次不存在或已过期");
+        }
+        if (!Objects.equals(context.currentUserId(), currentUser.getId())) {
+            throw new SecurityException("只能确认自己上传的导入批次");
+        }
+        // confirmToken 跨组一致性校验：复用既有 token 机制（同一批次的文件摘要），
+        // 篡改 token 或预览后重新上传都会在此被拦下。
+        if (!Objects.equals(context.confirmToken(), request.confirmToken())) {
+            throw new IllegalArgumentException("预览内容已变化，请重新上传并解析");
+        }
+        // 2026-11-19：预览存在阻断错误（组级错误 / 无法识别归属部门）时不允许提交——
+        // 与单条导入的 blocking 守卫同款（前端提交按钮同时置灰）。
+        // 注意：跳过组（线已下发）不算阻断——它是「将跳过」的正常语义，允许照常提交其余组。
+        if (context.blocking()) {
+            throw new IllegalArgumentException("当前导入存在阻断错误，不能确认导入");
+        }
+
+        ConflictMode conflictMode = request.conflictMode() == null ? ConflictMode.APPEND : request.conflictMode();
+        if (conflictMode == ConflictMode.REPLACE_SCOPE) {
+            throw new IllegalArgumentException("替换当前表格暂未开放，请先使用更新已有模式");
+        }
+        boolean autoSubmitAndApprove = Boolean.TRUE.equals(request.autoSubmitAndApprove());
+
+        // P6 导入留痕（与单条导入同款；失败不阻断）
+        try {
+            importBatchJdbcTemplate.update(
+                    """
+                    INSERT INTO public.import_batch (
+                        batch_id, import_type, file_name, operator_user_id, operator_org_id, target_org_id, cycle_id, total_rows
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    batchId,
+                    ImportType.DISTRIBUTION.name(),
+                    "全部导入",
+                    context.currentUserId(),
+                    context.sourceOrgId(),
+                    context.targetOrgId(),
+                    context.cycleId(),
+                    context.groups().stream().mapToInt(group -> group.rows().size()).sum());
+        } catch (Exception e) {
+            log.warn("[Import] 写入导入批次留痕失败（不阻断导入）: batchId={}, err={}", batchId, e.getMessage());
+        }
+
+        List<AllImportGroupResult> results = new ArrayList<>();
+        int success = 0;
+        int skipped = 0;
+        int failed = 0;
+
+        for (AllImportEnrichedGroup group : context.groups()) {
+            String orgName = group.functionalOrgName();
+            try {
+                // 线状态判定（与预览同口径）：已下发 → 跳过；在审 → 失败（错误组）
+                AllImportLineStatus lineStatus = resolveAllImportLineStatus(
+                        context.cycleId(), context.targetOrgId(), group.functionalOrgId());
+                if (lineStatus == AllImportLineStatus.DISTRIBUTED) {
+                    results.add(new AllImportGroupResult(
+                            group.functionalOrgId(), orgName, AllImportGroupStatus.SKIPPED, null,
+                            group.rows().size(),
+                            "该学院 " + resolveCycleLabel(context.cycleId()) + "的「" + orgName
+                                    + "」这条线已下发，本次将跳过"));
+                    skipped++;
+                    continue;
+                }
+                if (lineStatus == AllImportLineStatus.PENDING || lineStatus == AllImportLineStatus.IN_REVIEW) {
+                    results.add(new AllImportGroupResult(
+                            group.functionalOrgId(), orgName, AllImportGroupStatus.FAILED, null,
+                            group.rows().size(),
+                            "该学院 " + resolveCycleLabel(context.cycleId()) + "的「" + orgName
+                                    + "」这条线正在审批中，请等审批结束或撤回后再下发"));
+                    failed++;
+                    continue;
+                }
+                // 组级错误（行级错误 / 权重≠100）→ 该组失败，不影响他组
+                String groupError = resolveAllImportGroupError(group);
+                if (groupError != null) {
+                    results.add(new AllImportGroupResult(
+                            group.functionalOrgId(), orgName, AllImportGroupStatus.FAILED, null,
+                            group.rows().size(), groupError));
+                    failed++;
+                    continue;
+                }
+
+                // 组间独立事务：一组失败不影响他组（每组一次 transactionTemplate）
+                AllImportGroupOutcome outcome = transactionTemplate.execute(status -> {
+                    CommitCounters committed = commitDistributionGroup(group, context, conflictMode);
+                    if (autoSubmitAndApprove) {
+                        validateCommittedPlanForAutoDispatch(committed.plan());
+                    }
+                    return new AllImportGroupOutcome(committed, null);
+                });
+                if (outcome == null) {
+                    throw new IllegalStateException("导入事务未返回提交结果");
+                }
+
+                ImportWorkflowResult workflow = null;
+                if (autoSubmitAndApprove) {
+                    workflow = autoSubmitAndApprove(
+                            outcome.counters().plan(),
+                            DISTRIBUTION_WORKFLOW_CODE,
+                            currentUser,
+                            outcome.counters().plan() == null
+                                    ? currentUser.getOrgId() : outcome.counters().plan().getCreatedByOrgId(),
+                            firstNonBlank(request.comment(), "全部导入后自动下发审批"));
+                } else {
+                    workflow = new ImportWorkflowResult(
+                            false, null, null, null, 0, null, "导入成功，未自动发起审批");
+                }
+                results.add(new AllImportGroupResult(
+                        group.functionalOrgId(), orgName, AllImportGroupStatus.SUCCESS,
+                        outcome.counters().plan() == null ? null : outcome.counters().plan().getId(),
+                        group.rows().size(),
+                        workflow == null ? null : workflow.message()));
+                success++;
+            } catch (Exception ex) {
+                log.warn("[Import] 全部导入分组失败: batchId={}, functionalOrgId={}, err={}",
+                        batchId, group.functionalOrgId(), ex.getMessage());
+                results.add(new AllImportGroupResult(
+                        group.functionalOrgId(), orgName, AllImportGroupStatus.FAILED, null,
+                        group.rows().size(), ex.getMessage()));
+                failed++;
+            }
+        }
+
+        allPreviews.remove(batchId);
+        return new AllImportCommitResponse(results, new AllImportCommitSummary(success, skipped, failed));
+    }
+
+    /**
+     * 2026-11-19：<b>分组核心</b>——按「职能部门」列把行拆成 N 组。
+     *
+     * <p>双保险交叉校验：
+     * <ol>
+     *   <li>「职能部门」列已填 → 与父级核心指标的 target_org 交叉校验：
+     *       不一致 → 行级错误「职能部门与核心指标归属不符」（防张冠李戴）；</li>
+     *   <li>「职能部门」列为空 → 走父级反查兜底（复用 resolveDistributionAnchors 既有反查）；
+     *       反查不出 → 行级错误「无法识别归属部门」。</li>
+     * </ol>
+     *
+     * <p>与单条导入的关系：<b>反查+校验</b>（本方法）与<b>分组</b>是同一处实现，
+     * 但单条导入路径不调用它——单条端点仍走 resolveEffectiveFunctionalOrgId 的跨归口阻断。
+     */
+    private AllImportSplit splitRowsByFunctionalOrg(DistributionAnchorContext anchorContext) {
+        Map<Long, String> orgNameById = new LinkedHashMap<>();
+        Map<Long, List<DistributionRowAnchor>> anchorsByOrgId = new LinkedHashMap<>();
+        List<DistributionRowAnchor> unassignedAnchors = new ArrayList<>();
+
+        List<DistributionRowAnchor> anchors = anchorContext.anchors();
+        for (DistributionRowAnchor anchor : anchors) {
+            NormalizedImportRow normalized = anchor.normalized();
+            ImportRowPreview row = anchor.row();
+
+            // ① 该列填了部门 → 解析成 orgId，并与父级 target_org 交叉校验
+            String declaredDept = normalized.functionalDept();
+            Long declaredOrgId = null;
+            List<String> errors = new ArrayList<>(anchor.errors());
+            List<String> warnings = new ArrayList<>(anchor.warnings());
+
+            if (!isBlank(declaredDept)) {
+                Long resolved = resolveFunctionalOrgIdByName(declaredDept);
+                if (resolved == null) {
+                    errors.add("职能部门「" + declaredDept.trim() + "」在系统中不存在，请核对后重新上传");
+                } else {
+                    // 交叉校验：与父级核心指标的 target_org 比对
+                    Long parentOrgId = resolveParentTargetOrgId(anchor);
+                    if (parentOrgId != null && !parentOrgId.equals(resolved)) {
+                        errors.add("职能部门与核心指标归属不符：本行填写的职能部门是「"
+                                + resolveOrgName(resolved) + "」，但父级核心指标「"
+                                + anchor.matchedParent().getIndicatorDesc() + "」归属「"
+                                + resolveOrgName(parentOrgId) + "」");
+                    } else {
+                        declaredOrgId = resolved;
+                    }
+                }
+            } else {
+                // ② 该列为空 → 走父级反查兜底
+                declaredOrgId = resolveParentTargetOrgId(anchor);
+                if (declaredOrgId == null) {
+                    errors.add("无法识别归属部门：请在「职能部门」列填写下发部门，或核对父级核心指标是否正确");
+                }
+            }
+
+            DistributionRowAnchor groupAnchor = new DistributionRowAnchor(
+                    row, errors, warnings, normalized, anchor.matchedParent(), anchor.unusedParentRow());
+            if (declaredOrgId == null) {
+                unassignedAnchors.add(groupAnchor);
+                continue;
+            }
+            anchorsByOrgId.computeIfAbsent(declaredOrgId, key -> new ArrayList<>()).add(groupAnchor);
+            orgNameById.putIfAbsent(declaredOrgId, resolveOrgName(declaredOrgId));
+        }
+
+        List<AllImportSplitGroup> groups = new ArrayList<>();
+        for (Map.Entry<Long, List<DistributionRowAnchor>> entry : anchorsByOrgId.entrySet()) {
+            Long functionalOrgId = entry.getKey();
+            List<DistributionRowAnchor> groupAnchors = entry.getValue();
+            // 逐组相对顺序校验：组内父级序列必须与系统下发顺序一致。
+            // 跨部门的父级组顺序不互相约束（多部门文件天然是分块排列的）。
+            applyParentOrderValidation(groupAnchors, anchorContext.systemParentAnchors());
+            groups.add(new AllImportSplitGroup(
+                    functionalOrgId,
+                    orgNameById.getOrDefault(functionalOrgId, resolveOrgName(functionalOrgId)),
+                    groupAnchors.stream().map(this::toPreviewRow).toList(),
+                    new DistributionAnchorContext(
+                            groupAnchors,
+                            anchorContext.systemParentAnchors(),
+                            Set.of(functionalOrgId))));
+        }
+        List<ImportRowPreview> unassigned = unassignedAnchors.stream().map(this::toPreviewRow).toList();
+        return new AllImportSplit(groups, unassigned);
+    }
+
+    /** 父级核心指标的目标部门（即归口职能部门）id；匹配不上返回 null。 */
+    private Long resolveParentTargetOrgId(DistributionRowAnchor anchor) {
+        if (anchor == null || anchor.matchedParent() == null || anchor.matchedParent().getTargetOrg() == null) {
+            return null;
+        }
+        return anchor.matchedParent().getTargetOrg().getId();
+    }
+
+    /** 锚点上下文 → 预览行（action 由错误优先判定）。 */
+    private ImportRowPreview toPreviewRow(DistributionRowAnchor anchor) {
+        ImportAction action;
+        if (!anchor.errors().isEmpty()) {
+            action = ImportAction.ERROR;
+        } else if (anchor.unusedParentRow()) {
+            action = ImportAction.SKIP;
+        } else {
+            action = ImportAction.CREATE;
+        }
+        return new ImportRowPreview(
+                anchor.row().rowNo(),
+                action,
+                anchor.row().businessKey(),
+                anchor.normalized(),
+                anchor.row().source(),
+                anchor.errors(),
+                anchor.warnings());
+    }
+
+    /**
+     * 2026-11-19：按部门名称解析归口部门 id（职能部门类型）。
+     *
+     * <p>同名部门在系统里理论上唯一（sys_org.name 有唯一约束）；取不到或类型不对都返回 null
+     * （由调用方给出行级错误），不在这里抛异常打断整批。
+     */
+    private Long resolveFunctionalOrgIdByName(String name) {
+        if (isBlank(name)) {
+            return null;
+        }
+        List<SysOrg> candidates = organizationRepository.findByNameContaining(name.trim()).stream()
+                .filter(org -> !Boolean.TRUE.equals(org.getIsDeleted()))
+                .filter(org -> sameName(org.getName(), name.trim()))
+                .toList();
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        SysOrg matched = candidates.get(0);
+        if (matched.getType() != OrgType.functional) {
+            return null;
+        }
+        return matched.getId();
+    }
+
+    /**
+     * 2026-11-19：组装单个归口分组的预览信息（行级校验 + 组级权重 + 线状态）。
+     *
+     * <p><b>判定顺序（2026-11-19 修正）</b>：先判「线状态」，再判「组内权重 / 行级错误」。
+     * <ul>
+     *   <li><b>DISTRIBUTED（已下发）</b> → <b>将跳过</b>（黄色）：{@code willDispatch=false} +
+     *       {@code skipReason}，**groupError 恒为 null**。该组本来就不下发，其权重/行级问题
+     *       不应产生组级错误、更不应阻断整单提交——「跳过就是跳过，不该拦住别的组」。
+     *       组内行级错误仍在 rows 里照常展示（前端逐行渲染 errors），只是不计入阻断。</li>
+     *   <li><b>PENDING / IN_REVIEW（审批中）</b> → <b>错误组</b>（红色）：groupError 非空，阻断整单。</li>
+     *   <li><b>DRAFT / NONE（无线 / 草稿线）</b> → 再判组内行级错误 → 组级权重合计 ≠ 100 →
+     *       命中则错误组（阻断）；都无 → willDispatch=true（将下发）。</li>
+     * </ul>
+     * 旧实现先算权重/行级错误再判线状态，导致「已下发线 + 权重≠100」的组被算成错误组，
+     * 前端 blocking 置灰 → 整单无法提交（语义矛盾 + 误阻断）。</p>
+     *
+     * @param enrichedRows 该组 enrich 后的行（行级校验已完成，action 已定型）
+     */
+    private AllImportGroup buildAllImportGroup(AllImportSplitGroup splitGroup,
+                                               List<ImportRowPreview> enrichedRows,
+                                               DistributionPreviewScope scope,
+                                               Long cycleId) {
+        Long functionalOrgId = splitGroup.functionalOrgId();
+        String orgName = splitGroup.functionalOrgName();
+
+        // 组级权重：每组各自 100（不与其他组合并）——按该组有效行（CREATE/UPDATE）合计
+        BigDecimal basicWeightTotal = sumGroupBasicWeight(splitGroup.anchorContext().anchors(), enrichedRows);
+        boolean hasRowError = enrichedRows.stream().anyMatch(ImportRowPreview::hasErrors);
+
+        AllImportLineStatus lineStatus = resolveAllImportLineStatus(cycleId, scope.targetOrg().getId(), functionalOrgId);
+        String groupError = null;
+        String skipReason = null;
+        boolean willDispatch;
+        if (lineStatus == AllImportLineStatus.DISTRIBUTED) {
+            // 已下发 → 将跳过：不产生组级错误、不阻断整单
+            willDispatch = false;
+            skipReason = "该学院 " + resolveCycleLabel(cycleId) + "的「" + orgName + "」这条线已下发，本次将跳过";
+        } else if (lineStatus == AllImportLineStatus.PENDING || lineStatus == AllImportLineStatus.IN_REVIEW) {
+            // 审批中 → 错误组：阻断整单
+            willDispatch = false;
+            groupError = "该学院 " + resolveCycleLabel(cycleId) + "的「" + orgName
+                    + "」这条线正在审批中，不能下发；请等审批结束或撤回后再操作";
+        } else {
+            // 无线 / 草稿线 → 再判组内权重与行级错误
+            if (hasRowError) {
+                groupError = "该组存在行级错误，请修正后重新上传";
+            } else if (basicWeightTotal.compareTo(REQUIRED_BASIC_WEIGHT_TOTAL) != 0) {
+                groupError = orgName + "组基础性权重合计 "
+                        + basicWeightTotal.stripTrailingZeros().toPlainString() + "/"
+                        + REQUIRED_BASIC_WEIGHT_TOTAL.toPlainString()
+                        + "，不能下发；请修正该组权重或删除该组行后重新上传";
+            }
+            willDispatch = groupError == null;
+        }
+
+        return new AllImportGroup(
+                functionalOrgId,
+                orgName,
+                lineStatus,
+                willDispatch,
+                skipReason,
+                groupError,
+                basicWeightTotal,
+                enrichedRows.size(),
+                enrichedRows);
+    }
+
+    /**
+     * 2026-11-19：组的「线」状态判定（(cycle, 归口, 学院) 三元组）。
+     *
+     * <p>DISTRIBUTED → 将跳过；PENDING/IN_REVIEW → 在审（错误组）；无线/DRAFT → 将下发。
+     *
+     * <p>状态取值口径与 {@code PlanStatus.fromRaw} 同源：库里的 plan.status 允许
+     * DRAFT/PENDING/DISTRIBUTED/IN_REVIEW/APPROVED/REJECTED/RETURNED/WITHDRAWN，
+     * 「审批中」在库里的实际取值就是 IN_REVIEW（PENDING_APPROVAL/SUBMITTED 同理）。
+     * 本方法保留原始区分（PENDING / IN_REVIEW 分列），便于前端区分「刚提交待审」与「审批进行中」。
+     */
+    private AllImportLineStatus resolveAllImportLineStatus(Long cycleId,
+                                                            Long targetCollegeOrgId,
+                                                            Long functionalOrgId) {
+        Optional<Plan> line = findLinePlan(cycleId, targetCollegeOrgId, functionalOrgId);
+        if (line.isEmpty()) {
+            return AllImportLineStatus.NONE;
+        }
+        String status = line.get().getStatus();
+        if (status == null || status.isBlank()) {
+            return AllImportLineStatus.DRAFT;
+        }
+        String normalized = status.trim().toUpperCase(Locale.ROOT);
+        if ("DISTRIBUTED".equals(normalized) || "APPROVED".equals(normalized) || "ACTIVE".equals(normalized)
+                || "PUBLISHED".equals(normalized)) {
+            return AllImportLineStatus.DISTRIBUTED;
+        }
+        if ("IN_REVIEW".equals(normalized)) {
+            return AllImportLineStatus.IN_REVIEW;
+        }
+        if ("PENDING".equals(normalized) || "PENDING_APPROVAL".equals(normalized)
+                || "PENDING_REVIEW".equals(normalized) || "SUBMITTED".equals(normalized)) {
+            return AllImportLineStatus.PENDING;
+        }
+        return AllImportLineStatus.DRAFT;
+    }
+
+    /**
+     * 2026-11-19：组级基础性权重合计（只算该组参与落库的基础性有效行）。
+     *
+     * <p>口径与落库链一致：
+     * <ul>
+     *   <li>只有<b>父级核心指标所属任务为「基础性」</b>的行计入（学院链的任务类别由父级继承，
+     *       与 {@code distributionRowBasicContribution} 同款判定）；</li>
+     *   <li>CREATE 按落库权重（空权重默认 100）；UPDATE 按新值；SKIP/ERROR 不参与。</li>
+     * </ul>
+     *
+     * <p>与 {@code BasicTaskWeightValidationService.validateFuncToCollegeIndicators} 的差别：
+     * 那服务按「计划 + 学院」聚合已落库指标（每条线各自 100），本方法算的是
+     * <b>本次文件内该组的合计</b>——两者相乘叠加后由 commit 阶段的同一校验入口最终把关。
+     */
+    private BigDecimal sumGroupBasicWeight(List<DistributionRowAnchor> anchors,
+                                           List<ImportRowPreview> enrichedRows) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (int index = 0; index < enrichedRows.size() && index < anchors.size(); index++) {
+            ImportRowPreview row = enrichedRows.get(index);
+            if (row.action() != ImportAction.CREATE && row.action() != ImportAction.UPDATE) {
+                continue;
+            }
+            if (resolveParentTaskCategory(anchors.get(index).matchedParent()) != TaskType.BASIC) {
+                continue;
+            }
+            BigDecimal weight = row.normalized().weight();
+            total = total.add(defaultWeight(weight));
+        }
+        return total;
+    }
+
+    /**
+     * 2026-11-19：提交前复算组级错误（预览与提交之间数据可能变化，提交时再拦一次）。
+     */
+    private String resolveAllImportGroupError(AllImportEnrichedGroup group) {
+        for (ImportRowPreview row : group.rows()) {
+            if (row.hasErrors()) {
+                return "该组存在行级错误，请修正后重新上传";
+            }
+        }
+        BigDecimal total = sumGroupBasicWeight(group.anchors(), group.rows());
+        if (total.compareTo(REQUIRED_BASIC_WEIGHT_TOTAL) != 0) {
+            return group.functionalOrgName() + "组基础性权重合计 "
+                    + total.stripTrailingZeros().toPlainString() + "/"
+                    + REQUIRED_BASIC_WEIGHT_TOTAL.toPlainString()
+                    + "，不能下发；请修正该组权重或删除该组行后重新上传";
+        }
+        return null;
+    }
+
+    /**
+     * 2026-11-19：单个分组的落库（复用单条导入的 commitDistribution 落库链）。
+     *
+     * <p>差异只在「线身份」：本组的 functionalOrgId 即建线用的归口部门。
+     */
+    private CommitCounters commitDistributionGroup(AllImportEnrichedGroup group,
+                                                   AllImportPreviewContext context,
+                                                   ConflictMode conflictMode) {
+        Long functionalOrgId = group.functionalOrgId();
+        if (functionalOrgId == null) {
+            throw new IllegalArgumentException("无法确定本次导入归属的归口部门，请按归口部门分别导入后再上传");
+        }
+        SysOrg currentOrg = requireOrg(context.sourceOrgId(), "来源部门不存在");
+        if (!isStrategyOrg(currentOrg)) {
+            throw new IllegalArgumentException(
+                    "学院指标下发已统一由战略发展部发起，职能部门不再向学院分发指标");
+        }
+        SysOrg targetCollege = requireOrg(context.targetOrgId(), "目标学院不存在");
+        Plan plan = findOrCreateLinePlan(
+                context.cycleId(),
+                PlanLevel.FUNC_TO_COLLEGE,
+                currentOrg.getId(),
+                targetCollege.getId(),
+                functionalOrgId);
+        CommitCounter counter = new CommitCounter(plan);
+        Set<Long> coveredIds = new HashSet<>();
+        Set<Long> dispatchFunctionalOrgIds = new LinkedHashSet<>();
+        List<ImportRowPreview> importRows = group.rows();
+
+        for (int rowIndex = 0; rowIndex < importRows.size(); rowIndex++) {
+            ImportRowPreview row = importRows.get(rowIndex);
+            if (row.action() == ImportAction.ERROR || row.action() == ImportAction.SKIP
+                    || row.normalized().parentIndicatorId() == null) {
+                counter.skipped++;
+                continue;
+            }
+            NormalizedImportRow normalized = row.normalized();
+            Indicator parent = indicatorRepository.findById(normalized.parentIndicatorId())
+                    .orElseThrow(() -> new IllegalArgumentException("父级指标不存在: " + normalized.parentIndicatorId()));
+            Long parentOwnerOrgId = parent.getOwnerOrg() == null ? null : parent.getOwnerOrg().getId();
+            if (parentOwnerOrgId == null
+                    || !parentOwnerOrgId.equals(currentOrg.getId())
+                    || parent.getParentIndicatorId() != null) {
+                throw new IllegalArgumentException(
+                        "父级指标 ID " + normalized.parentIndicatorId() + " 不属于战略发展部下发的核心指标，请核对导出表中的内部 ID");
+            }
+            if (parent.getTargetOrg() != null && parent.getTargetOrg().getId() != null) {
+                dispatchFunctionalOrgIds.add(parent.getTargetOrg().getId());
+            }
+            StrategicTask parentTask = parent.getTaskId() == null
+                    ? null
+                    : taskRepository.findById(parent.getTaskId()).orElse(null);
+            if (parentTask != null && parentTask.getCycleId() != null) {
+                if (!parentTask.getCycleId().equals(context.cycleId())) {
+                    throw new IllegalArgumentException(
+                            "父级指标 ID " + normalized.parentIndicatorId() + " 属于其他考核年度，不能跨年度关联，请重新导出最新模板");
+                }
+            } else {
+                boolean parentInCurrentCycleAnchors = indicatorRepository
+                        .findCoreDispatchAnchors(currentOrg.getId(), context.cycleId())
+                        .stream()
+                        .anyMatch(anchor -> Objects.equals(anchor.getId(), parent.getId()));
+                if (!parentInCurrentCycleAnchors) {
+                    throw new IllegalArgumentException(
+                            "父级指标 ID " + normalized.parentIndicatorId()
+                                    + " 未关联有效战略任务，且不属于本考核年度战略发展部下发的核心指标，"
+                                    + "不能跨年度关联，请重新导出最新模板");
+                }
+            }
+            String taskName = firstNonBlank(normalized.parentStrategicTask(),
+                    parentTask == null ? null : parentTask.getName(), "学院子指标");
+            TaskType taskType = parentTask == null ? null : parentTask.getTaskType();
+            if (taskType == null) {
+                taskType = TaskType.DEVELOPMENT;
+            }
+            StrategicTask task = findOrCreateTask(plan, context.cycleId(), taskName, taskType, targetCollege, currentOrg);
+
+            Indicator target = null;
+            if (row.action() == ImportAction.UPDATE) {
+                target = resolveUpdateTarget(normalized, task.getId(), normalized.parentIndicatorId());
+                if (target == null) {
+                    counter.skipped++;
+                    continue;
+                }
+            }
+
+            Indicator indicator;
+            if (target != null) {
+                indicator = strategyApplicationService.updateIndicator(
+                        target.getId(),
+                        normalized.indicatorName(),
+                        normalized.weight(),
+                        null,
+                        null,
+                        normalized.remark(),
+                        task.getId(),
+                        currentOrg,
+                        targetCollege);
+                counter.updated++;
+            } else {
+                indicator = strategyApplicationService.createIndicator(
+                        normalized.indicatorName(),
+                        currentOrg,
+                        targetCollege,
+                        task.getId(),
+                        normalized.parentIndicatorId(),
+                        normalized.indicatorType(),
+                        defaultWeight(normalized.weight()),
+                        rowIndex + 1,
+                        normalized.remark(),
+                        0);
+                counter.created++;
+            }
+            if (indicator.getId() != null) {
+                coveredIds.add(indicator.getId());
+            }
+            activateIndicatorIfPlanDistributed(plan, indicator);
+        }
+        if (conflictMode == ConflictMode.UPDATE) {
+            counter.deleted += softDeleteIndicatorsNotCovered(plan, targetCollege.getId(), coveredIds);
+        }
+        applyFunctionalOrgFromDispatchChain(plan, dispatchFunctionalOrgIds);
+        return counter.toCounters();
+    }
+
+    /** 2026-11-19：单组的提交结果（事务内返回值）。 */
+    private record AllImportGroupOutcome(CommitCounters counters, String error) {
+    }
+
+    /** 2026-11-19：分组拆分结果（分组 + 无法识别组）。 */
+    private record AllImportSplit(List<AllImportSplitGroup> groups, List<ImportRowPreview> unassignedRows) {
+    }
+
+    /**
+     * 2026-11-19：一个归口分组（预览阶段）。
+     *
+     * @param anchorContext 该组行对应的锚点上下文（供逐组 enrich 复用行级校验）
+     */
+    private record AllImportSplitGroup(
+            Long functionalOrgId,
+            String functionalOrgName,
+            List<ImportRowPreview> rows,
+            DistributionAnchorContext anchorContext
+    ) {
+    }
+
+    /**
+     * 2026-11-19：一个归口分组（enrich 之后，提交阶段使用）。
+     *
+     * @param rows   该组 enrich 后的行（businessKey / action 已定型）
+     * @param anchors 该组对应的锚点上下文（组级权重按父级任务类别判定时要用）
+     */
+    private record AllImportEnrichedGroup(
+            Long functionalOrgId,
+            String functionalOrgName,
+            List<ImportRowPreview> rows,
+            List<DistributionRowAnchor> anchors
+    ) {
+    }
+
+    /** 2026-11-19：全部导入的批次上下文（与单条导入的 PreviewContext 平行，字段为其子集）。 */
+    private record AllImportPreviewContext(
+            String batchId,
+            Long cycleId,
+            Long sourceOrgId,
+            Long targetOrgId,
+            Long currentUserId,
+            String confirmToken,
+            List<AllImportEnrichedGroup> groups,
+            boolean blocking
+    ) {
+    }
+
+    /** 2026-11-19：学院导入的前置闸门结果（来源组织 / 目标学院）。 */
+    private record DistributionPreviewScope(Long sourceOrgId, SysOrg sourceOrg, SysOrg targetOrg) {
     }
 
     public ImportCommitResponse commit(String batchId,
@@ -631,6 +1355,24 @@ public class BusinessImportApplicationService {
     private DistributionAnchorContext resolveDistributionAnchors(List<ImportRowPreview> rows,
                                                                   SysOrg targetCollege,
                                                                   Long cycleId) {
+        DistributionAnchorContext context = matchDistributionAnchors(rows, targetCollege, cycleId);
+        // 第二遍：相对顺序校验——文件中出现的父级组序列必须是系统下发顺序的子序列
+        // （允许删掉不填的组，不允许调换/乱序；违反=阻断）
+        applyParentOrderValidation(context.anchors(), context.systemParentAnchors());
+        return context;
+    }
+
+    /**
+     * 2026-11-19（学院「全部导入」）：父级锚点<b>匹配</b>阶段（不含相对顺序校验）。
+     *
+     * <p>为什么拆出来：全部导入的文件里多个职能部门的父级组是<b>分块</b>排列的，
+     * 跨部门的相对顺序不应该互相约束（每组只跟自己部门的父级顺序比）。
+     * 因此全部导入路径：先全局匹配 → 按部门分组 → <b>逐组</b>做相对顺序校验。
+     * 单条导入路径仍走 {@link #resolveDistributionAnchors}（匹配 + 全局顺序校验），行为不变。
+     */
+    private DistributionAnchorContext matchDistributionAnchors(List<ImportRowPreview> rows,
+                                                               SysOrg targetCollege,
+                                                               Long cycleId) {
         // 2026-10-31 层级化定案：父级核心指标按名称反查（父指标是已下发系统数据，文件不再携带父级战略任务列）；
         // 子指标按（父级核心指标 + 名称）匹配——同名=更新、新名称=新增。
         // 2026-10-31 用户拍板（父级行=上级定死锚点）：系统父级锚点按 ID 升序作为「下发顺序」基准
@@ -670,9 +1412,6 @@ public class BusinessImportApplicationService {
         for (ImportRowPreview row : rows) {
             anchored.add(applyDistributionAnchor(row, targetCollege, parentByName, undistributedCoreByName));
         }
-        // 第二遍：相对顺序校验——文件中出现的父级组序列必须是系统下发顺序的子序列
-        // （允许删掉不填的组，不允许调换/乱序；违反=阻断）
-        applyParentOrderValidation(anchored, systemParentAnchors);
 
         // 2026-11-17（学院线粒度改造）：从匹配成功的父级核心指标反查归口部门集合
         // （父级核心指标是「战略部 → 职能部门」下发的，其 target_org 就是该学院的归口部门）。
@@ -1653,6 +2392,7 @@ public class BusinessImportApplicationService {
                                             indicator.getType(),
                                             indicator.getWeightPercent(),
                                             indicator.getRemark(),
+                                            null,
                                             null));
                         },
                         Function.identity(),
@@ -1691,7 +2431,8 @@ public class BusinessImportApplicationService {
                                         indicator.getType(),
                                         indicator.getWeightPercent(),
                                         indicator.getRemark(),
-                                        indicator.getParentIndicatorId())),
+                                        indicator.getParentIndicatorId(),
+                                        null)),
                         Function.identity(),
                         (left, right) -> left
                 ));
@@ -1774,7 +2515,8 @@ public class BusinessImportApplicationService {
                 row.indicatorType(),
                 row.weight(),
                 row.remark(),
-                parentIndicatorId);
+                parentIndicatorId,
+                row.functionalDept());
     }
 
     /**
