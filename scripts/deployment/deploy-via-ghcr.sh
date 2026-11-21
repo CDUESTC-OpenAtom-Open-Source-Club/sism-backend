@@ -91,6 +91,7 @@ fi
 # 不报错、登录冒烟不判状态码，把坏部署误报成「完成」。此处补齐真实门禁。
 rollback_remote() {
   log "自动回滚：恢复最新 .env.bak 镜像行并重建容器"
+  # shellcheck disable=SC2087
   ssh -o ConnectTimeout=15 "${REMOTE}" bash -s <<ROLLBACK_SCRIPT || log "回滚已执行"
 set -euo pipefail
 cd "${STACK_DIR}"
