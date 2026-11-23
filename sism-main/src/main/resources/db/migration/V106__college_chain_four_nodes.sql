@@ -1,0 +1,22 @@
+-- =====================================================
+-- 2026-11-22 用户定案：二级学院上报链删「分管校领导」审批环，5 环改 4 环
+-- - 原链（flow 4 = PLAN_APPROVAL_COLLEGE，5 节点）：
+--   填报人提交(11) → 学院审核人审批(12) → 分管职能部门负责人审批(13)
+--   → 分管职能部门校领导审批(14) → 战略发展部审核人审批(15, 终)
+-- - 新链（4 节点）：
+--   填报人提交(11) → 学院审核人审批(12) → 分管职能部门负责人审批(13)
+--   → 战略发展部审核人审批(15, 终)
+-- - 只删 step_def id=14（flow_id=4），其余 step_no 不重排：
+--   评级门禁 APPRAISAL_REQUIRED_STEP_ORDERS（COLLEGE={3,5}）按 step_no 列值
+--   匹配，不重排则零改动；15 仍保持终态。
+-- 在途实例安全性（ApproveWorkflowUseCase.createNextStep 行为）：
+--   * 停在第 3 步（分管职能部门负责人，step_def 13）的实例：通过后按剩余
+--     定义表顺延找到 step_def 15（战略发展部审核人）→ 正常进入终审；
+--   * 停在 step_def 14 的实例：该定义已删、找不到下一步定义而直接 APPROVED
+--     收口（V95 同类先例）。
+-- 历史步骤实例（approver_id、step_name 已锁定）不受影响；
+-- ApproverResolver.isCollegeFunctionalVicePresidentStep 等存量兜底保留，
+-- 保障历史已办卡详情与补审不 403。
+-- =====================================================
+
+DELETE FROM public.audit_step_def WHERE id = 14 AND flow_id = 4;

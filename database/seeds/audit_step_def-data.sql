@@ -1,7 +1,8 @@
 -- audit_step_def clean seed
 -- Scope:
 -- - Keep the approved workflow templates and their canonical steps
---   （2026-11-10 起：5 条业务流程 + flow 6 学院下发链，共 21 步）.
+--   （2026-11-10 起：5 条业务流程 + flow 6 学院下发链；2026-11-22 学院上报链
+--   删「分管校领导」环后共 20 步）.
 -- - Single-table seed only. Upstream dependencies are seeded separately by:
 --   - audit_flow_def-data.sql
 --   - sys_role-data.sql
@@ -17,10 +18,11 @@
 --   - "学院院长审批人审批" => role 4 + current college org
 --   - "战略发展部审核人审批" => role 3 + org 35（职能部门链 flow 3 末环与学院链 flow 4 末环同名）
 --   - "职能部门审批人审批" => role 2 + current functional org
--- College chain (flow 4) is 5 nodes per 2026-10-24 晚间定案（恢复 2026-09-17 的 5 节点设计；
--- 当日早间曾短暛建为 4 节点，经用户复核恢复）：
---   填报人提交 → 二级学院审批人 → 学院院长审批人 → 职能部门审批人 → 战略发展部终审人（终）
---   学院上报经内部三节点 + 上级职能部门审核人，最终由战略发展部审核人终审收口；
+-- College chain (flow 4) is 4 nodes per 2026-11-22 定案（删「分管校领导」审批环；
+-- 原 5 节点设计见 V96，节点删除见 V106，step_no 不重排、id 14 永久空缺）：
+--   填报人提交(11) → 学院审核人审批(12) → 分管职能部门负责人审批(13)
+--   → 战略发展部审核人审批(15, 终)
+--   学院上报经内部两节点 + 归口职能部门负责人，最终由战略发展部审核人终审收口；
 --   职能部门链 flow 3 保持 4 节点不变。
 -- College dispatch chain (flow 6, 2026-11-10 学院下发审批独立流程) is 3 nodes,
 -- 与 flow 1（PLAN_DISPATCH_STRATEGY，职能部门下发链）节点同构、定义独立：
@@ -58,7 +60,6 @@ VALUES
     (11, 4, '填报人提交', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
     (12, 4, '学院审核人审批', 'APPROVAL', 2, false, NOW(), NOW(), 2),
     (13, 4, '分管职能部门负责人审批', 'APPROVAL', 2, false, NOW(), NOW(), 3),
-    (14, 4, '分管职能部门校领导审批', 'APPROVAL', 4, false, NOW(), NOW(), 4),
     (15, 4, '战略发展部审核人审批', 'APPROVAL', 3, true, NOW(), NOW(), 5),
 
     (16, 5, '填报人修改', 'SUBMIT', NULL, false, NOW(), NOW(), 1),
