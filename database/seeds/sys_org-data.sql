@@ -39,6 +39,10 @@ VALUES
     (52, '后勤资产处', 'functional', true, 17, NOW(), NOW(), 35, 2, false),
     (53, '继续教育部', 'functional', true, 18, NOW(), NOW(), 35, 2, false),
     (54, '国际合作与交流处', 'functional', true, 19, NOW(), NOW(), 35, 2, false),
+    (62, '国际教育学院', 'functional', true, 27, NOW(), NOW(), 35, 2, false),
+    (63, '预算部', 'functional', true, 28, NOW(), NOW(), 35, 2, false),
+    (64, '什邡管委会', 'functional', true, 29, NOW(), NOW(), 35, 2, false),
+    (65, '产教合作部', 'functional', true, 30, NOW(), NOW(), 35, 2, false),
 
     (55, '马克思主义学院', 'academic', true, 20, NOW(), NOW(), 35, 2, false),
     (56, '工学院', 'academic', true, 21, NOW(), NOW(), 35, 2, false),
@@ -46,8 +50,7 @@ VALUES
     (58, '商学院', 'academic', true, 23, NOW(), NOW(), 35, 2, false),
     (59, '文理学院', 'academic', true, 24, NOW(), NOW(), 35, 2, false),
     (60, '艺术与科技学院', 'academic', true, 25, NOW(), NOW(), 35, 2, false),
-    (61, '航空学院', 'academic', true, 26, NOW(), NOW(), 35, 2, false),
-    (62, '国际教育学院', 'academic', true, 27, NOW(), NOW(), 35, 2, false)
+    (61, '航空学院', 'academic', true, 26, NOW(), NOW(), 35, 2, false)
 ON CONFLICT (id) DO UPDATE
 SET
     name = EXCLUDED.name,

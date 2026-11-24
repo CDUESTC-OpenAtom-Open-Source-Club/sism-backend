@@ -95,7 +95,7 @@ echo "==> Applying active Flyway migrations"
   DB_URL="$DB_JDBC_URL" \
   DB_USERNAME="$DB_USERNAME_VALUE" \
   DB_PASSWORD="$DB_PASSWORD_VALUE" \
-  ./mvnw -q org.flywaydb:flyway-maven-plugin:9.22.3:migrate \
+  ./mvnw -q org.flywaydb:flyway-maven-plugin:migrate \
     -Dflyway.locations="$FLYWAY_LOCATIONS"
 )
 

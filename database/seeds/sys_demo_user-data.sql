@@ -37,6 +37,10 @@ VALUES
     (418, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '后勤资产处[演示]', NULL, 'houqin_demo', 52, NULL, 0, true),
     (419, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '继续教育部[演示]', NULL, 'jixujiaoyu_demo', 53, NULL, 0, true),
     (420, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际交流处[演示]', NULL, 'guoji_demo', 54, NULL, 0, true),
+    (428, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院[演示]', NULL, 'guojijiaoyu_demo', 62, NULL, 0, true),
+    (429, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '预算部[演示]', NULL, 'yusuan_demo', 63, NULL, 0, true),
+    (430, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '什邡管委会[演示]', NULL, 'shifang_demo', 64, NULL, 0, true),
+    (431, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '产教合作部[演示]', NULL, 'chanjiao_demo', 65, NULL, 0, true),
 
     -- 二级学院
     (421, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '马院[演示]', NULL, 'makesi_demo', 55, NULL, 0, true),
@@ -45,8 +49,7 @@ VALUES
     (424, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '商学院[演示]', NULL, 'shangxue_demo', 58, NULL, 0, true),
     (425, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '文理学院[演示]', NULL, 'wenli_demo', 59, NULL, 0, true),
     (426, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '艺术与科技学院[演示]', NULL, 'yishukeji_demo', 60, NULL, 0, true),
-    (427, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '航空学院[演示]', NULL, 'hangkong_demo', 61, NULL, 0, true),
-    (428, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院[演示]', NULL, 'guojijiaoyu_demo', 62, NULL, 0, true)
+    (427, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '航空学院[演示]', NULL, 'hangkong_demo', 61, NULL, 0, true)
 ON CONFLICT (id) DO UPDATE SET
     updated_at = EXCLUDED.updated_at,
     is_active  = EXCLUDED.is_active,
@@ -86,6 +89,10 @@ VALUES
     (418, 1, NOW()), (418, 2, NOW()), (418, 3, NOW()), (418, 4, NOW()),
     (419, 1, NOW()), (419, 2, NOW()), (419, 3, NOW()), (419, 4, NOW()),
     (420, 1, NOW()), (420, 2, NOW()), (420, 3, NOW()), (420, 4, NOW()),
+    (428, 1, NOW()), (428, 2, NOW()), (428, 3, NOW()), (428, 4, NOW()),
+    (429, 1, NOW()), (429, 2, NOW()), (429, 3, NOW()), (429, 4, NOW()),
+    (430, 1, NOW()), (430, 2, NOW()), (430, 3, NOW()), (430, 4, NOW()),
+    (431, 1, NOW()), (431, 2, NOW()), (431, 3, NOW()), (431, 4, NOW()),
 
     -- 二级学院 (roles 1,2,3)
     -- 2026-10-26 用户定案：二级学院不设「分管校领导」席位（role 4）——
@@ -97,8 +104,7 @@ VALUES
     (424, 1, NOW()), (424, 2, NOW()), (424, 3, NOW()),
     (425, 1, NOW()), (425, 2, NOW()), (425, 3, NOW()),
     (426, 1, NOW()), (426, 2, NOW()), (426, 3, NOW()),
-    (427, 1, NOW()), (427, 2, NOW()), (427, 3, NOW()),
-    (428, 1, NOW()), (428, 2, NOW()), (428, 3, NOW())
+    (427, 1, NOW()), (427, 2, NOW()), (427, 3, NOW())
 ON CONFLICT DO NOTHING;
 
 -- Keep the user sequence aligned after explicit ID inserts.
