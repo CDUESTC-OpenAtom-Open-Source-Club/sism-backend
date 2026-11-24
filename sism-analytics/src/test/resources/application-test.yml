@@ -8,11 +8,20 @@ spring:
   jpa:
     database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
-      ddl-auto: create-drop
+      # 2026-11-23：禁用 Hibernate 自动建表。此前 create-drop 会按实体注解
+      # （含错位映射）生成假表，掩盖实体与真实库的结构偏差（D1 缺陷根因）。
+      # 建表语句由本模块测试自带 schema.sql 提供（与 V107 生产态对齐，
+      # BIGSERIAL→H2 IDENTITY 等价替换），实体注解保持生产定义不动。
+      ddl-auto: none
     show-sql: false
     properties:
       hibernate:
         format_sql: true
+
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
 
   flyway:
     enabled: false
