@@ -2313,7 +2313,7 @@ class BusinessImportApplicationServiceTest {
                 new ImportCommitRequest(preview.confirmToken(), ConflictMode.APPEND, false, "确认导入"),
                 fixture.currentUser());
         assertEquals("COMMITTED", result.status(),
-                "本线（人力资源部）无已下发计划，导入不应被另一归口已下发的线拦住——这正是曹老师反馈的缺陷");
+                "本线（人力资源部）无已下发计划，导入不应被另一归口已下发的线拦住——这正是线上测试反馈的缺陷");
         assertEquals(2, result.createdCount());
         // 关键契约：学院导入取线只走 5 键（带归口维度），不存在不带归口的学院查询兜底
         verify(planRepository, never()).findByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgId(
