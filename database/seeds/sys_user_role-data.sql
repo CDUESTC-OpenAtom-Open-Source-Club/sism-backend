@@ -95,7 +95,16 @@ INSERT INTO public.sys_user_role (id, user_id, role_id, created_at) VALUES
     (DEFAULT, 384, 2, NOW()),
     (DEFAULT, 385, 1, NOW()),
     (DEFAULT, 386, 2, NOW()),
-    (DEFAULT, 387, 2, NOW());
+    (DEFAULT, 387, 4, NOW()),
+    (DEFAULT, 388, 1, NOW()),
+    (DEFAULT, 389, 2, NOW()),
+    (DEFAULT, 390, 4, NOW()),
+    (DEFAULT, 392, 1, NOW()),
+    (DEFAULT, 393, 2, NOW()),
+    (DEFAULT, 394, 4, NOW()),
+    (DEFAULT, 396, 1, NOW()),
+    (DEFAULT, 397, 2, NOW()),
+    (DEFAULT, 398, 4, NOW());
 
 DELETE FROM public.sys_user_role
 WHERE role_id NOT IN (1, 2, 3, 4, 5);

@@ -126,7 +126,20 @@ VALUES
     (384, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '航空学院审核人', NULL, 'hangkong_leader', 61, NULL, 0),
     (385, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院填报人', NULL, 'guojijiaoyu_report', 62, NULL, 0),
     (386, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院审核人1', NULL, 'guojijiaoyu_audit1', 62, NULL, 0),
-    (387, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院审核人', NULL, 'guojijiaoyu_leader', 62, NULL, 0)
+    (387, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院领导', NULL, 'guojijiaoyu_leader', 62, NULL, 0),
+    (388, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '预算部填报人', NULL, 'yusuan_report', 63, NULL, 0),
+    (389, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '预算部审核人1', NULL, 'yusuan_audit1', 63, NULL, 0),
+    (390, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '预算部领导', NULL, 'yusuan_leader', 63, NULL, 0),
+    (391, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '预算部预留账号', NULL, 'yusuan_reserve', 63, NULL, 0),
+    (392, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '什邡管委会填报人', NULL, 'shifang_report', 64, NULL, 0),
+    (393, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '什邡管委会审核人1', NULL, 'shifang_audit1', 64, NULL, 0),
+    (394, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '什邡管委会领导', NULL, 'shifang_leader', 64, NULL, 0),
+    (395, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '什邡管委会预留账号', NULL, 'shifang_reserve', 64, NULL, 0),
+    (396, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '产教合作部填报人', NULL, 'chanjiao_report', 65, NULL, 0),
+    (397, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '产教合作部审核人1', NULL, 'chanjiao_audit1', 65, NULL, 0),
+    (398, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '产教合作部领导', NULL, 'chanjiao_leader', 65, NULL, 0),
+    (399, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '产教合作部预留账号', NULL, 'chanjiao_reserve', 65, NULL, 0),
+    (400, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院预留账号', NULL, 'guojijiaoyu_reserve', 62, NULL, 0)
 ON CONFLICT (id) DO UPDATE
 SET
     updated_at = EXCLUDED.updated_at,
