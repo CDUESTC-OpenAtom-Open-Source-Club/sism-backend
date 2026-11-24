@@ -110,13 +110,14 @@ public class BusinessWorkflowController {
     @Operation(summary = "获取我的待处理工作流任务")
     public ResponseEntity<ApiResponse<PageResult<WorkflowTaskResponse>>> getMyPendingTasks(
             @AuthenticationPrincipal CurrentUser currentUser,
-            @RequestParam(defaultValue = "1") int pageNum
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "10") int pageSize
     ) {
         if (currentUser == null) {
             return ResponseEntity.ok(ApiResponse.error(401, "未登录或登录已过期"));
         }
         PageResult<WorkflowTaskResponse> result = workflowService.getMyPendingTasks(
-                currentUser.getId(), pageNum);
+                currentUser.getId(), pageNum, pageSize);
         return ResponseEntity.ok(ApiResponse.success(result));
     }
 

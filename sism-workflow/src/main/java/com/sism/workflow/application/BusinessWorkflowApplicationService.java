@@ -191,6 +191,10 @@ public class BusinessWorkflowApplicationService {
         return workflowReadModelService.getMyPendingTasks(userId, pageNum);
     }
 
+    public PageResult<WorkflowTaskResponse> getMyPendingTasks(Long userId, int pageNum, int pageSize) {
+        return workflowReadModelService.getMyPendingTasks(userId, pageNum, pageSize);
+    }
+
     private boolean hasActiveInstance(Long entityId, String entityType) {
         if (isPlanReportEntityType(entityType)) {
             return auditInstanceRepository.hasActiveInstance(entityId, PLAN_REPORT_ENTITY_TYPE)

@@ -37,7 +37,7 @@ class BusinessWorkflowControllerTest {
     void getMyPendingTasksShouldReturn401WhenUserMissing() {
         BusinessWorkflowController controller = new BusinessWorkflowController(workflowService);
 
-        var response = controller.getMyPendingTasks(null, 1);
+        var response = controller.getMyPendingTasks(null, 1, 10);
 
         assertEquals(200, response.getStatusCodeValue());
         assertEquals(401, response.getBody().getCode());
@@ -110,11 +110,29 @@ class BusinessWorkflowControllerTest {
         PageResult<WorkflowTaskResponse> page = PageResult.of(List.of(), 0, 1, 10);
 
         when(currentUser.getId()).thenReturn(17L);
-        when(workflowService.getMyPendingTasks(17L, 1)).thenReturn(page);
+        when(workflowService.getMyPendingTasks(17L, 1, 10)).thenReturn(page);
 
-        var response = controller.getMyPendingTasks(currentUser, 1);
+        var response = controller.getMyPendingTasks(currentUser, 1, 10);
 
         assertEquals(200, response.getStatusCodeValue());
         assertEquals(page, response.getBody().getData());
+        verify(workflowService).getMyPendingTasks(17L, 1, 10);
+    }
+
+    @Test
+    @DisplayName("getMyPendingTasks should forward pageSize to the service unmodified")
+    void getMyPendingTasksShouldForwardPageSize() {
+        BusinessWorkflowController controller = new BusinessWorkflowController(workflowService);
+        PageResult<WorkflowTaskResponse> page = PageResult.of(List.of(), 3, 2, 2);
+
+        when(currentUser.getId()).thenReturn(17L);
+        when(workflowService.getMyPendingTasks(17L, 2, 2)).thenReturn(page);
+
+        var response = controller.getMyPendingTasks(currentUser, 2, 2);
+
+        assertEquals(200, response.getStatusCodeValue());
+        assertEquals(2, response.getBody().getData().getPageSize());
+        assertEquals(2, response.getBody().getData().getPageNum());
+        verify(workflowService).getMyPendingTasks(17L, 2, 2);
     }
 }

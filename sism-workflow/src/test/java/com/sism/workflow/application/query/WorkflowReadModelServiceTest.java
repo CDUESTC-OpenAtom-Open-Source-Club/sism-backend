@@ -270,6 +270,39 @@ class WorkflowReadModelServiceTest {
     }
 
     @Test
+    void getMyPendingTasks_shouldApplyRequestedPageSizeAndPageNum() {
+        AuditInstance instance = new AuditInstance();
+        instance.setId(45L);
+        instance.setFlowDefId(2L);
+        instance.setEntityType("PLAN");
+        instance.setEntityId(451L);
+
+        AuditStepInstance pending = new AuditStepInstance();
+        pending.setId(450L);
+        pending.setStepDefId(7L);
+        pending.setStepNo(1);
+        pending.setStepName("部门审批");
+        pending.setStatus(AuditInstance.STEP_STATUS_PENDING);
+        pending.setApproverId(140L);
+        pending.setCreatedAt(LocalDateTime.now());
+        instance.addStepInstance(pending);
+
+        when(userProvider.findIdentity(140L)).thenReturn(Optional.empty());
+        when(workflowQueryRepository.findPendingAuditInstancesByUserId(140L, PageRequest.of(1, 3)))
+                .thenReturn(new PageImpl<>(List.of(instance), PageRequest.of(1, 3), 7));
+
+        PageResult<WorkflowTaskResponse> result = newService().getMyPendingTasks(140L, 2, 3);
+
+        // pageSize/pageNum 必须原样透传到仓储分页，而不是被硬编码成 10 覆盖
+        assertEquals(3, result.getPageSize());
+        assertEquals(2, result.getPageNum());
+        assertEquals(3, result.getTotalPages());
+        assertEquals(7, result.getTotal());
+        org.mockito.Mockito.verify(workflowQueryRepository)
+                .findPendingAuditInstancesByUserId(140L, PageRequest.of(1, 3));
+    }
+
+    @Test
     void findMyPendingTaskById_shouldReturnDirectTaskMatch() {
         AuditInstance instance = new AuditInstance();
         instance.setId(33L);
