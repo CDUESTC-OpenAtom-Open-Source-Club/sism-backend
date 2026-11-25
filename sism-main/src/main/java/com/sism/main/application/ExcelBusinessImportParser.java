@@ -86,8 +86,8 @@ public class ExcelBusinessImportParser {
             Map.entry("seq", List.of("序号", "序 号")),
             // 2026-11-19（学院「全部导入」）：新增「职能部门」列——该行指标由哪个职能部门下发。
             // 三重作用：①拆批依据（显式按该列分组）②与父级核心指标归属交叉校验（防张冠李戴）
-            // ③用户可读。单条导入路径不读该字段（零行为变更）；「归口部门」为兼容别名。
-            Map.entry("functionalDept", List.of("职能部门", "归口部门"))
+            // ③用户可读。2026-11-25 模板改名为「归口职能部门」，两者都识别（旧文件仍可用）。
+            Map.entry("functionalDept", List.of("职能部门", "归口部门", "归口职能部门"))
     );
 
     private static final List<DateTimeFormatter> DATE_TIME_FORMATTERS = List.of(
