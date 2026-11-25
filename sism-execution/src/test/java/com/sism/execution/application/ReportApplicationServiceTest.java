@@ -94,7 +94,7 @@ class ReportApplicationServiceTest {
         deletedReport.setDeleted(true);
         deletedReport.setStatus(PlanReport.STATUS_REJECTED);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", "FUNC_DEPT", 39L, null))
                 .thenReturn(Optional.of(deletedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -114,7 +114,7 @@ class ReportApplicationServiceTest {
         activeReport.setId(7L);
         activeReport.setDeleted(false);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", "FUNC_DEPT", 39L, null))
                 .thenReturn(Optional.of(activeReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -126,7 +126,7 @@ class ReportApplicationServiceTest {
 
     @Test
     void createReport_shouldPersistFirstFiller() {
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", "FUNC_DEPT", 39L, null))
                 .thenReturn(Optional.empty());
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -172,7 +172,7 @@ class ReportApplicationServiceTest {
         approvedReport.setId(17L);
         approvedReport.setStatus(PlanReport.STATUS_APPROVED);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", "FUNC_DEPT", 39L, null))
                 .thenReturn(Optional.of(approvedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> {
             PlanReport report = invocation.getArgument(0);
@@ -197,7 +197,7 @@ class ReportApplicationServiceTest {
         rejectedReport.setAuditInstanceId(919L);
         rejectedReport.setSubmittedAt(java.time.LocalDateTime.now());
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", "FUNC_DEPT", 39L, null))
                 .thenReturn(Optional.of(rejectedReport));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -216,7 +216,7 @@ class ReportApplicationServiceTest {
         inReviewReport.setId(18L);
         inReviewReport.setStatus(PlanReport.STATUS_SUBMITTED);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", ReportOrgType.FUNC_DEPT, 39L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202603", "FUNC_DEPT", 39L, null))
                 .thenReturn(Optional.of(inReviewReport));
 
         assertThatThrownBy(() -> reportApplicationService.createReport("202603", 39L, ReportOrgType.FUNC_DEPT, 111L))
@@ -233,7 +233,7 @@ class ReportApplicationServiceTest {
         approvedJanuary.setStatus(PlanReport.STATUS_APPROVED);
 
         when(planReportRepository.findByReportOrgId(39L)).thenReturn(List.of(approvedJanuary));
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202602", ReportOrgType.FUNC_DEPT, 39L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202602", "FUNC_DEPT", 39L, null))
                 .thenReturn(Optional.empty());
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -1171,7 +1171,7 @@ class ReportApplicationServiceTest {
         PlanReport dept37Draft = PlanReport.createDraft("202610", 57L, ReportOrgType.COLLEGE, 111L, 8001L, 37L);
         dept37Draft.setId(81L);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", ReportOrgType.COLLEGE, 57L, 38L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", "COLLEGE", 57L, 38L))
                 .thenReturn(Optional.empty());
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> {
             PlanReport saved = invocation.getArgument(0);
@@ -1197,7 +1197,7 @@ class ReportApplicationServiceTest {
         PlanReport dept37Draft = PlanReport.createDraft("202610", 57L, ReportOrgType.COLLEGE, 111L, 8001L, 37L);
         dept37Draft.setId(82L);
 
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", ReportOrgType.COLLEGE, 57L, 37L))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", "COLLEGE", 57L, 37L))
                 .thenReturn(Optional.of(dept37Draft));
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ReportApplicationService service = serviceWithJdbcTemplate(
@@ -1214,7 +1214,7 @@ class ReportApplicationServiceTest {
     @Test
     void createReport_withoutFunctionalOrgDoesNotReuseDeptScopedDraft() {
         // 兼容口径：不传归口（NULL 分组）不会复用已按部门落值的草稿（NULL 与非 NULL 不同组）
-        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", ReportOrgType.COLLEGE, 57L, null))
+        when(planReportRepository.findLatestByMonthlyScope(111L, "202610", "COLLEGE", 57L, null))
                 .thenReturn(Optional.empty());
         when(planReportRepository.save(any(PlanReport.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
