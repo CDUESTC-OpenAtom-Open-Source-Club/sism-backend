@@ -20,18 +20,23 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * 2026-11-25（指标填报导入式上报 · 学院侧）：Excel 解析器。
+ * 2026-11-25（指标填报导入式上报）：Excel 解析器。
  *
- * <p><b>与 {@link ExcelBusinessImportParser}（导入下发）刻意分开</b>——两条链路的语义、表头、
- * 分组键、序号含义全不相同：
+ * <p><b>标准模板以需求方提供的「SISM-导入模板-04/05/06」为准</b>（2026-11-25 定稿）：
+ * 三份上报模板共用同一套 8 列结构，只有「第 3 列」的语义因流向不同而不同：
+ * <pre>
+ * 序号 ｜ 责任部门（来源·须与登录学院/部门一致） ｜ 目标部门（归口职能部门）/ 上报目标（战略发展部）
+ *      ｜ 子指标名称 ｜ 权重（系统只读）｜ 自评等级（点选填写）｜ 进度说明（请填写）｜（枚举来源，勿动）
+ * </pre>
+ *
  * <ul>
- *   <li>下发：落 {@code plan}/{@code indicator}，按「父级核心指标」分组，序号 = <b>组号</b>（sticky 继承）；</li>
- *   <li>填报（本类）：落 {@code plan_report_indicator}，按「归口职能部门」分组，序号 = <b>普通行号</b>。</li>
+ *   <li><b>责任部门</b>（来源）= 登录人所在组织，必须与登录身份一致（04 是部门、05/06 是学院）；</li>
+ *   <li><b>目标部门 / 上报目标</b> = 这条填报流向上报到哪（05/06 = 归口职能部门；04 = 战略发展部）；</li>
+ *   <li><b>（枚举来源，勿动）</b> = 给 Excel 下拉做数据源的辅助列，解析时<b>完全忽略</b>。</li>
  * </ul>
  *
- * <p>表头识别采用<b>归一化后全等匹配</b>：先剥掉换行/多余空白与括号说明
- * （如「学院\n（须与登录学院一致）」→「学院」），再与别名表比对。
- * 这样系统发出的<b>带括号说明的模板</b>与用户自行整理的<b>干净表头</b>都能识别。
+ * <p><b>与 {@link ExcelBusinessImportParser}（导入下发）刻意分开</b>——下发落 {@code plan}/{@code indicator}、
+ * 按父级核心指标分组、序号是组号；填报落 {@code plan_report_indicator}、按目标部门拆线、序号只是行号。
  */
 @Component
 public class ReportFillImportParser {
@@ -44,17 +49,21 @@ public class ReportFillImportParser {
     /**
      * 字段别名表（键 = 内部字段名，值 = 归一化后的合法表头文案）。
      *
-     * <p>与既有下发模板<b>刻意区分</b>：下发模板的「职能部门」列含义是「该行指标由哪个职能部门下发」，
-     * 而本模板的「归口职能部门」列含义是「本行填报归属哪条归口线」——名字相近但语义不同，
-     * 不能混用同一套别名，否则会把下发文件误认成填报文件。
+     * <p>2026-11-25（新模板定稿）：列名改为「责任部门 / 目标部门（上报目标）」。
+     * 旧模板（「学院 / 归口职能部门」）作为别名保留，历史文件照样能解析。
+     *
+     * <p>注意「（枚举来源，勿动）」列<b>不在</b>别名表里——匹配不到即为忽略列。
      */
     private static final Map<String, List<String>> FIELD_ALIASES = new LinkedHashMap<>();
 
     static {
-        FIELD_ALIASES.put("seq", List.of("序号", "序 号", "编号", "行号"));
-        FIELD_ALIASES.put("college", List.of("学院", "学院名称", "责任学院", "填报学院"));
-        FIELD_ALIASES.put("functionalDept", List.of(
-                "归口职能部门", "归口部门", "归口职能部门名称", "归口部门名称"));
+        FIELD_ALIASES.put("seq", List.of("序号", "编号", "行号"));
+        // 责任部门（来源）= 登录人所在组织
+        FIELD_ALIASES.put("responsibleDept", List.of(
+                "责任部门", "责任学院", "部门", "学院", "填报部门", "填报学院", "来源部门", "来源学院"));
+        // 目标部门 / 上报目标 = 上报流向的组织（05/06 归口职能部门，04 战略发展部）
+        FIELD_ALIASES.put("targetDept", List.of(
+                "目标部门", "上报目标", "目标组织", "归口职能部门", "归口部门", "职能部门", "上报部门"));
         FIELD_ALIASES.put("indicatorName", List.of("子指标名称", "子指标", "指标名称", "指标"));
         FIELD_ALIASES.put("weight", List.of("权重", "指标权重", "子指标权重"));
         FIELD_ALIASES.put("selfRating", List.of("自评等级", "自评进度", "自评进度等级", "进度等级"));
@@ -65,8 +74,10 @@ public class ReportFillImportParser {
     public record ParsedRow(
             int rowNo,
             String seq,
-            String college,
-            String functionalDept,
+            /** 责任部门（来源）：登录人所在组织 */
+            String responsibleDept,
+            /** 目标部门 / 上报目标：这条填报上报到哪 */
+            String targetDept,
             String indicatorName,
             String weight,
             String selfRating,
@@ -83,16 +94,14 @@ public class ReportFillImportParser {
     }
 
     /**
-     * 表头归一化：剥离换行/多余空白与括号说明。
+     * 表头归一化：剥离换行/多余空白与括号说明，并把全角空格转半角。
      *
-     * <p>「学院\n（须与登录学院一致）」→「学院」；「权重（系统只读）」→「权重」。
+     * <p>「责任部门\n（来源·须与登录学院一致）」→「责任部门」；「权重（系统只读）」→「权重」。
      */
     public static String normalizeHeader(String raw) {
         if (raw == null) {
             return "";
         }
-        // 2026-11-25（审查修正）：Java 的 \s 与 String.trim() 都不处理全角空格 U+3000，
-        // 用户从网页/文档粘贴的「学院　（须与登录学院一致）」会归一化失败，先统一替换。
         String text = raw.replace('\u3000', ' ')
                 .replace('\n', ' ')
                 .replace('\r', ' ')
@@ -106,7 +115,7 @@ public class ReportFillImportParser {
      * 解析上传的填报导入文件。
      *
      * @param file      上传的 Excel
-     * @param sheetName 指定工作表名（空 = 取第一个有内容的工作表）
+     * @param sheetName 指定工作表名（空 = 优先取表头能命中的工作表）
      */
     public ParsedWorkbook parse(MultipartFile file, String sheetName) {
         try (InputStream inputStream = file.getInputStream();
@@ -128,9 +137,8 @@ public class ReportFillImportParser {
     /**
      * 选工作表：优先用「表头能命中」的页，而不是「行数 > 0」的页。
      *
-     * <p>2026-11-25（审查修正）：用户按说明删掉全部示例行、只留表头时，
-     * {@code getLastRowNum() == 0}，旧的「跳过空页」逻辑会把数据页跳过、
-     * 转而解析第二个「填写说明」页，报「未识别到有效表头」——提示完全跑偏。
+     * <p>用户按说明删掉全部示例行、只留表头时 {@code getLastRowNum() == 0}，
+     * 旧的「跳过空页」逻辑会把数据页跳过、转而解析「填写说明」页，报「未识别到有效表头」——提示跑偏。
      */
     private Sheet resolveSheet(Workbook workbook, String sheetName, DataFormatter formatter) {
         if (sheetName != null && !sheetName.isBlank()) {
@@ -140,13 +148,11 @@ public class ReportFillImportParser {
             }
             return sheet;
         }
-        // 1) 优先找表头能命中的页（说明页没有表头，自然被跳过）
         for (Sheet sheet : workbook) {
             if (hasRecognizableHeader(sheet, formatter)) {
                 return sheet;
             }
         }
-        // 2) 退化为第一个非空页；都没有则报错（由调用方给出「没有可解析工作表」）
         for (Sheet sheet : workbook) {
             if (sheet.getPhysicalNumberOfRows() > 0) {
                 return sheet;
@@ -155,7 +161,7 @@ public class ReportFillImportParser {
         return workbook.getNumberOfSheets() > 0 ? workbook.getSheetAt(0) : null;
     }
 
-    /** 该页是否存在能命中「子指标名称」的表头行。 */
+    /** 该页是否存在能命中「子指标名称 + 责任部门」的表头行（两者同时命中才认，避免误选说明页）。 */
     private boolean hasRecognizableHeader(Sheet sheet, DataFormatter formatter) {
         FormulaEvaluator evaluator = sheet.getWorkbook().getCreationHelper().createFormulaEvaluator();
         for (int rowIndex = sheet.getFirstRowNum(); rowIndex <= sheet.getLastRowNum(); rowIndex++) {
@@ -163,7 +169,8 @@ public class ReportFillImportParser {
             if (row == null) {
                 continue;
             }
-            if (matchHeader(row, formatter, evaluator).containsKey("indicatorName")) {
+            Map<String, Integer> matched = matchHeader(row, formatter, evaluator);
+            if (matched.containsKey("indicatorName") && matched.containsKey("responsibleDept")) {
                 return true;
             }
         }
@@ -182,7 +189,7 @@ public class ReportFillImportParser {
                 continue;
             }
             Map<String, Integer> candidate = matchHeader(row, formatter, evaluator);
-            if (candidate.containsKey("indicatorName")) {
+            if (candidate.containsKey("indicatorName") && candidate.containsKey("responsibleDept")) {
                 headerRowIndex = rowIndex;
                 fieldColumns = candidate;
                 break;
@@ -190,7 +197,7 @@ public class ReportFillImportParser {
         }
         if (headerRowIndex < 0) {
             throw new IllegalStateException(
-                    "未识别到有效表头，请使用最新导出的表格或下载最新模板后重试");
+                    "未识别到有效表头：需要「责任部门」「子指标名称」两列，请使用最新模板后重试");
         }
 
         List<ParsedRow> rows = new ArrayList<>();
@@ -199,13 +206,12 @@ public class ReportFillImportParser {
             if (row == null || isRowBlank(row, formatter, evaluator)) {
                 continue;
             }
-            // 2026-11-25：rowNo 记 Excel 物理行号（1-based），
-            // 报错文案直接对得上用户在 Excel 里看到的行，不差表头那一行。
+            // rowNo 记 Excel 物理行号（1-based），报错文案直接对得上用户在 Excel 里看到的行
             rows.add(new ParsedRow(
                     rowIndex + 1,
                     cellText(row, fieldColumns.get("seq"), formatter, evaluator),
-                    cellText(row, fieldColumns.get("college"), formatter, evaluator),
-                    cellText(row, fieldColumns.get("functionalDept"), formatter, evaluator),
+                    cellText(row, fieldColumns.get("responsibleDept"), formatter, evaluator),
+                    cellText(row, fieldColumns.get("targetDept"), formatter, evaluator),
                     cellText(row, fieldColumns.get("indicatorName"), formatter, evaluator),
                     cellText(row, fieldColumns.get("weight"), formatter, evaluator),
                     cellText(row, fieldColumns.get("selfRating"), formatter, evaluator),
@@ -217,7 +223,7 @@ public class ReportFillImportParser {
     /**
      * 表头匹配：把该行的每个单元格归一化后与别名表比对，返回「字段名 → 列下标」。
      *
-     * <p>同一字段命中多列时取第一列（与既有下发解析器的取值口径一致）。
+     * <p>「（枚举来源，勿动）」列归一化后是「枚举来源」/「勿动」，不在别名表里 → 自动忽略。
      */
     private Map<String, Integer> matchHeader(Row row, DataFormatter formatter, FormulaEvaluator evaluator) {
         Map<String, Integer> matched = new LinkedHashMap<>();
@@ -267,25 +273,23 @@ public class ReportFillImportParser {
     /**
      * 校验一行的<b>列级</b>内容（不涉及系统数据定位）。
      *
-     * <p>口径来自模板「填写说明」：
+     * <p>口径来自新模板「填写说明」：
      * <ul>
-     *   <li>第 6 条：自评等级下拉三选一「超前完成 / 正常 / 滞后」，手输其他内容会被拒绝 → 严格白名单；</li>
-     *   <li>第 7 条：权重列系统只读参考 → 权重不参与落库，格式异常只警告不阻断；</li>
-     *   <li>第 5 条：按「学院 + 归口职能部门 + 子指标名称」定位 → 三者缺一即无法定位。</li>
+     *   <li>责任部门必填（解析时与登录身份比对，不一致整单拒绝）；</li>
+     *   <li>目标部门必填（校验流转方向）；</li>
+     *   <li>子指标名称必填（定位键）；</li>
+     *   <li>自评等级严格三选一「超前完成 / 正常 / 滞后」；</li>
+     *   <li>进度说明必填；</li>
+     *   <li>序号只是行标识，不校验。</li>
      * </ul>
-     *
-     * @return 错误文案列表（空 = 通过）
      */
     public static List<String> validateRowContent(ParsedRow row) {
         List<String> errors = new ArrayList<>();
-        // 2026-11-25（审查修正）：序号只是行标识，不是定位键（定位键 = 学院 + 归口 + 子指标名称）。
-        // 旧实现强制必填且必须正整数，用户删掉「序号」列或单元格格式为 0.0（DataFormatter 给 "1.0"）
-        // 都会整份文件全行失败。现在完全不校验序号——它不参与定位，也不落库。
-        if (isBlank(row.college())) {
-            errors.add("学院不能为空");
+        if (isBlank(row.responsibleDept())) {
+            errors.add("责任部门不能为空");
         }
-        if (isBlank(row.functionalDept())) {
-            errors.add("归口职能部门不能为空");
+        if (isBlank(row.targetDept())) {
+            errors.add("目标部门（上报目标）不能为空");
         }
         if (isBlank(row.indicatorName())) {
             errors.add("子指标名称不能为空");
