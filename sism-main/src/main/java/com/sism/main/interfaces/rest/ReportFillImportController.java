@@ -48,11 +48,13 @@ public class ReportFillImportController {
     @Operation(summary = "预览填报导入",
             description = "解析填报导入 Excel：校验学院列、归口线拆分、指标定位、等级白名单校验；"
                     + "返回逐组预览（将提交 / 将跳过 / 错误组）。"
-                    + "functionalOrgId 仅单归口入口传（只提交该归口线，其余标记为将跳过）；批量入口传 null")
+                    + "mode=single（单归口入口）时必须给 functionalOrgId，只提交该归口线；"
+                    + "mode=all（默认，批量入口）提交文件内出现的全部归口线")
     public ResponseEntity<ApiResponse<ReportFillPreviewResponse>> preview(
             @RequestPart("file") MultipartFile file,
             @RequestParam Long cycleId,
             @RequestParam String reportMonth,
+            @RequestParam(required = false, defaultValue = "all") String mode,
             @RequestParam(required = false) Long functionalOrgId,
             @RequestParam(required = false) String sheetName,
             @AuthenticationPrincipal CurrentUser currentUser) {
@@ -61,6 +63,7 @@ public class ReportFillImportController {
                         file,
                         cycleId,
                         reportMonth,
+                        mode,
                         functionalOrgId,
                         sheetName,
                         currentUser)));

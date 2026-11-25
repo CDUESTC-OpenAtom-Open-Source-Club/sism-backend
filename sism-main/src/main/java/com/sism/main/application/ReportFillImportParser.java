@@ -91,7 +91,12 @@ public class ReportFillImportParser {
         if (raw == null) {
             return "";
         }
-        String text = raw.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ');
+        // 2026-11-25（审查修正）：Java 的 \s 与 String.trim() 都不处理全角空格 U+3000，
+        // 用户从网页/文档粘贴的「学院　（须与登录学院一致）」会归一化失败，先统一替换。
+        String text = raw.replace('\u3000', ' ')
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .replace('\t', ' ');
         text = PARENTHESIZED_HINT.matcher(text).replaceAll(" ");
         text = WHITESPACE.matcher(text).replaceAll(" ");
         return text.trim();
@@ -106,7 +111,8 @@ public class ReportFillImportParser {
     public ParsedWorkbook parse(MultipartFile file, String sheetName) {
         try (InputStream inputStream = file.getInputStream();
              Workbook workbook = WorkbookFactory.create(inputStream)) {
-            Sheet sheet = resolveSheet(workbook, sheetName);
+            DataFormatter formatter = new DataFormatter(Locale.CHINA);
+            Sheet sheet = resolveSheet(workbook, sheetName, formatter);
             if (sheet == null) {
                 throw new IllegalStateException("Excel 文件中没有可解析的工作表");
             }
@@ -119,7 +125,14 @@ public class ReportFillImportParser {
         }
     }
 
-    private Sheet resolveSheet(Workbook workbook, String sheetName) {
+    /**
+     * 选工作表：优先用「表头能命中」的页，而不是「行数 > 0」的页。
+     *
+     * <p>2026-11-25（审查修正）：用户按说明删掉全部示例行、只留表头时，
+     * {@code getLastRowNum() == 0}，旧的「跳过空页」逻辑会把数据页跳过、
+     * 转而解析第二个「填写说明」页，报「未识别到有效表头」——提示完全跑偏。
+     */
+    private Sheet resolveSheet(Workbook workbook, String sheetName, DataFormatter formatter) {
         if (sheetName != null && !sheetName.isBlank()) {
             Sheet sheet = workbook.getSheet(sheetName);
             if (sheet == null) {
@@ -127,12 +140,34 @@ public class ReportFillImportParser {
             }
             return sheet;
         }
+        // 1) 优先找表头能命中的页（说明页没有表头，自然被跳过）
         for (Sheet sheet : workbook) {
-            if (sheet.getLastRowNum() > 0) {
+            if (hasRecognizableHeader(sheet, formatter)) {
+                return sheet;
+            }
+        }
+        // 2) 退化为第一个非空页；都没有则报错（由调用方给出「没有可解析工作表」）
+        for (Sheet sheet : workbook) {
+            if (sheet.getPhysicalNumberOfRows() > 0) {
                 return sheet;
             }
         }
         return workbook.getNumberOfSheets() > 0 ? workbook.getSheetAt(0) : null;
+    }
+
+    /** 该页是否存在能命中「子指标名称」的表头行。 */
+    private boolean hasRecognizableHeader(Sheet sheet, DataFormatter formatter) {
+        FormulaEvaluator evaluator = sheet.getWorkbook().getCreationHelper().createFormulaEvaluator();
+        for (int rowIndex = sheet.getFirstRowNum(); rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) {
+                continue;
+            }
+            if (matchHeader(row, formatter, evaluator).containsKey("indicatorName")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ParsedWorkbook parseSheet(Sheet sheet) {
@@ -243,11 +278,9 @@ public class ReportFillImportParser {
      */
     public static List<String> validateRowContent(ParsedRow row) {
         List<String> errors = new ArrayList<>();
-        if (isBlank(row.seq())) {
-            errors.add("序号不能为空");
-        } else if (!isPositiveInteger(row.seq())) {
-            errors.add("序号「" + row.seq() + "」必须是正整数");
-        }
+        // 2026-11-25（审查修正）：序号只是行标识，不是定位键（定位键 = 学院 + 归口 + 子指标名称）。
+        // 旧实现强制必填且必须正整数，用户删掉「序号」列或单元格格式为 0.0（DataFormatter 给 "1.0"）
+        // 都会整份文件全行失败。现在完全不校验序号——它不参与定位，也不落库。
         if (isBlank(row.college())) {
             errors.add("学院不能为空");
         }
@@ -283,14 +316,6 @@ public class ReportFillImportParser {
             warnings.add("权重「" + row.weight() + "」不是数字（该列只作参考，不影响导入）");
         }
         return warnings;
-    }
-
-    private static boolean isPositiveInteger(String value) {
-        try {
-            return Integer.parseInt(value.trim()) > 0;
-        } catch (NumberFormatException ex) {
-            return false;
-        }
     }
 
     private static boolean isBlank(String value) {

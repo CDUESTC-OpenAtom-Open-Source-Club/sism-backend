@@ -92,15 +92,23 @@ public class ReportFillImportApplicationService {
     /** 预览批次上下文（batchId → 上下文）。 */
     private final Map<String, ReportFillPreviewContext> previews = new ConcurrentHashMap<>();
 
-    /** 预览批次上下文。 */
+    /**
+     * 预览批次上下文。
+     *
+     * <p>记录 {@code currentUserId} 用于 commit 时的<b>批次归属校验</b>——与既有导入下发链路
+     * （{@code BusinessImportApplicationService} 的「只能确认自己上传的导入批次」）同口径，
+     * 否则任何持 REPORTER 角色的用户拿到 batchId + confirmToken 就能代别人学院落库并提交审批。
+     */
     private record ReportFillPreviewContext(
             String batchId,
             String confirmToken,
+            Long currentUserId,
             Long cycleId,
             String reportMonth,
             Long collegeOrgId,
             String collegeName,
             List<ReportFillGroup> groups,
+            boolean submittable,
             LocalDateTime createdAt
     ) {
         boolean expired(LocalDateTime now) {
@@ -116,13 +124,18 @@ public class ReportFillImportApplicationService {
      * @param file              上传的填报导入 Excel
      * @param cycleId           考核周期 id（用于定位「学院 × 归口」的已下发计划线）
      * @param reportMonth       归属月份（yyyyMM 或 yyyy-MM）——模板不含月份列，由界面选择
-     * @param functionalOrgId   单归口入口传入的归口部门 id（仅提交该归口的线，其余标记为将跳过）；
-     *                          批量入口传 null = 文件内出现的归口线全部提交
+     * @param mode              {@code "single"} = 单归口入口（必须给 functionalOrgId，只提交该线）；
+     *                          {@code "all"}（默认）= 批量入口（文件内出现的归口线全部提交）。
+     *                          2026-11-25（审查修正）：不再用「functionalOrgId 是否为 null」隐式表达模式
+     *                          ——null 与「没传」无法区分，会让单归口静默退化成批量。
+     * @param functionalOrgId   单归口入口选中的归口部门 id
      * @param sheetName         工作表名（可空）
      */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
     public ReportFillPreviewResponse preview(MultipartFile file,
                                              Long cycleId,
                                              String reportMonth,
+                                             String mode,
                                              Long functionalOrgId,
                                              String sheetName,
                                              CurrentUser currentUser) {
@@ -131,6 +144,12 @@ public class ReportFillImportApplicationService {
         }
         if (cycleId == null) {
             throw new IllegalArgumentException("考核周期不能为空");
+        }
+        boolean singleLineMode = isSingleLineMode(mode);
+        if (singleLineMode && functionalOrgId == null) {
+            // 服务端防线：前端隐藏/置灰不能替代服务端校验
+            throw new IllegalArgumentException(
+                    "单归口导入必须指定归属部门（所选归属部门尚未加载完成，请刷新后重试）");
         }
         String month = normalizeReportMonth(reportMonth);
         clearExpiredPreviews();
@@ -145,7 +164,8 @@ public class ReportFillImportApplicationService {
         // 模板「填写说明」第 3 条：学院列必须等于登录人所在学院，不一致整单拒绝。
         assertCollegeColumnMatches(workbook.rows(), college.getName());
 
-        List<ReportFillGroup> groups = buildGroups(workbook.rows(), cycleId, college, functionalOrgId);
+        List<ReportFillGroup> groups = buildGroups(
+                workbook.rows(), cycleId, college, singleLineMode ? functionalOrgId : null);
         boolean hasSubmittableGroup = groups.stream().anyMatch(ReportFillGroup::willSubmit);
 
         String batchId = UUID.randomUUID().toString();
@@ -153,11 +173,13 @@ public class ReportFillImportApplicationService {
         previews.put(batchId, new ReportFillPreviewContext(
                 batchId,
                 confirmToken,
+                currentUser.getId(),
                 cycleId,
                 month,
                 college.getId(),
                 college.getName(),
                 groups,
+                hasSubmittableGroup,
                 LocalDateTime.now()));
 
         return new ReportFillPreviewResponse(
@@ -171,6 +193,10 @@ public class ReportFillImportApplicationService {
                 // 整单阻断 = 一条可提交的线都没有（单组出错不阻断整单）
                 !hasSubmittableGroup,
                 confirmToken);
+    }
+
+    private boolean isSingleLineMode(String mode) {
+        return mode != null && "single".equalsIgnoreCase(mode.trim());
     }
 
     // ==================== 提交 ====================
@@ -191,6 +217,19 @@ public class ReportFillImportApplicationService {
         if (request == null || request.confirmToken() == null
                 || !request.confirmToken().equals(context.confirmToken())) {
             throw new IllegalArgumentException("确认令牌无效或已过期，请重新解析预览");
+        }
+        // 2026-11-25（审查修正）：批次归属校验——与既有导入下发链路「只能确认自己上传的导入批次」同口径。
+        // 否则任何持 REPORTER 角色的用户拿到 batchId + confirmToken 就能把填报写进别人学院的月报并提交审批。
+        if (currentUser == null
+                || !Objects.equals(currentUser.getId(), context.currentUserId())
+                || !Objects.equals(currentUser.getOrgId(), context.collegeOrgId())) {
+            throw new SecurityException("只能确认自己上传的导入批次");
+        }
+        // 2026-11-25（审查修正）：服务端也要守「没有任何可提交的归口线」这条线，
+        // 前端置灰不能替代服务端校验（项目既有原则）。
+        if (!context.submittable()) {
+            throw new IllegalArgumentException(
+                    "当前批次的全部归口线均不可提交，请按预览中的错误提示修正后重新上传");
         }
 
         List<ReportFillGroupResult> results = new ArrayList<>();
@@ -230,7 +269,12 @@ public class ReportFillImportApplicationService {
             }
         }
 
-        previews.remove(batchId);
+        // 2026-11-25（审查修正）：只有全部成功/跳过才移除批次。
+        // 有失败时保留（受 TTL 约束），便于用户按结果排查后重试同一批次。
+        if (failed == 0) {
+            previews.remove(batchId);
+        }
+
         return new ReportFillCommitResponse(results, new ReportFillCommitSummary(success, skipped, failed));
     }
 
@@ -356,9 +400,12 @@ public class ReportFillImportApplicationService {
                 }
             }
 
+            boolean skipLocate = groupError != null || skipReason != null;
             for (ParsedRow row : deptRows) {
-                enriched.add(toPreviewRow(row, indicatorByName));
+                enriched.add(toPreviewRow(row, indicatorByName, !skipLocate));
             }
+            // 同一线内同一子指标重复出现（复制粘贴常见）→ 行级点名，避免后者静默覆盖前者
+            markDuplicateIndicatorRows(enriched);
 
             boolean hasRowError = enriched.stream().anyMatch(ReportFillRow::hasErrors);
             boolean willSubmit = groupError == null && skipReason == null && !hasRowError && linePlan != null;
@@ -381,18 +428,21 @@ public class ReportFillImportApplicationService {
 
     /**
      * 把一行解析结果组装成预览行：列级校验 + 系统侧定位。
+     *
+     * @param locate false = 不做指标定位（组级已判错或该组将跳过）。
+     *               2026-11-25（审查修正）：旧实现无条件定位，导致「将跳过」的组每行都追加
+     *               「系统里没有找到子指标「X」」——用户看到组头灰「将跳过」、组内行却全红失败，
+     *               真实原因（不属于所选归口）被淹没。
      */
     private ReportFillRow toPreviewRow(ParsedRow row,
-                                       Map<String, List<Indicator>> indicatorByName) {
+                                       Map<String, List<Indicator>> indicatorByName,
+                                       boolean locate) {
         List<String> errors = new ArrayList<>(ReportFillImportParser.validateRowContent(row));
         List<String> warnings = new ArrayList<>(ReportFillImportParser.validateWeightHint(row));
 
-        Long indicatorId = null;
-        String matchedName = null;
         ReportFillLevel level = ReportFillLevel.fromLabel(row.selfRating());
 
-        if (!errors.isEmpty()) {
-            // 列级已有错误 → 不再定位（定位无意义，且避免给出误导性的「找不到」提示）
+        if (!errors.isEmpty() || !locate) {
             return new ReportFillRow(
                     row.rowNo(),
                     row.college(),
@@ -408,6 +458,8 @@ public class ReportFillImportApplicationService {
                     warnings);
         }
 
+        Long indicatorId = null;
+        String matchedName = null;
         List<Indicator> candidates = indicatorByName.get(normalizeKey(row.indicatorName()));
         if (candidates == null || candidates.isEmpty()) {
             errors.add("系统里没有找到子指标「" + row.indicatorName() + "」，请核对名称是否与下发的指标完全一致");
@@ -431,6 +483,40 @@ public class ReportFillImportApplicationService {
                 matchedName,
                 errors,
                 warnings);
+    }
+
+    /**
+     * 同一归口线内同一子指标出现多行 → 给第二行及以后追加行级错误。
+     *
+     * <p>落库是逐条 upsert，重复行会静默覆盖前一行，但结果仍报「已导入 N 条」——用户以为都写进去了。
+     */
+    private void markDuplicateIndicatorRows(List<ReportFillRow> rows) {
+        Map<Long, Integer> firstRowNoByIndicator = new LinkedHashMap<>();
+        for (int i = 0; i < rows.size(); i++) {
+            ReportFillRow row = rows.get(i);
+            if (row.indicatorId() == null) {
+                continue;
+            }
+            Integer firstRowNo = firstRowNoByIndicator.putIfAbsent(row.indicatorId(), row.rowNo());
+            if (firstRowNo == null) {
+                continue;
+            }
+            List<String> errors = new ArrayList<>(row.errors());
+            errors.add("与第 " + firstRowNo + " 行重复填报同一子指标，请删除其中一行");
+            rows.set(i, new ReportFillRow(
+                    row.rowNo(),
+                    row.college(),
+                    row.functionalDept(),
+                    row.indicatorName(),
+                    row.weight(),
+                    row.selfRating(),
+                    row.level(),
+                    row.remark(),
+                    row.indicatorId(),
+                    row.matchedName(),
+                    errors,
+                    row.warnings()));
+        }
     }
 
     /**

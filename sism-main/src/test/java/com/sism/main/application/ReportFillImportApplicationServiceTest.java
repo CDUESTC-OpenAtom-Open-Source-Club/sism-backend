@@ -215,7 +215,7 @@ class ReportFillImportApplicationServiceTest {
     void collegeColumnMismatchRejectsWholeFile() {
         MockMultipartFile wrong = file("1|其他学院|什邡管委会|指标A|40|正常|说明");
 
-        assertThatThrownBy(() -> service.preview(wrong, CYCLE_ID, "202611", null, null, collegeReporter()))
+        assertThatThrownBy(() -> service.preview(wrong, CYCLE_ID, "202611", "all", null, null, collegeReporter()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("整单拒绝导入")
                 .hasMessageContaining("其他学院");
@@ -227,7 +227,7 @@ class ReportFillImportApplicationServiceTest {
         MockMultipartFile blank = file("1||什邡管委会|指标A|40|正常|说明");
         givenLine(44L, "指标A");
 
-        ReportFillPreviewResponse preview = service.preview(blank, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(blank, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups()).hasSize(1);
         assertThat(preview.groups().get(0).rows().get(0).errors())
@@ -243,7 +243,7 @@ class ReportFillImportApplicationServiceTest {
         givenLine(44L, "指标A");
         givenLine(45L, "指标B");
 
-        ReportFillPreviewResponse preview = service.preview(multi, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(multi, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups()).hasSize(2);
         assertThat(preview.groups().get(0).functionalOrgName()).isEqualTo("什邡管委会");
@@ -258,7 +258,7 @@ class ReportFillImportApplicationServiceTest {
         MockMultipartFile bad = file("1|计算机学院|什邡管委会|指标A|40|超前|说明");
         givenLine(44L, "指标A");
 
-        ReportFillPreviewResponse preview = service.preview(bad, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(bad, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups()).hasSize(1);
         assertThat(preview.groups().get(0).rows().get(0).errors())
@@ -275,7 +275,7 @@ class ReportFillImportApplicationServiceTest {
                 "2|计算机学院|什邡管委会|不存在的指标|40|正常|说明B");
         givenLine(44L, "指标A");
 
-        ReportFillPreviewResponse preview = service.preview(mixed, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(mixed, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups().get(0).rows()).hasSize(2);
         assertThat(preview.groups().get(0).rows().get(0).errors()).isEmpty();
@@ -291,7 +291,7 @@ class ReportFillImportApplicationServiceTest {
         MockMultipartFile orphan = file("1|计算机学院|什邡管委会|指标A|40|正常|说明");
         // 未 givenLine → 计划线查不到
 
-        ReportFillPreviewResponse preview = service.preview(orphan, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(orphan, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups().get(0).groupError()).contains("未找到");
         assertThat(preview.groups().get(0).willSubmit()).isFalse();
@@ -328,7 +328,7 @@ class ReportFillImportApplicationServiceTest {
             return lineReport;
         });
 
-        ReportFillPreviewResponse preview = service.preview(multi, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(multi, CYCLE_ID, "202611", "all", null, null, collegeReporter());
         ReportFillCommitResponse response = service.commit(preview.batchId(),
                 new ReportFillCommitRequest(preview.confirmToken(), ""), collegeReporter());
 
@@ -345,7 +345,7 @@ class ReportFillImportApplicationServiceTest {
         MockMultipartFile one = file("1|计算机学院|什邡管委会|指标A|40|正常|说明");
         givenLine(44L, "指标A");
 
-        ReportFillPreviewResponse preview = service.preview(one, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(one, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThatThrownBy(() -> service.commit(preview.batchId(),
                 new ReportFillCommitRequest("wrong-token", ""), collegeReporter()))
@@ -362,7 +362,7 @@ class ReportFillImportApplicationServiceTest {
 
         MockMultipartFile one = file("1|计算机学院|什邡管委会|指标A|40|正常|说明");
 
-        assertThatThrownBy(() -> service.preview(one, CYCLE_ID, "202611", null, null, functionalReporter))
+        assertThatThrownBy(() -> service.preview(one, CYCLE_ID, "202611", "all", null, null, functionalReporter))
                 .isInstanceOf(SecurityException.class)
                 .hasMessageContaining("二级学院填报人");
     }
@@ -372,7 +372,7 @@ class ReportFillImportApplicationServiceTest {
     void unknownFunctionalDeptIsGroupError() {
         MockMultipartFile orphan = file("1|计算机学院|不存在的部门|指标A|40|正常|说明");
 
-        ReportFillPreviewResponse preview = service.preview(orphan, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(orphan, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups().get(0).groupError()).contains("找不到归口职能部门");
         assertThat(preview.blocking()).isTrue();
@@ -388,7 +388,7 @@ class ReportFillImportApplicationServiceTest {
         givenLine(45L, "指标B");
 
         ReportFillPreviewResponse preview = service.preview(
-                multi, CYCLE_ID, "202611", 44L, null, collegeReporter());
+                multi, CYCLE_ID, "202611", "single", 44L, null, collegeReporter());
 
         assertThat(preview.groups()).hasSize(2);
         ReportFillGroup selected = preview.groups().get(0);
@@ -414,7 +414,7 @@ class ReportFillImportApplicationServiceTest {
         givenLine(45L, "指标B");
 
         ReportFillPreviewResponse preview = service.preview(
-                multi, CYCLE_ID, "202611", null, null, collegeReporter());
+                multi, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups()).allMatch(ReportFillGroup::willSubmit);
         assertThat(preview.groups()).allMatch(group -> group.skipReason() == null);
@@ -430,7 +430,7 @@ class ReportFillImportApplicationServiceTest {
         givenLine(45L, "指标B");
 
         ReportFillPreviewResponse preview = service.preview(
-                multi, CYCLE_ID, "202611", null, null, collegeReporter());
+                multi, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups().get(0).willSubmit()).isFalse();
         assertThat(preview.groups().get(1).willSubmit()).isTrue();
@@ -443,7 +443,7 @@ class ReportFillImportApplicationServiceTest {
     void headerOnlyFileIsRejected() {
         MockMultipartFile empty = file();
 
-        assertThatThrownBy(() -> service.preview(empty, CYCLE_ID, "202611", null, null, collegeReporter()))
+        assertThatThrownBy(() -> service.preview(empty, CYCLE_ID, "202611", "all", null, null, collegeReporter()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("没有可导入的数据行");
     }
@@ -457,9 +457,89 @@ class ReportFillImportApplicationServiceTest {
 
         MockMultipartFile dup = file("1|计算机学院|教务处|指标A|40|正常|说明");
 
-        ReportFillPreviewResponse preview = service.preview(dup, CYCLE_ID, "202611", null, null, collegeReporter());
+        ReportFillPreviewResponse preview = service.preview(dup, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThat(preview.groups().get(0).groupError()).contains("多个同名组织");
         assertThat(preview.blocking()).isTrue();
+    }
+
+    @Test
+    @DisplayName("单归口模式未给 functionalOrgId → 服务端直接拒绝（不再静默退化为批量）")
+    void singleModeWithoutFunctionalOrgIsRejected() {
+        MockMultipartFile multi = file("1|计算机学院|什邡管委会|指标A|40|正常|说明A");
+        givenLine(44L, "指标A");
+
+        assertThatThrownBy(() -> service.preview(
+                multi, CYCLE_ID, "202611", "single", null, null, collegeReporter()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("单归口导入必须指定归属部门");
+    }
+
+    @Test
+    @DisplayName("单归口模式下「将跳过」的组不产生「找不到子指标」的误导性行错误")
+    void skippedGroupHasNoMisleadingRowErrors() {
+        MockMultipartFile multi = file(
+                "1|计算机学院|什邡管委会|指标A|40|正常|说明A",
+                "2|计算机学院|预算部|指标B|30|正常|说明B");
+        givenLine(44L, "指标A");
+        givenLine(45L, "指标B");
+
+        ReportFillPreviewResponse preview = service.preview(
+                multi, CYCLE_ID, "202611", "single", 44L, null, collegeReporter());
+
+        ReportFillGroup other = preview.groups().get(1);
+        assertThat(other.willSubmit()).isFalse();
+        assertThat(other.skipReason()).contains("本次不提交");
+        // 关键：将跳过组的行不应出现「系统里没有找到子指标」
+        assertThat(other.rows()).noneMatch(row ->
+                row.errors() != null && row.errors().stream().anyMatch(message -> message.contains("没有找到子指标")));
+    }
+
+    @Test
+    @DisplayName("同一子指标重复两行 → 第二行被点名（避免静默覆盖）")
+    void duplicateIndicatorRowsAreNamed() {
+        MockMultipartFile dup = file(
+                "1|计算机学院|什邡管委会|指标A|40|正常|说明A",
+                "2|计算机学院|什邡管委会|指标A|40|正常|说明A2");
+        givenLine(44L, "指标A");
+
+        ReportFillPreviewResponse preview = service.preview(dup, CYCLE_ID, "202611", "all", null, null, collegeReporter());
+
+        assertThat(preview.groups().get(0).rows().get(0).errors()).isEmpty();
+        assertThat(preview.groups().get(0).rows().get(1).errors())
+                .anyMatch(message -> message.contains("重复填报同一子指标"));
+    }
+
+    @Test
+    @DisplayName("commit：别人上传的批次 → 拒绝（批次归属校验）")
+    void commitRejectsOtherUsersBatch() {
+        MockMultipartFile one = file("1|计算机学院|什邡管委会|指标A|40|正常|说明");
+        givenLine(44L, "指标A");
+
+        ReportFillPreviewResponse preview = service.preview(
+                one, CYCLE_ID, "202611", "all", null, null, collegeReporter());
+        CurrentUser otherCollegeUser = new CurrentUser(9003L, "other_report", "别人", "o@example.com",
+                COLLEGE_ID, List.of());
+
+        assertThatThrownBy(() -> service.commit(preview.batchId(),
+                new ReportFillCommitRequest(preview.confirmToken(), ""), otherCollegeUser))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("只能确认自己上传的导入批次");
+    }
+
+    @Test
+    @DisplayName("commit：整单没有任何可提交组 → 服务端拒绝")
+    void commitRejectsWhenNoSubmittableGroup() {
+        // 只有一组且该组有错（等级非法）→ 无可提交组
+        MockMultipartFile bad = file("1|计算机学院|什邡管委会|指标A|40|超前|说明");
+        givenLine(44L, "指标A");
+
+        ReportFillPreviewResponse preview = service.preview(bad, CYCLE_ID, "202611", "all", null, null, collegeReporter());
+        assertThat(preview.hasSubmittableGroup()).isFalse();
+
+        assertThatThrownBy(() -> service.commit(preview.batchId(),
+                new ReportFillCommitRequest(preview.confirmToken(), ""), collegeReporter()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("全部归口线均不可提交");
     }
 }

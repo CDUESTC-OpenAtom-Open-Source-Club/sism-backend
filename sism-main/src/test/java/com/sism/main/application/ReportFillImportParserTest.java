@@ -113,12 +113,20 @@ class ReportFillImportParserTest {
         assertThat(ReportFillImportParser.validateRowContent(
                 row("1", "计算机学院", "什邡管委会", "", "60", "正常", "说明")))
                 .anyMatch(message -> message.contains("子指标名称"));
+    }
+
+    @Test
+    @DisplayName("序号不参与定位：可留空、非整数也不阻断（2026-11-25 审查修正）")
+    void seqIsNotRequired() {
         assertThat(ReportFillImportParser.validateRowContent(
                 row("", "计算机学院", "什邡管委会", "指标A", "60", "正常", "说明")))
-                .anyMatch(message -> message.contains("序号"));
+                .isEmpty();
         assertThat(ReportFillImportParser.validateRowContent(
                 row("abc", "计算机学院", "什邡管委会", "指标A", "60", "正常", "说明")))
-                .anyMatch(message -> message.contains("正整数"));
+                .isEmpty();
+        assertThat(ReportFillImportParser.validateRowContent(
+                row("1.0", "计算机学院", "什邡管委会", "指标A", "60", "正常", "说明")))
+                .isEmpty();
     }
 
     // ==================== 权重只读提示 ====================
