@@ -195,8 +195,24 @@ public class ReportFillImportApplicationService {
                 confirmToken);
     }
 
+    /**
+     * 解析导入模式。
+     *
+     * <p>2026-11-25（审查修正）：<b>必须白名单校验</b>。旧实现只认 {@code "single"}，
+     * 其余任何字符串（含把 single 拼错成 singel）都静默按 {@code all} 处理——
+     * 而 all 会把文件里出现的全部归口线一起提交，正是「单归口静默退化成批量」那个坑。
+     * 未知值一律报错，不默认走更危险的路径。
+     */
     private boolean isSingleLineMode(String mode) {
-        return mode != null && "single".equalsIgnoreCase(mode.trim());
+        String normalized = mode == null ? "" : mode.replace('\u3000', ' ').trim().toLowerCase();
+        if (normalized.isEmpty() || "all".equals(normalized)) {
+            return false;
+        }
+        if ("single".equals(normalized)) {
+            return true;
+        }
+        throw new IllegalArgumentException(
+                "导入模式只能是 single 或 all，收到：" + mode);
     }
 
     // ==================== 提交 ====================
@@ -634,8 +650,17 @@ public class ReportFillImportApplicationService {
         return configured == null ? DEFAULT_STRATEGY_ORG_ID : configured;
     }
 
+    /**
+     * 名称归一化：全角空格 → 半角、去全部空白、转小写。
+     *
+     * <p>2026-11-25（审查修正）：{@code \s} 与 {@code trim()} 都不处理全角空格 U+3000，
+     * 用户从网页/文档粘贴的「计算机学院　」会与系统名不一致 → 整单拒绝且看不见不可见字符。
+     */
     private static String normalizeKey(String value) {
-        return value == null ? "" : value.trim().replaceAll("\\s+", "").toLowerCase();
+        if (value == null) {
+            return "";
+        }
+        return value.replace('\u3000', ' ').trim().replaceAll("\\s+", "").toLowerCase();
     }
 
     private static String safeMessage(Exception ex) {

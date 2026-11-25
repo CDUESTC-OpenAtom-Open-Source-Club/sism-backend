@@ -39,12 +39,14 @@ public final class ReportFillImportDtos {
             return label;
         }
 
-        /** 按中文文案精确匹配（去首尾空白）；不命中返回 null。 */
+        /** 按中文文案精确匹配（去首尾空白，含全角空格）；不命中返回 null。 */
         public static ReportFillLevel fromLabel(String value) {
             if (value == null) {
                 return null;
             }
-            String trimmed = value.trim();
+            // 2026-11-25（审查修正）：全角空格 U+3000 不被 trim() 处理，
+            // 「正常　」会被判非法并整行点名，用户看不见那个字符。
+            String trimmed = value.replace('\u3000', ' ').trim();
             for (ReportFillLevel level : values()) {
                 if (level.label.equals(trimmed)) {
                     return level;

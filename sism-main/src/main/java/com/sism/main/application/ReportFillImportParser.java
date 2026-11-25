@@ -319,6 +319,7 @@ public class ReportFillImportParser {
     }
 
     private static boolean isBlank(String value) {
-        return value == null || value.trim().isEmpty();
+        // 全角空格 U+3000 不被 trim() 处理，先替换再判空
+        return value == null || value.replace('\u3000', ' ').trim().isEmpty();
     }
 }
