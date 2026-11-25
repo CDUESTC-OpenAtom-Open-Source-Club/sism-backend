@@ -86,4 +86,15 @@ public interface PlanReportRepository {
      */
     Optional<PlanReport> findLatestByMonthlyScope(Long planId, String reportMonth, ReportOrgType reportOrgType,
                                                   Long reportOrgId, Long functionalOrgId);
+
+    /**
+     * 2026-11-25（填报导入）：按四元组列出同范围报告，供导入链路自己挑「可复用草稿」。
+     *
+     * <p>用派生查询而不是上面那条 native SQL：native 查询把 {@code ReportOrgType} 枚举当参数绑定，
+     * 在 Hibernate 6 下枚举默认按序数绑定（{@code 0/1}），与库里存的 {@code COLLEGE/FUNC_DEPT}
+     * 文本永远不相等——实测导致同一线同一月每导入一次就新建一份草稿。
+     * 派生查询走实体元数据（{@code @Enumerated(STRING)}），绑定正确。
+     */
+    List<PlanReport> findByPlanIdAndReportMonthAndReportOrgTypeAndReportOrgIdAndFunctionalOrgIdAndIsDeletedFalse(
+            Long planId, String reportMonth, ReportOrgType reportOrgType, Long reportOrgId, Long functionalOrgId);
 }
