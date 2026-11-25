@@ -30,7 +30,7 @@ import java.util.List;
 @Repository
 public class NativeAppraisalSummaryQueryRepository implements AppraisalSummaryQueryRepository {
 
-    private static final int APPRAISAL_ROW_COLUMN_COUNT = 11;
+    private static final int APPRAISAL_ROW_COLUMN_COUNT = 13;
     private static final int DISPATCH_COUNT_COLUMN_COUNT = 3;
 
     private static final String STATUS_SUBMITTED = "SUBMITTED";
@@ -69,6 +69,8 @@ public class NativeAppraisalSummaryQueryRepository implements AppraisalSummaryQu
                 pr.report_org_id,
                 ro.name AS report_org_name,
                 pr.report_org_type,
+                pr.functional_org_id,
+                fo.name AS functional_org_name,
                 pr.report_month,
                 pri.indicator_id,
                 i.indicator_desc,
@@ -87,6 +89,8 @@ public class NativeAppraisalSummaryQueryRepository implements AppraisalSummaryQu
             INNER JOIN public.sys_org ro
                     ON ro.id = pr.report_org_id
                    AND COALESCE(ro.is_deleted, false) = false
+            LEFT JOIN public.sys_org fo
+                    ON fo.id = pr.functional_org_id
             LEFT JOIN public.sys_org tor
                     ON tor.id = i.target_org_id
             WHERE pr.report_month BETWEEN :startMonth AND :endMonth
@@ -120,14 +124,16 @@ public class NativeAppraisalSummaryQueryRepository implements AppraisalSummaryQu
                     toLong(row[0]),
                     row[1] == null ? null : row[1].toString(),
                     row[2] == null ? null : row[2].toString(),
-                    row[3] == null ? null : row[3].toString(),
-                    toLong(row[4]),
+                    row[3] == null ? null : toLong(row[3]),
+                    row[4] == null ? null : row[4].toString(),
                     row[5] == null ? null : row[5].toString(),
-                    row[6] == null ? null : toLong(row[6]),
+                    toLong(row[6]),
                     row[7] == null ? null : row[7].toString(),
-                    row[8] == null ? null : row[8].toString(),
-                    toBigDecimal(row[9]),
-                    row[10] == null ? null : row[10].toString()
+                    row[8] == null ? null : toLong(row[8]),
+                    row[9] == null ? null : row[9].toString(),
+                    row[10] == null ? null : row[10].toString(),
+                    toBigDecimal(row[11]),
+                    row[12] == null ? null : row[12].toString()
             ));
         }
         return result;
