@@ -17,9 +17,11 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * AppraisalSummaryService - 数据看板「审核鉴定」口径聚合。
@@ -96,8 +98,9 @@ public class AppraisalSummaryService {
         String startMonth = toReportMonth(year, MIN_MONTH);
         String endMonth = toReportMonth(year, MAX_MONTH);
         List<AppraisalRow> rows = appraisalSummaryQueryRepository.fetchAppraisalRows(startMonth, endMonth);
-        // 灰柱高度数据源（2026-11-18 验收补齐）：当年已下发指标数，口径对齐 CollegeLevelDTO.dispatchedCount
-        Map<Long, Long> dispatchByOrgId = indexDispatchCounts(year);
+        // 灰柱数据源（2026-11-18 验收补齐 + 2026-11-25 B2 灰柱底座）：当年已下发指标数
+        // （含部门名），口径对齐 CollegeLevelDTO.dispatchedCount；纯下发部门据此长出灰柱行
+        Map<Long, DispatchCountRow> dispatchByOrgId = indexDispatchCounts(year);
 
         // 逐月独立快照：第 m 月的部门分布只由第 m 月自己的月报决定（2026-11-18 拍板，废除沿用）
         List<DepartmentLevelMonthDTO> departmentMonths = new ArrayList<>(month);
@@ -136,69 +139,103 @@ public class AppraisalSummaryService {
     }
 
     /**
-     * 选中月当月快照下的各职能部门三档计数（2026-11-18 拍板）。
+     * 选中月当月快照下的各职能部门三档计数（2026-11-18 拍板，2026-11-25 B2 修复归组键 + 灰柱底座）。
+     *
+     * <p>行集 = 当月上报归组部门 ∪ 当年有下发记录的部门（与学院卡 toCollegeLevel 同构）：
+     * 上报部门按既有归口归组逻辑生成彩段/灰段；纯下发部门（当月无上报行）以
+     * {@code reported=false / monthState=NOT_REPORTED / 三档全 0 / dispatchedCount=已下发数}
+     * 长出灰柱行，供前端画「已下发 n 项·未填报」督办。</p>
      *
      * <ul>
-     *   <li>只统计上报组织类型为 functional 的月报，且只统计该月自己的行（report_month == month）；</li>
+     *   <li>只统计该月自己的行（report_month == month）；职能部门月报按 reportOrgId 归组，
+     *       学院月报按 functionalOrgId 归到归口职能部门（归口为空的旧库行跳过）；</li>
      *   <li>鉴定值只来自 APPROVED 月报；</li>
      *   <li>该月已填报但审批中（SUBMITTED/IN_REVIEW）的部门：鉴定值全 0，
      *       {@code monthState=IN_REVIEW}，仍返回（前端置灰标「审批中」）；</li>
-     *   <li>该月未填报的部门不返回（无鉴定值，前端按缺省置灰）；</li>
-     *   <li>APPROVED 但当月没有任何已鉴定指标的部门仍不返回（无内容可画）。</li>
+     *   <li>当年有下发记录但当月未填报的部门：{@code monthState=NOT_REPORTED}，三档全 0，
+     *       {@code reported=false}，灰柱高度取已下发数，仍返回；</li>
+     *   <li>APPROVED 但当月没有任何已鉴定指标的部门仍不返回（无内容可画）；
+     *       NOT_REPORTED 灰柱不受该规则影响（无鉴定值也要画灰柱）。</li>
      * </ul>
      *
-     * <p>{@code dispatchByOrgId}：当年已下发指标数（灰柱高度数据源，
-     * 口径对齐 CollegeLevelDTO.dispatchedCount；无下发记录的部门计 0）。</p>
+     * <p>{@code dispatchByOrgId}：当年各组织下发计数行（orgId → (orgName, dispatchedCount)，
+     * 口径对齐 CollegeLevelDTO.dispatchedCount）；无下发记录的部门计 0。
+     * 归组键统一：上报行与下发行用同一 orgId，因此「学院归口部门」与「职能部门自身」
+     * 同 ID 时合并到同一行（灰段+彩段并存）。</p>
      */
     private static List<DepartmentLevelDTO> departmentLevels(
-            List<AppraisalRow> rows, int month, Map<Long, Long> dispatchByOrgId) {
+            List<AppraisalRow> rows, int month, Map<Long, DispatchCountRow> dispatchByOrgId) {
         Map<Long, String> orgNames = new LinkedHashMap<>();
+        Set<Long> reportedOrgIds = new HashSet<>();
         Map<Long, Boolean> approvedByOrg = new HashMap<>();
         Map<Long, Map<Long, String>> levelByOrgAndIndicator = new HashMap<>();
 
         for (AppraisalRow row : rows) {
-            if (!isFunctionalOrgType(row.reportOrgType())) {
-                continue;
-            }
             if (monthOf(row.reportMonth()) != month) {
                 continue;
             }
-            orgNames.putIfAbsent(row.reportOrgId(), row.reportOrgName());
+            // 2026-11-25（B2 修复）：学院月报按 functionalOrgId 归到归口职能部门，部门分布图不再恒空；
+            // functionalOrgId 为空的旧库学院行跳过（不能凭空归组）。functional 行仍按上报组织自身归组。
+            Long groupOrgId;
+            String groupOrgName;
+            if (isFunctionalOrgType(row.reportOrgType())) {
+                groupOrgId = row.reportOrgId();
+                groupOrgName = row.reportOrgName();
+            } else {
+                if (row.functionalOrgId() == null) {
+                    continue;
+                }
+                groupOrgId = row.functionalOrgId();
+                groupOrgName = row.functionalOrgName();
+            }
+            // orgNames / reportedOrgIds / approvedByOrg / levelByOrgAndIndicator 统一使用同一归组键
+            orgNames.putIfAbsent(groupOrgId, groupOrgName);
+            reportedOrgIds.add(groupOrgId);
             if (!isApproved(row.reportStatus())) {
                 continue;
             }
-            approvedByOrg.put(row.reportOrgId(), Boolean.TRUE);
+            approvedByOrg.put(groupOrgId, Boolean.TRUE);
             Map<Long, String> levels =
-                    levelByOrgAndIndicator.computeIfAbsent(row.reportOrgId(), k -> new HashMap<>());
+                    levelByOrgAndIndicator.computeIfAbsent(groupOrgId, k -> new HashMap<>());
             // 同一指标同月多轮上报时保留行序靠后的一条（ORDER BY 保证行序即时间序）
             levels.put(row.indicatorId(), row.appraisalLevel());
         }
 
+        // 2026-11-25 灰柱底座：并集并入当年有下发记录的部门。纯下发部门无上报行，
+        // 部门名取下发计数行的 orgName（SQL 已带出）；已上报部门保留其上报行部门名。
+        for (Map.Entry<Long, DispatchCountRow> dispatch : dispatchByOrgId.entrySet()) {
+            orgNames.putIfAbsent(dispatch.getKey(), dispatch.getValue().orgName());
+        }
+
         List<DepartmentLevelDTO> result = new ArrayList<>(orgNames.size());
         for (Map.Entry<Long, String> org : orgNames.entrySet()) {
-            boolean approved = approvedByOrg.getOrDefault(org.getKey(), Boolean.FALSE);
-            MonthState monthState = approved ? MonthState.APPROVED : MonthState.IN_REVIEW;
+            Long orgId = org.getKey();
+            boolean reported = reportedOrgIds.contains(orgId);
+            boolean approved = approvedByOrg.getOrDefault(orgId, Boolean.FALSE);
+            MonthState monthState = !reported ? MonthState.NOT_REPORTED
+                    : (approved ? MonthState.APPROVED : MonthState.IN_REVIEW);
             Map<Long, String> levels = approved
-                    ? levelByOrgAndIndicator.getOrDefault(org.getKey(), Map.of())
+                    ? levelByOrgAndIndicator.getOrDefault(orgId, Map.of())
                     : Map.of();
             long ahead = countLevel(levels, LEVEL_AHEAD);
             long normal = countLevel(levels, LEVEL_NORMAL);
             long delayed = countLevel(levels, LEVEL_DELAYED);
             long total = ahead + normal + delayed;
-            // 审批中部门即使无鉴定值也要返回（供前端置灰标「审批中」）；
-            // APPROVED 但无任何已鉴定指标的部门不返回
-            if (total == 0 && monthState != MonthState.IN_REVIEW) {
+            // APPROVED 但无任何已鉴定指标的部门不返回；IN_REVIEW 与 NOT_REPORTED 无鉴定值也要返回
+            // （前端分别置灰标「审批中」/画「已下发 n 项·未填报」灰柱）
+            if (total == 0 && monthState == MonthState.APPROVED) {
                 continue;
             }
+            DispatchCountRow dispatch = dispatchByOrgId.get(orgId);
             result.add(DepartmentLevelDTO.builder()
-                    .orgId(org.getKey())
+                    .orgId(orgId)
                     .orgName(org.getValue())
                     .ahead(ahead)
                     .normal(normal)
                     .delayed(delayed)
                     .total(total)
-                    .dispatchedCount(dispatchByOrgId.getOrDefault(org.getKey(), 0L))
-                    .reported(true)
+                    .dispatchedCount(dispatch == null ? 0L : dispatch.dispatchedCount())
+                    .reported(reported)
                     .monthState(monthState)
                     .build());
         }
@@ -207,11 +244,11 @@ public class AppraisalSummaryService {
         return result;
     }
 
-    /** 当年各组织已下发指标数（灰柱高度数据源）：orgId → dispatchedCount */
-    private Map<Long, Long> indexDispatchCounts(Integer year) {
-        Map<Long, Long> byOrgId = new HashMap<>();
+    /** 当年各组织下发计数行（灰柱数据源）：orgId → (orgName, dispatchedCount) */
+    private Map<Long, DispatchCountRow> indexDispatchCounts(Integer year) {
+        Map<Long, DispatchCountRow> byOrgId = new HashMap<>();
         for (DispatchCountRow row : appraisalSummaryQueryRepository.fetchDispatchCounts(year)) {
-            byOrgId.put(row.orgId(), row.dispatchedCount());
+            byOrgId.put(row.orgId(), row);
         }
         return byOrgId;
     }

@@ -55,6 +55,7 @@ class NativeAppraisalSummaryQueryRepositoryTest {
                     report_month VARCHAR(6) NOT NULL,
                     report_org_type VARCHAR(16),
                     report_org_id BIGINT,
+                    functional_org_id BIGINT,
                     status VARCHAR(20) NOT NULL,
                     is_deleted BOOLEAN NOT NULL
                 )
@@ -111,6 +112,7 @@ class NativeAppraisalSummaryQueryRepositoryTest {
 
         insertOrg(1, "学生处", "functional");
         insertOrg(2, "计算机学院", "academic");
+        insertOrg(3, "预算部", "functional"); // 学院月报的归口职能部门（B2 修复）
         // 指标 101 target=职能部门（学生处）、102 target=学院；103 软删除、104 非在发
         insertIndicator(101, 1, false, "DISTRIBUTED");
         insertIndicator(102, 2, false, "DISTRIBUTED");
@@ -129,8 +131,8 @@ class NativeAppraisalSummaryQueryRepositoryTest {
         insertPlanReportIndicator(111, 11, 101, "DELAYED");
         insertReport(12, "202611", "FUNC_DEPT", 1L, "SUBMITTED", false);
         insertPlanReportIndicator(121, 12, 101, null);
-        // 学院线：11 月 IN_REVIEW（legacy 审批中别名）
-        insertReport(13, "202611", "COLLEGE", 2L, "IN_REVIEW", false);
+        // 学院线：11 月 IN_REVIEW（legacy 审批中别名），归口预算部（functional_org_id=3）
+        insertReport(13, "202611", "COLLEGE", 2L, 3L, "IN_REVIEW", false);
         insertPlanReportIndicator(131, 13, 102, null);
         // 草稿与软删月报不捞取
         insertReport(14, "202611", "COLLEGE", 2L, "DRAFT", false);
@@ -148,6 +150,8 @@ class NativeAppraisalSummaryQueryRepositoryTest {
         assertThat(october.reportStatus()).isEqualTo("APPROVED");
         assertThat(october.reportOrgType()).isEqualTo("FUNC_DEPT");
         assertThat(october.reportOrgName()).isEqualTo("学生处");
+        assertThat(october.functionalOrgId()).isNull();
+        assertThat(october.functionalOrgName()).isNull();
         assertThat(october.appraisalLevel()).isEqualTo("DELAYED");
         assertThat(october.indicatorId()).isEqualTo(101L);
         assertThat(october.targetOrgId()).isEqualTo(1L);
@@ -163,6 +167,9 @@ class NativeAppraisalSummaryQueryRepositoryTest {
         assertThat(novemberLegacy.reportStatus()).isEqualTo("IN_REVIEW");
         assertThat(novemberLegacy.reportOrgType()).isEqualTo("COLLEGE");
         assertThat(novemberLegacy.reportOrgName()).isEqualTo("计算机学院");
+        // B2 修复：学院月报带出归口职能部门（JOIN sys_org ON pr.functional_org_id = fo.id）
+        assertThat(novemberLegacy.functionalOrgId()).isEqualTo(3L);
+        assertThat(novemberLegacy.functionalOrgName()).isEqualTo("预算部");
     }
 
     @Test
@@ -243,8 +250,15 @@ class NativeAppraisalSummaryQueryRepositoryTest {
 
     private void insertReport(long id, String reportMonth, String reportOrgType,
                               long reportOrgId, String status, boolean deleted) {
-        exec("INSERT INTO plan_report (id, plan_id, report_month, report_org_type, report_org_id, status, is_deleted) VALUES ("
+        insertReport(id, reportMonth, reportOrgType, reportOrgId, null, status, deleted);
+    }
+
+    /** 带归口职能部门的月报（学院线 B2 修复：functional_org_id → sys_org.name） */
+    private void insertReport(long id, String reportMonth, String reportOrgType,
+                              long reportOrgId, Long functionalOrgId, String status, boolean deleted) {
+        exec("INSERT INTO plan_report (id, plan_id, report_month, report_org_type, report_org_id, functional_org_id, status, is_deleted) VALUES ("
                 + id + ", 1, '" + reportMonth + "', '" + reportOrgType + "', " + reportOrgId
+                + ", " + (functionalOrgId == null ? "NULL" : functionalOrgId)
                 + ", '" + status + "', " + deleted + ")");
     }
 

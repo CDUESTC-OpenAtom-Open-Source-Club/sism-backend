@@ -61,6 +61,8 @@ public interface AppraisalSummaryQueryRepository {
      * @param reportOrgId      上报组织 ID（月报的 report_org_id）
      * @param reportOrgName    上报组织名称
      * @param reportOrgType    上报组织类型（sys_org.type 的文本值：admin/functional/academic）
+     * @param functionalOrgId  归口职能部门 ID（plan_report.functional_org_id；学院月报按此归组，可为 null）
+     * @param functionalOrgName 归口职能部门名称（sys_org.name；学院月报按此显示部门名，可为 null）
      * @param reportMonth      上报月份，格式 yyyyMM
      * @param indicatorId      指标 ID
      * @param indicatorName    指标名称（indicator.indicator_desc）
@@ -74,6 +76,8 @@ public interface AppraisalSummaryQueryRepository {
             long reportOrgId,
             String reportOrgName,
             String reportOrgType,
+            Long functionalOrgId,
+            String functionalOrgName,
             String reportMonth,
             long indicatorId,
             String indicatorName,
