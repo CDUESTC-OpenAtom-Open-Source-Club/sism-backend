@@ -123,7 +123,7 @@ public class ReportApplicationService {
         String normalizedMonth = normalizeReportMonth(reportMonth);
         assertEarliestUnfilledMonth(reportMonth, normalizedMonth, reportOrgId, reportOrgType, planId, functionalOrgId);
         Optional<PlanReport> existingReport = planReportRepository.findLatestByMonthlyScope(
-                planId, normalizedMonth, reportOrgType, reportOrgId, functionalOrgId);
+                planId, normalizedMonth, reportOrgType.name(), reportOrgId, functionalOrgId);
         PlanReport previousRound = null;
 
         if (existingReport.isPresent()) {

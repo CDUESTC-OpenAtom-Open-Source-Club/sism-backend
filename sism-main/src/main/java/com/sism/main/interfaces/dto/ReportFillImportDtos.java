@@ -117,14 +117,17 @@ public final class ReportFillImportDtos {
      * <p>学院上报按「目标部门（归口职能部门）」拆线，每条线独立校验、独立落库、独立提交上报
      * （一条线失败不影响其他线）；职能部门上报只有一条线（目标恒为战略发展部）。
      *
-     * @param targetOrgId      目标部门 org id（04 = 战略发展部；05/06 = 归口职能部门）
-     * @param targetOrgName    目标部门名称
-     * @param planId           对应的计划 id（找不到时为 null）
-     * @param rowsCount        组内行数
-     * @param willSubmit       本组是否可提交
-     * @param groupError       组级<b>错误</b>文案（非空 = 不可提交，标红）
-     * @param skipReason       组级<b>跳过</b>原因（非空且 groupError 为空 = 将跳过，标灰）
-     * @param rows             组内预览行
+     * @param targetOrgId          目标部门 org id（04 = 战略发展部；05/06 = 归口职能部门）
+     * @param targetOrgName        目标部门名称
+     * @param planId               对应的计划 id（找不到时为 null）
+     * @param rowsCount            组内行数
+     * @param willSubmit           本组是否可提交
+     * @param groupError           组级<b>错误</b>文案（非空 = 不可提交，标红）
+     * @param skipReason           组级<b>跳过</b>原因（非空且 groupError 为空 = 将跳过，标灰）
+     * @param existingReportId     同月同线已有填报的 report id（无则为 null）——
+     *                             前端据此提示「将覆盖 / 将跳过」，与 commit 的 conflictMode 行为保持一致
+     * @param existingReportStatus 同月同线已有填报的状态（DRAFT/SUBMITTED/APPROVED/REJECTED）
+     * @param rows                 组内预览行
      */
     public record ReportFillGroup(
             Long targetOrgId,
@@ -134,6 +137,8 @@ public final class ReportFillImportDtos {
             boolean willSubmit,
             String groupError,
             String skipReason,
+            Long existingReportId,
+            String existingReportStatus,
             List<ReportFillRow> rows
     ) {
     }
@@ -171,10 +176,14 @@ public final class ReportFillImportDtos {
      *
      * @param confirmToken 预览返回的确认令牌
      * @param comment      上报说明（写入提交步备注，可空）
+     * @param conflictMode 同月同线已有填报时的处理方式：
+     *                     {@code OVERWRITE} = 覆盖已有（复用该 report、重置草稿后重新提交审批）；
+     *                     {@code SKIP}（默认，空值同义）= 跳过该线，不写入
      */
     public record ReportFillCommitRequest(
             String confirmToken,
-            String comment
+            String comment,
+            String conflictMode
     ) {
     }
 

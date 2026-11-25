@@ -2,6 +2,7 @@ package com.sism.main.application;
 
 import com.sism.execution.application.ReportApplicationService;
 import com.sism.execution.domain.report.PlanReport;
+import com.sism.execution.domain.report.PlanReportRepository;
 import com.sism.execution.domain.report.ReportOrgType;
 import com.sism.execution.interfaces.dto.UpdatePlanReportIndicatorDetailRequest;
 import com.sism.main.application.ReportFillImportParser.ParsedRow;
@@ -96,6 +97,8 @@ public class ReportFillImportApplicationService {
     private final IndicatorRepository indicatorRepository;
     private final StrategyOrgProperties strategyOrgProperties;
     private final ReportApplicationService reportApplicationService;
+    /** 同月同线已有填报查询（覆盖/跳过冲突模式用）。 */
+    private final PlanReportRepository planReportRepository;
     private final TransactionTemplate transactionTemplate;
 
     /** 预览批次上下文（batchId → 上下文）。 */
@@ -176,8 +179,8 @@ public class ReportFillImportApplicationService {
 
         List<ReportFillGroup> groups = flow == ReportFlow.COLLEGE
                 ? buildCollegeGroups(workbook.rows(), cycleId, responsibleOrg,
-                        singleLineMode ? targetOrgId : null)
-                : buildFunctionalGroups(workbook.rows(), cycleId, responsibleOrg);
+                        singleLineMode ? targetOrgId : null, month)
+                : buildFunctionalGroups(workbook.rows(), cycleId, responsibleOrg, month);
         boolean hasSubmittableGroup = groups.stream().anyMatch(ReportFillGroup::willSubmit);
 
         String batchId = UUID.randomUUID().toString();
@@ -258,11 +261,12 @@ public class ReportFillImportApplicationService {
         int success = 0;
         int skipped = 0;
         int failed = 0;
+        String conflictMode = normalizeConflictMode(request.conflictMode());
 
         for (ReportFillGroup group : context.groups()) {
             ReportFillGroupResult result;
             try {
-                result = transactionTemplate.execute(status -> commitGroup(group, context, request, currentUser));
+                result = transactionTemplate.execute(status -> commitGroup(group, context, request, currentUser, conflictMode));
             } catch (Exception ex) {
                 log.warn("[ReportFillImport] 上报线提交失败: target={}, message={}",
                         group.targetOrgName(), ex.getMessage());
@@ -303,7 +307,8 @@ public class ReportFillImportApplicationService {
     private ReportFillGroupResult commitGroup(ReportFillGroup group,
                                                ReportFillPreviewContext context,
                                                ReportFillCommitRequest request,
-                                               CurrentUser currentUser) {
+                                               CurrentUser currentUser,
+                                               String conflictMode) {
         if (!group.willSubmit() || group.planId() == null) {
             String reason = group.groupError() != null
                     ? group.groupError()
@@ -345,14 +350,45 @@ public class ReportFillImportApplicationService {
         // 学院：月报按 (月, 学院, 归口部门) 隔离；职能部门：无归口概念，functionalOrgId 传 null
         Long functionalOrgId = context.flow() == ReportFlow.COLLEGE ? group.targetOrgId() : null;
 
-        // 1) 建/取本月月报草稿
-        PlanReport report = reportApplicationService.createReport(
-                context.reportMonth(),
-                context.responsibleOrgId(),
-                reportOrgType,
-                group.planId(),
-                currentUser.getId(),
-                functionalOrgId);
+        // 1) 同月同线已有填报：按冲突模式决定覆盖 / 跳过（默认 SKIP，不覆盖）
+        PlanReport existing = findExistingLineReport(
+                group.planId(), context.reportMonth(), reportOrgType,
+                context.responsibleOrgId(), functionalOrgId);
+        if (existing != null && "SKIP".equals(conflictMode)) {
+            return new ReportFillGroupResult(
+                    group.targetOrgId(),
+                    group.targetOrgName(),
+                    ReportFillGroupStatus.SKIPPED,
+                    null,
+                    group.rowsCount(),
+                    "本月该上报线已有填报（report " + existing.getId() + "，状态 "
+                            + existing.getStatus() + "），已跳过；如需覆盖请勾选「覆盖已有数据」");
+        }
+        if (existing != null && existing.isSubmitted()) {
+            return new ReportFillGroupResult(
+                    group.targetOrgId(),
+                    group.targetOrgName(),
+                    ReportFillGroupStatus.SKIPPED,
+                    null,
+                    group.rowsCount(),
+                    "该线上报审批中（report " + existing.getId() + "），请先撤回后再覆盖");
+        }
+
+        // 2) 建/取本月月报草稿：有已有填报且要求覆盖时复用该 report（重置草稿后重新提交审批）
+        PlanReport report;
+        if (existing != null) {
+            existing.resetToDraft(currentUser.getId());
+            existing.setUpdatedAt(LocalDateTime.now());
+            report = planReportRepository.save(existing);
+        } else {
+            report = reportApplicationService.createReport(
+                    context.reportMonth(),
+                    context.responsibleOrgId(),
+                    reportOrgType,
+                    group.planId(),
+                    currentUser.getId(),
+                    functionalOrgId);
+        }
 
         // 2) 落填报明细（不触碰附件关联）
         reportApplicationService.upsertFillDetails(report.getId(), details, currentUser.getId());
@@ -378,7 +414,8 @@ public class ReportFillImportApplicationService {
     private List<ReportFillGroup> buildCollegeGroups(List<ParsedRow> rows,
                                                      Long cycleId,
                                                      SysOrg college,
-                                                     Long selectedTargetOrgId) {
+                                                     Long selectedTargetOrgId,
+                                                     String reportMonth) {
         Map<String, List<ParsedRow>> byTargetName = new LinkedHashMap<>();
         for (ParsedRow row : rows) {
             String key = row.targetDept() == null ? "" : row.targetDept().trim();
@@ -417,6 +454,21 @@ public class ReportFillImportApplicationService {
                 }
             }
 
+            Long existingReportId = null;
+            String existingReportStatus = null;
+            if (groupError == null && skipReason == null && linePlan != null) {
+                PlanReport existing = findExistingLineReport(
+                        linePlan.getId(), reportMonth, ReportOrgType.COLLEGE, college.getId(), targetOrgId);
+                if (existing != null) {
+                    if (existing.isSubmitted()) {
+                        groupError = "该线上报审批中（report " + existing.getId() + "），请先撤回后再导入";
+                    } else {
+                        existingReportId = existing.getId();
+                        existingReportStatus = existing.getStatus();
+                    }
+                }
+            }
+
             boolean skipLocate = groupError != null || skipReason != null;
             for (ParsedRow row : targetRows) {
                 enriched.add(toPreviewRow(row, indicatorByName, !skipLocate));
@@ -437,6 +489,8 @@ public class ReportFillImportApplicationService {
                     willSubmit,
                     groupError,
                     skipReason,
+                    existingReportId,
+                    existingReportStatus,
                     enriched));
         }
         return groups;
@@ -446,7 +500,8 @@ public class ReportFillImportApplicationService {
 
     private List<ReportFillGroup> buildFunctionalGroups(List<ParsedRow> rows,
                                                         Long cycleId,
-                                                        SysOrg dept) {
+                                                        SysOrg dept,
+                                                        String reportMonth) {
         String strategyName = resolveOrgName(strategyOrgId());
         List<ReportFillRow> enriched = new ArrayList<>();
 
@@ -462,6 +517,21 @@ public class ReportFillImportApplicationService {
         } else {
             // 职能部门填报的是「核心指标」（无父级）
             indicatorByName = loadLineIndicators(plan, dept.getId(), false);
+        }
+
+        Long existingReportId = null;
+        String existingReportStatus = null;
+        if (groupError == null && plan != null) {
+            PlanReport existing = findExistingLineReport(
+                    plan.getId(), reportMonth, ReportOrgType.FUNC_DEPT, dept.getId(), null);
+            if (existing != null) {
+                if (existing.isSubmitted()) {
+                    groupError = "该线上报审批中（report " + existing.getId() + "），请先撤回后再导入";
+                } else {
+                    existingReportId = existing.getId();
+                    existingReportStatus = existing.getStatus();
+                }
+            }
         }
 
         // 目标部门校验：职能部门只能上报到战略发展部
@@ -492,6 +562,8 @@ public class ReportFillImportApplicationService {
                 willSubmit,
                 groupError,
                 null,
+                existingReportId,
+                existingReportStatus,
                 enriched));
         return groups;
     }
@@ -613,6 +685,44 @@ public class ReportFillImportApplicationService {
                         collegeOrgId,
                         functionalOrgId)
                 .orElse(null);
+    }
+
+    /**
+     * 查同月同线已存在的填报（用于冲突模式：覆盖 / 跳过）。
+     *
+     * <p>学院线按 (plan, 月, 学院, 归口部门) 四元组隔离；职能部门线无归口概念
+     * （functionalOrgId 传 null，与既有 {@code createReport} 口径一致）。
+     */
+    private PlanReport findExistingLineReport(Long planId,
+                                              String reportMonth,
+                                              ReportOrgType reportOrgType,
+                                              Long reportOrgId,
+                                              Long functionalOrgId) {
+        if (planId == null) {
+            return null;
+        }
+        PlanReport existing = planReportRepository
+                .findLatestByMonthlyScope(planId, reportMonth, reportOrgType.name(), reportOrgId, functionalOrgId)
+                .filter(report -> !report.isDeleted())
+                .orElse(null);
+        log.debug("[ReportFillImport] existing lookup plan={}, month={}, type={}, org={}, func={} -> {}",
+                planId, reportMonth, reportOrgType, reportOrgId, functionalOrgId,
+                existing == null ? "none" : existing.getId() + "/" + existing.getStatus());
+        return existing;
+    }
+
+    /**
+     * 规范化冲突模式：空白 / 未传 = {@code SKIP}（不覆盖），其它值白名单校验后拒绝。
+     */
+    private static String normalizeConflictMode(String mode) {
+        String normalized = mode == null ? "" : mode.replace('\u3000', ' ').trim().toUpperCase();
+        if (normalized.isEmpty() || "SKIP".equals(normalized)) {
+            return "SKIP";
+        }
+        if ("OVERWRITE".equals(normalized)) {
+            return "OVERWRITE";
+        }
+        throw new IllegalArgumentException("冲突处理模式只能是 OVERWRITE 或 SKIP，收到：" + mode);
     }
 
     /**

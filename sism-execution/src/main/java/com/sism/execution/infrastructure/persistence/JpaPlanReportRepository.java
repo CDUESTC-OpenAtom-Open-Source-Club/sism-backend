@@ -171,7 +171,9 @@ public interface JpaPlanReportRepository extends JpaRepository<PlanReport, Long>
     Optional<PlanReport> findLatestByMonthlyScope(
             @Param("planId") Long planId,
             @Param("reportMonth") String reportMonth,
-            @Param("reportOrgType") ReportOrgType reportOrgType,
+            // nativeQuery 的枚举参数在 Hibernate 6 会按 ordinal 绑定，CAST 后得到 "0/1"，
+            // 永远匹配不到 report_org_type 的 "COLLEGE/FUNC_DEPT"。这里刻意用 String（调用方传 name()）。
+            @Param("reportOrgType") String reportOrgType,
             @Param("reportOrgId") Long reportOrgId,
             @Param("functionalOrgId") Long functionalOrgId);
 }

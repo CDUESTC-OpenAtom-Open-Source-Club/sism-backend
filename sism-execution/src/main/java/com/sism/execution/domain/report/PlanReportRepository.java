@@ -84,6 +84,6 @@ public interface PlanReportRepository {
      * 不同组（IS NOT DISTINCT FROM 语义）。传 functionalOrgId=null 即查「无归口」分组，
      * 不会复用已按部门落值的草稿。
      */
-    Optional<PlanReport> findLatestByMonthlyScope(Long planId, String reportMonth, ReportOrgType reportOrgType,
+    Optional<PlanReport> findLatestByMonthlyScope(Long planId, String reportMonth, String reportOrgType,
                                                   Long reportOrgId, Long functionalOrgId);
 }

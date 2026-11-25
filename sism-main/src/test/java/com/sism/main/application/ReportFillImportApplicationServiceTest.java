@@ -90,6 +90,7 @@ class ReportFillImportApplicationServiceTest {
     private TaskRepository taskRepository;
     private IndicatorRepository indicatorRepository;
     private ReportApplicationService reportApplicationService;
+    private com.sism.execution.domain.report.PlanReportRepository planReportRepository;
     private TransactionTemplate transactionTemplate;
     private ReportFillImportApplicationService service;
 
@@ -109,6 +110,7 @@ class ReportFillImportApplicationServiceTest {
         taskRepository = mock(TaskRepository.class);
         indicatorRepository = mock(IndicatorRepository.class);
         reportApplicationService = mock(ReportApplicationService.class);
+        planReportRepository = mock(com.sism.execution.domain.report.PlanReportRepository.class);
         transactionTemplate = mock(TransactionTemplate.class);
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
@@ -126,6 +128,7 @@ class ReportFillImportApplicationServiceTest {
                 indicatorRepository,
                 properties,
                 reportApplicationService,
+                planReportRepository,
                 transactionTemplate);
 
         college = org("计算机学院", OrgType.academic, COLLEGE_ID);
@@ -533,7 +536,7 @@ class ReportFillImportApplicationServiceTest {
         ReportFillPreviewResponse preview = service.preview(
                 multi, CYCLE_ID, "202611", "all", null, null, collegeReporter());
         ReportFillCommitResponse response = service.commit(preview.batchId(),
-                new ReportFillCommitRequest(preview.confirmToken(), ""), collegeReporter());
+                new ReportFillCommitRequest(preview.confirmToken(), "", null), collegeReporter());
 
         assertThat(response.results()).hasSize(2);
         assertThat(response.results()).anyMatch(r -> r.status() == ReportFillGroupStatus.FAILED);
@@ -552,7 +555,7 @@ class ReportFillImportApplicationServiceTest {
                 one, CYCLE_ID, "202611", "all", null, null, collegeReporter());
 
         assertThatThrownBy(() -> service.commit(preview.batchId(),
-                new ReportFillCommitRequest("wrong-token", ""), collegeReporter()))
+                new ReportFillCommitRequest("wrong-token", "", null), collegeReporter()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("确认令牌");
     }
@@ -568,7 +571,7 @@ class ReportFillImportApplicationServiceTest {
         CurrentUser other = new CurrentUser(9004L, "other", "别人", "o@example.com", COLLEGE_ID, List.of());
 
         assertThatThrownBy(() -> service.commit(preview.batchId(),
-                new ReportFillCommitRequest(preview.confirmToken(), ""), other))
+                new ReportFillCommitRequest(preview.confirmToken(), "", null), other))
                 .isInstanceOf(SecurityException.class)
                 .hasMessageContaining("只能确认自己上传的导入批次");
     }
@@ -584,7 +587,7 @@ class ReportFillImportApplicationServiceTest {
         assertThat(preview.hasSubmittableGroup()).isFalse();
 
         assertThatThrownBy(() -> service.commit(preview.batchId(),
-                new ReportFillCommitRequest(preview.confirmToken(), ""), collegeReporter()))
+                new ReportFillCommitRequest(preview.confirmToken(), "", null), collegeReporter()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("全部上报线均不可提交");
     }
