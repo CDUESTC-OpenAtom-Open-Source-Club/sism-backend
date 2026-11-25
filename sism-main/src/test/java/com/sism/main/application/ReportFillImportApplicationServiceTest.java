@@ -4,6 +4,7 @@ import com.sism.execution.application.ReportApplicationService;
 import com.sism.execution.domain.report.PlanReport;
 import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillCommitRequest;
 import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillCommitResponse;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillGroup;
 import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillGroupStatus;
 import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillPreviewResponse;
 import com.sism.organization.domain.OrgType;
@@ -374,6 +375,91 @@ class ReportFillImportApplicationServiceTest {
         ReportFillPreviewResponse preview = service.preview(orphan, CYCLE_ID, "202611", null, null, collegeReporter());
 
         assertThat(preview.groups().get(0).groupError()).contains("找不到归口职能部门");
+        assertThat(preview.blocking()).isTrue();
+    }
+
+    @Test
+    @DisplayName("单归口入口（传 functionalOrgId）→ 只提交该归口线，其它线标记为将跳过")
+    void singleFunctionalOrgModeSkipsOtherGroups() {
+        MockMultipartFile multi = file(
+                "1|计算机学院|什邡管委会|指标A|40|正常|说明A",
+                "2|计算机学院|预算部|指标B|30|正常|说明B");
+        givenLine(44L, "指标A");
+        givenLine(45L, "指标B");
+
+        ReportFillPreviewResponse preview = service.preview(
+                multi, CYCLE_ID, "202611", 44L, null, collegeReporter());
+
+        assertThat(preview.groups()).hasSize(2);
+        ReportFillGroup selected = preview.groups().get(0);
+        ReportFillGroup other = preview.groups().get(1);
+        assertThat(selected.functionalOrgName()).isEqualTo("什邡管委会");
+        assertThat(selected.willSubmit()).isTrue();
+        assertThat(selected.skipReason()).isNull();
+        assertThat(other.functionalOrgName()).isEqualTo("预算部");
+        assertThat(other.willSubmit()).isFalse();
+        assertThat(other.skipReason()).contains("本次不提交");
+        // 仍有可提交的线 → 整单不阻断
+        assertThat(preview.hasSubmittableGroup()).isTrue();
+        assertThat(preview.blocking()).isFalse();
+    }
+
+    @Test
+    @DisplayName("批量入口（functionalOrgId=null）→ 文件内出现的归口线全部可提交")
+    void batchModeSubmitsEveryGroupInFile() {
+        MockMultipartFile multi = file(
+                "1|计算机学院|什邡管委会|指标A|40|正常|说明A",
+                "2|计算机学院|预算部|指标B|30|正常|说明B");
+        givenLine(44L, "指标A");
+        givenLine(45L, "指标B");
+
+        ReportFillPreviewResponse preview = service.preview(
+                multi, CYCLE_ID, "202611", null, null, collegeReporter());
+
+        assertThat(preview.groups()).allMatch(ReportFillGroup::willSubmit);
+        assertThat(preview.groups()).allMatch(group -> group.skipReason() == null);
+    }
+
+    @Test
+    @DisplayName("单组有错不阻断整单：另一组仍可提交（阻断下沉到组级）")
+    void oneBadGroupDoesNotBlockOtherGroups() {
+        MockMultipartFile multi = file(
+                "1|计算机学院|什邡管委会|不存在的指标|40|正常|说明A",
+                "2|计算机学院|预算部|指标B|30|正常|说明B");
+        givenLine(44L, "指标A");
+        givenLine(45L, "指标B");
+
+        ReportFillPreviewResponse preview = service.preview(
+                multi, CYCLE_ID, "202611", null, null, collegeReporter());
+
+        assertThat(preview.groups().get(0).willSubmit()).isFalse();
+        assertThat(preview.groups().get(1).willSubmit()).isTrue();
+        assertThat(preview.hasSubmittableGroup()).isTrue();
+        assertThat(preview.blocking()).isFalse();
+    }
+
+    @Test
+    @DisplayName("只有表头没有数据行 → 直接拒绝，不生成空批次")
+    void headerOnlyFileIsRejected() {
+        MockMultipartFile empty = file();
+
+        assertThatThrownBy(() -> service.preview(empty, CYCLE_ID, "202611", null, null, collegeReporter()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("没有可导入的数据行");
+    }
+
+    @Test
+    @DisplayName("归口职能部门同名多条 → 组级错误点名（不静默取第一个）")
+    void ambiguousFunctionalDeptIsGroupError() {
+        SysOrg dupA = org("教务处", OrgType.functional, 46L);
+        SysOrg dupB = org("教务处", OrgType.functional, 47L);
+        when(organizationRepository.findByNameContaining("教务处")).thenReturn(List.of(dupA, dupB));
+
+        MockMultipartFile dup = file("1|计算机学院|教务处|指标A|40|正常|说明");
+
+        ReportFillPreviewResponse preview = service.preview(dup, CYCLE_ID, "202611", null, null, collegeReporter());
+
+        assertThat(preview.groups().get(0).groupError()).contains("多个同名组织");
         assertThat(preview.blocking()).isTrue();
     }
 }

@@ -159,15 +159,15 @@ public class ReportFillImportParser {
         }
 
         List<ParsedRow> rows = new ArrayList<>();
-        int rowNo = 0;
         for (int rowIndex = headerRowIndex + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
             Row row = sheet.getRow(rowIndex);
             if (row == null || isRowBlank(row, formatter, evaluator)) {
                 continue;
             }
-            rowNo++;
+            // 2026-11-25：rowNo 记 Excel 物理行号（1-based），
+            // 报错文案直接对得上用户在 Excel 里看到的行，不差表头那一行。
             rows.add(new ParsedRow(
-                    rowNo,
+                    rowIndex + 1,
                     cellText(row, fieldColumns.get("seq"), formatter, evaluator),
                     cellText(row, fieldColumns.get("college"), formatter, evaluator),
                     cellText(row, fieldColumns.get("functionalDept"), formatter, evaluator),

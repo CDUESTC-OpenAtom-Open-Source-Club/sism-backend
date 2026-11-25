@@ -47,12 +47,13 @@ public class ReportFillImportController {
     @PreAuthorize(REPORT_FILL_ACCESS)
     @Operation(summary = "预览填报导入",
             description = "解析填报导入 Excel：校验学院列、归口线拆分、指标定位、等级白名单校验；"
-                    + "返回逐组预览（将提交 / 错误组）")
+                    + "返回逐组预览（将提交 / 将跳过 / 错误组）。"
+                    + "functionalOrgId 仅单归口入口传（只提交该归口线，其余标记为将跳过）；批量入口传 null")
     public ResponseEntity<ApiResponse<ReportFillPreviewResponse>> preview(
             @RequestPart("file") MultipartFile file,
             @RequestParam Long cycleId,
             @RequestParam String reportMonth,
-            @RequestParam(required = false) Long targetCollegeOrgId,
+            @RequestParam(required = false) Long functionalOrgId,
             @RequestParam(required = false) String sheetName,
             @AuthenticationPrincipal CurrentUser currentUser) {
         return ResponseEntity.ok(ApiResponse.success(
@@ -60,7 +61,7 @@ public class ReportFillImportController {
                         file,
                         cycleId,
                         reportMonth,
-                        targetCollegeOrgId,
+                        functionalOrgId,
                         sheetName,
                         currentUser)));
     }

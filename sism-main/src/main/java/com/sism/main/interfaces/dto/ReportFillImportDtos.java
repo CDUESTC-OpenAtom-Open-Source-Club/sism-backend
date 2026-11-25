@@ -115,8 +115,9 @@ public final class ReportFillImportDtos {
      * @param functionalOrgName 归口部门名称
      * @param planId           该 (周期, 学院, 归口) 对应的计划线 id（找不到时为 null）
      * @param rowsCount        组内行数
-     * @param willSubmit       本组是否可提交（false = 组级阻断）
-     * @param groupError       组级错误文案
+     * @param willSubmit       本组是否可提交（组级阻断或不属于所选归口时为 false）
+     * @param groupError       组级<b>错误</b>文案（非空 = 该组不可提交，前端标红）
+     * @param skipReason       组级<b>跳过</b>原因（非空且 groupError 为空 = 该组将跳过，前端标灰）
      * @param rows             组内预览行
      */
     public record ReportFillGroup(
@@ -126,6 +127,7 @@ public final class ReportFillImportDtos {
             int rowsCount,
             boolean willSubmit,
             String groupError,
+            String skipReason,
             List<ReportFillRow> rows
     ) {
     }
@@ -139,8 +141,8 @@ public final class ReportFillImportDtos {
      * @param targetCollegeOrgId 登录人所在学院 org id
      * @param targetCollegeName 登录人所在学院名称
      * @param groups           按归口部门拆出的分组
-     * @param unassignedRows   无法识别归属部门的行（归口部门名查不到）
-     * @param blocking         是否存在阻断错误（存在时不允许提交）
+     * @param hasSubmittableGroup 是否至少有一条可提交的归口线（前端据此决定「确认导入」能否点）
+     * @param blocking         整单不可提交（= 没有任何可提交的组）；单组出错不等于整单阻断
      * @param confirmToken     提交确认令牌
      */
     public record ReportFillPreviewResponse(
@@ -150,7 +152,7 @@ public final class ReportFillImportDtos {
             Long targetCollegeOrgId,
             String targetCollegeName,
             List<ReportFillGroup> groups,
-            List<ReportFillRow> unassignedRows,
+            boolean hasSubmittableGroup,
             boolean blocking,
             String confirmToken
     ) {

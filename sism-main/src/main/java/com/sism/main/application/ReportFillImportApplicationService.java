@@ -33,14 +33,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -60,15 +58,27 @@ import java.util.stream.Collectors;
  * <p><b>分组模型</b>：按文件内「归口职能部门」列拆组，每组 = 一份月报 = 一条归口线。
  * 这与系统既有的「学院上报按归口部门分批提交」模型一致（{@code plan_report} 的
  * {@code functional_org_id} 四元组唯一性），因此不新造数据模型。
+ *
+ * <p><b>阻断粒度</b>（2026-11-25 审查修正）：阻断下沉到<b>组级</b>——某条线有错只让该线不可提交，
+ * 其余线照常提交，对齐模板「填写说明」第 4 条「一条线失败不影响其他线」与第 9 条
+ * 「按归口线分组展示将提交 / 将跳过 / 错误组」。整单 only 在<b>没有任何可提交组</b>时阻断。
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class ReportFillImportApplicationService {
 
-    private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
     /** 2026-11-05：战略发展部 org id 兜底值（与既有导入服务同口径）。 */
     private static final Long DEFAULT_STRATEGY_ORG_ID = 35L;
+
+    /**
+     * 预览批次的存活时间。
+     *
+     * <p>批次保存在单例内存里，只有 commit 成功才移除；用户解析后不提交的批次若不清理，
+     * 会随使用缓慢累积（每条还持有整份文件的行对象）。这里给 TTL 并在每次 preview / commit
+     * 时顺带清理过期条目。
+     */
+    private static final long PREVIEW_TTL_MINUTES = 30L;
 
     private final ReportFillImportParser parser;
     private final OrganizationRepository organizationRepository;
@@ -90,8 +100,12 @@ public class ReportFillImportApplicationService {
             String reportMonth,
             Long collegeOrgId,
             String collegeName,
-            List<ReportFillGroup> groups
+            List<ReportFillGroup> groups,
+            LocalDateTime createdAt
     ) {
+        boolean expired(LocalDateTime now) {
+            return createdAt != null && createdAt.plusMinutes(PREVIEW_TTL_MINUTES).isBefore(now);
+        }
     }
 
     // ==================== 预览 ====================
@@ -102,13 +116,14 @@ public class ReportFillImportApplicationService {
      * @param file              上传的填报导入 Excel
      * @param cycleId           考核周期 id（用于定位「学院 × 归口」的已下发计划线）
      * @param reportMonth       归属月份（yyyyMM 或 yyyy-MM）——模板不含月份列，由界面选择
-     * @param targetCollegeOrgId 目标学院（仅系统管理员可显式指定；普通用户恒为登录人所在学院）
+     * @param functionalOrgId   单归口入口传入的归口部门 id（仅提交该归口的线，其余标记为将跳过）；
+     *                          批量入口传 null = 文件内出现的归口线全部提交
      * @param sheetName         工作表名（可空）
      */
     public ReportFillPreviewResponse preview(MultipartFile file,
                                              Long cycleId,
                                              String reportMonth,
-                                             Long targetCollegeOrgId,
+                                             Long functionalOrgId,
                                              String sheetName,
                                              CurrentUser currentUser) {
         if (currentUser == null || currentUser.getId() == null || currentUser.getOrgId() == null) {
@@ -118,16 +133,20 @@ public class ReportFillImportApplicationService {
             throw new IllegalArgumentException("考核周期不能为空");
         }
         String month = normalizeReportMonth(reportMonth);
+        clearExpiredPreviews();
 
-        SysOrg college = resolveTargetCollege(currentUser, targetCollegeOrgId);
+        SysOrg college = resolveTargetCollege(currentUser);
         ParsedWorkbook workbook = parser.parse(file, sheetName);
+        if (workbook.rows() == null || workbook.rows().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "文件内没有可导入的数据行（只有表头），请按模板填写自评等级与进度说明后再上传");
+        }
 
         // 模板「填写说明」第 3 条：学院列必须等于登录人所在学院，不一致整单拒绝。
         assertCollegeColumnMatches(workbook.rows(), college.getName());
 
-        List<ReportFillGroup> groups = buildGroups(workbook.rows(), cycleId, college);
-        boolean blocking = groups.stream().anyMatch(group -> !group.willSubmit())
-                || groups.stream().anyMatch(group -> group.rows().stream().anyMatch(ReportFillRow::hasErrors));
+        List<ReportFillGroup> groups = buildGroups(workbook.rows(), cycleId, college, functionalOrgId);
+        boolean hasSubmittableGroup = groups.stream().anyMatch(ReportFillGroup::willSubmit);
 
         String batchId = UUID.randomUUID().toString();
         String confirmToken = UUID.randomUUID().toString();
@@ -138,7 +157,8 @@ public class ReportFillImportApplicationService {
                 month,
                 college.getId(),
                 college.getName(),
-                groups));
+                groups,
+                LocalDateTime.now()));
 
         return new ReportFillPreviewResponse(
                 batchId,
@@ -147,8 +167,9 @@ public class ReportFillImportApplicationService {
                 college.getId(),
                 college.getName(),
                 groups,
-                List.of(),
-                blocking,
+                hasSubmittableGroup,
+                // 整单阻断 = 一条可提交的线都没有（单组出错不阻断整单）
+                !hasSubmittableGroup,
                 confirmToken);
     }
 
@@ -162,6 +183,7 @@ public class ReportFillImportApplicationService {
     public ReportFillCommitResponse commit(String batchId,
                                            ReportFillCommitRequest request,
                                            CurrentUser currentUser) {
+        clearExpiredPreviews();
         ReportFillPreviewContext context = previews.get(batchId);
         if (context == null) {
             throw new IllegalArgumentException("导入批次不存在或已过期，请重新上传文件");
@@ -220,13 +242,16 @@ public class ReportFillImportApplicationService {
                                                ReportFillCommitRequest request,
                                                CurrentUser currentUser) {
         if (!group.willSubmit() || group.planId() == null) {
+            String reason = group.groupError() != null
+                    ? group.groupError()
+                    : (group.skipReason() != null ? group.skipReason() : "该归口线不可导入，已跳过");
             return new ReportFillGroupResult(
                     group.functionalOrgId(),
                     group.functionalOrgName(),
                     ReportFillGroupStatus.SKIPPED,
                     null,
                     group.rowsCount(),
-                    group.groupError() == null ? "该归口线不可导入，已跳过" : group.groupError());
+                    reason);
         }
 
         List<UpdatePlanReportIndicatorDetailRequest> details = group.rows().stream()
@@ -283,8 +308,13 @@ public class ReportFillImportApplicationService {
 
     /**
      * 按「归口职能部门」列拆组，并在组内定位已下发的子指标。
+     *
+     * @param selectedFunctionalOrgId 单归口入口选中的归口；非空时其它归口的组只做展示、不提交
      */
-    private List<ReportFillGroup> buildGroups(List<ParsedRow> rows, Long cycleId, SysOrg college) {
+    private List<ReportFillGroup> buildGroups(List<ParsedRow> rows,
+                                              Long cycleId,
+                                              SysOrg college,
+                                              Long selectedFunctionalOrgId) {
         Map<String, List<ParsedRow>> byDeptName = new LinkedHashMap<>();
         for (ParsedRow row : rows) {
             String key = row.functionalDept() == null ? "" : row.functionalDept().trim();
@@ -297,15 +327,25 @@ public class ReportFillImportApplicationService {
             List<ParsedRow> deptRows = entry.getValue();
 
             List<ReportFillRow> enriched = new ArrayList<>();
-            Long functionalOrgId = resolveFunctionalOrgIdByName(deptName);
+            List<SysOrg> deptMatches = matchFunctionalOrgs(deptName);
+            Long functionalOrgId = deptMatches.size() == 1 ? deptMatches.get(0).getId() : null;
+
             Plan linePlan = null;
             Map<String, List<Indicator>> indicatorByName = Map.of();
             String groupError = null;
+            String skipReason = null;
 
-            if (functionalOrgId == null) {
-                groupError = deptName.isEmpty()
-                        ? "归口职能部门不能为空，无法确定导入到哪条线"
-                        : "找不到归口职能部门「" + deptName + "」，请核对名称";
+            if (deptName.isEmpty()) {
+                groupError = "归口职能部门不能为空，无法确定导入到哪条线";
+            } else if (deptMatches.isEmpty()) {
+                groupError = "找不到归口职能部门「" + deptName + "」，请核对名称";
+            } else if (deptMatches.size() > 1) {
+                // 同名多个职能部门：不可静默取第一个——选错会把内容写进别条线并提交审批
+                groupError = "归口职能部门「" + deptName + "」在系统中有多个同名组织，无法确定归口线，请联系管理员核对";
+            } else if (selectedFunctionalOrgId != null
+                    && !Objects.equals(selectedFunctionalOrgId, functionalOrgId)) {
+                // 单归口入口：只提交选中的那条线，其余线仅展示
+                skipReason = "不属于所选的归属部门（本次不提交）";
             } else {
                 linePlan = findLinePlan(cycleId, college.getId(), functionalOrgId);
                 if (linePlan == null) {
@@ -317,14 +357,13 @@ public class ReportFillImportApplicationService {
             }
 
             for (ParsedRow row : deptRows) {
-                enriched.add(toPreviewRow(row, indicatorByName, functionalOrgId, linePlan));
+                enriched.add(toPreviewRow(row, indicatorByName));
             }
 
             boolean hasRowError = enriched.stream().anyMatch(ReportFillRow::hasErrors);
-            boolean willSubmit = groupError == null && !hasRowError && linePlan != null;
-            String finalGroupError = groupError;
-            if (finalGroupError == null && hasRowError) {
-                finalGroupError = "该归口线存在无法定位或不合法的行，请修正后重新上传";
+            boolean willSubmit = groupError == null && skipReason == null && !hasRowError && linePlan != null;
+            if (groupError == null && skipReason == null && hasRowError) {
+                groupError = "该归口线存在无法定位或不合法的行，请修正后重新上传";
             }
 
             groups.add(new ReportFillGroup(
@@ -333,7 +372,8 @@ public class ReportFillImportApplicationService {
                     linePlan == null ? null : linePlan.getId(),
                     deptRows.size(),
                     willSubmit,
-                    finalGroupError,
+                    groupError,
+                    skipReason,
                     enriched));
         }
         return groups;
@@ -343,9 +383,7 @@ public class ReportFillImportApplicationService {
      * 把一行解析结果组装成预览行：列级校验 + 系统侧定位。
      */
     private ReportFillRow toPreviewRow(ParsedRow row,
-                                       Map<String, List<Indicator>> indicatorByName,
-                                       Long functionalOrgId,
-                                       Plan linePlan) {
+                                       Map<String, List<Indicator>> indicatorByName) {
         List<String> errors = new ArrayList<>(ReportFillImportParser.validateRowContent(row));
         List<String> warnings = new ArrayList<>(ReportFillImportParser.validateWeightHint(row));
 
@@ -435,40 +473,33 @@ public class ReportFillImportApplicationService {
     }
 
     /**
-     * 归口部门名 → org id（只认职能部门类型；同名取第一个）。
+     * 归口部门名 → 候选组织（只认职能部门类型；同名多条原样返回，由调用方判错）。
      */
-    private Long resolveFunctionalOrgIdByName(String name) {
+    private List<SysOrg> matchFunctionalOrgs(String name) {
         if (name == null || name.trim().isEmpty()) {
-            return null;
+            return List.of();
         }
-        List<SysOrg> candidates = organizationRepository.findByNameContaining(name.trim()).stream()
+        return organizationRepository.findByNameContaining(name.trim()).stream()
                 .filter(org -> !Boolean.TRUE.equals(org.getIsDeleted()))
                 .filter(org -> normalizeKey(org.getName()).equals(normalizeKey(name)))
+                .filter(org -> org.getType() == OrgType.functional)
                 .toList();
-        if (candidates.isEmpty()) {
-            return null;
-        }
-        SysOrg matched = candidates.get(0);
-        if (matched.getType() != OrgType.functional) {
-            return null;
-        }
-        return matched.getId();
     }
 
     // ==================== 守卫与工具 ====================
 
     /**
-     * 解析目标学院：普通用户恒为登录人所在学院（不可代其他学院填报）；系统管理员可显式指定。
+     * 解析目标学院：<b>恒为登录人所在组织</b>，且必须是二级学院。
+     *
+     * <p>2026-11-25 审查修正：原实现允许系统管理员通过入参代其他学院填报，且对管理员跳过
+     * 组织类型校验——模板「填写说明」第 1 条明确「导入的填报数据归属 = 登录人所在学院
+     * （不可代其他学院填报）」，这不是本轮授权的能力，且会造成「created_by 是管理员、
+     * 审批人无法分辨真实填报人」的审计黑洞，故整段删除。
      */
-    private SysOrg resolveTargetCollege(CurrentUser currentUser, Long requestedCollegeOrgId) {
-        boolean systemAdmin = isSystemAdmin(currentUser);
-        Long collegeOrgId = currentUser.getOrgId();
-        if (systemAdmin && requestedCollegeOrgId != null) {
-            collegeOrgId = requestedCollegeOrgId;
-        }
-        SysOrg org = organizationRepository.findById(collegeOrgId)
+    private SysOrg resolveTargetCollege(CurrentUser currentUser) {
+        SysOrg org = organizationRepository.findById(currentUser.getOrgId())
                 .orElseThrow(() -> new IllegalArgumentException("当前登录账号未关联组织，无法导入填报数据"));
-        if (!systemAdmin && org.getType() != OrgType.academic) {
+        if (org.getType() != OrgType.academic) {
             throw new SecurityException("只有二级学院填报人可以使用导入式上报");
         }
         return org;
@@ -476,6 +507,9 @@ public class ReportFillImportApplicationService {
 
     /**
      * 模板「填写说明」第 3 条：学院列与登录学院不一致 → <b>整单拒绝</b>。
+     *
+     * <p>空值不在此处整单拒（降级为行级错误「学院不能为空」，该行所在组因此不可提交），
+     * 目的是让填报人一眼看到是「漏填」而不是「填错学院」。
      */
     private void assertCollegeColumnMatches(List<ParsedRow> rows, String collegeName) {
         List<String> mismatched = new ArrayList<>();
@@ -503,15 +537,15 @@ public class ReportFillImportApplicationService {
         return normalized;
     }
 
+    /** 清理过期预览批次（避免无界内存增长）。 */
+    private void clearExpiredPreviews() {
+        LocalDateTime now = LocalDateTime.now();
+        previews.entrySet().removeIf(entry -> entry.getValue().expired(now));
+    }
+
     private Long strategyOrgId() {
         Long configured = strategyOrgProperties.getStrategyOrgId();
         return configured == null ? DEFAULT_STRATEGY_ORG_ID : configured;
-    }
-
-    private boolean isSystemAdmin(CurrentUser currentUser) {
-        return currentUser.getAuthorities() != null
-                && currentUser.getAuthorities().stream()
-                .anyMatch(authority -> SYSTEM_ADMIN_ROLE_CODE.equals(authority.getAuthority()));
     }
 
     private static String normalizeKey(String value) {
@@ -521,27 +555,5 @@ public class ReportFillImportApplicationService {
     private static String safeMessage(Exception ex) {
         String message = ex.getMessage();
         return message == null || message.isBlank() ? ex.getClass().getSimpleName() : message;
-    }
-
-    /**
-     * 供测试与预览复用：某归口线下的子指标名集合。
-     */
-    public Set<String> resolveLineIndicatorNames(Long cycleId, Long collegeOrgId, Long functionalOrgId) {
-        Plan plan = findLinePlan(cycleId, collegeOrgId, functionalOrgId);
-        if (plan == null) {
-            return Set.of();
-        }
-        Set<String> names = new LinkedHashSet<>();
-        loadLineIndicators(plan, collegeOrgId).forEach((key, indicators) -> {
-            for (Indicator indicator : indicators) {
-                names.add(indicator.getIndicatorDesc());
-            }
-        });
-        return names;
-    }
-
-    /** 预留：便于测试注入的构造入口。 */
-    Optional<ReportFillPreviewContext> findPreview(String batchId) {
-        return Optional.ofNullable(previews.get(batchId));
     }
 }
