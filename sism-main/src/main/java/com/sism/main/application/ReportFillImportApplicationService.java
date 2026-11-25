@@ -1,0 +1,547 @@
+package com.sism.main.application;
+
+import com.sism.execution.application.ReportApplicationService;
+import com.sism.execution.domain.report.PlanReport;
+import com.sism.execution.domain.report.ReportOrgType;
+import com.sism.execution.interfaces.dto.UpdatePlanReportIndicatorDetailRequest;
+import com.sism.main.application.ReportFillImportParser.ParsedRow;
+import com.sism.main.application.ReportFillImportParser.ParsedWorkbook;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillCommitRequest;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillCommitResponse;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillCommitSummary;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillGroup;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillGroupResult;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillGroupStatus;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillLevel;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillPreviewResponse;
+import com.sism.main.interfaces.dto.ReportFillImportDtos.ReportFillRow;
+import com.sism.organization.domain.OrgType;
+import com.sism.organization.domain.OrganizationRepository;
+import com.sism.organization.domain.SysOrg;
+import com.sism.shared.application.dto.CurrentUser;
+import com.sism.strategy.domain.indicator.Indicator;
+import com.sism.strategy.domain.plan.Plan;
+import com.sism.strategy.domain.plan.PlanLevel;
+import com.sism.strategy.domain.repository.IndicatorRepository;
+import com.sism.strategy.domain.repository.PlanRepository;
+import com.sism.strategy.infrastructure.StrategyOrgProperties;
+import com.sism.task.domain.repository.TaskRepository;
+import com.sism.task.domain.task.StrategicTask;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+/**
+ * 2026-11-25（指标填报导入式上报 · 学院侧）：编排服务。
+ *
+ * <p><b>业务定位</b>：学院填报人不再逐条点「填报」弹窗，而是把 Excel 填好后一次上传，
+ * 由本服务完成「解析 → 定位 → 落填报明细 → 提交该归口线的上报审批」。
+ *
+ * <p><b>与既有导入下发链路（{@link BusinessImportApplicationService}）是两条独立链路</b>：
+ * <ul>
+ *   <li>下发：建线、下发子指标，落 {@code plan}/{@code indicator}；</li>
+ *   <li>填报（本服务）：写本月月报的明细，落 {@code plan_report_indicator}（自评等级 + 进度说明）。</li>
+ * </ul>
+ *
+ * <p><b>分组模型</b>：按文件内「归口职能部门」列拆组，每组 = 一份月报 = 一条归口线。
+ * 这与系统既有的「学院上报按归口部门分批提交」模型一致（{@code plan_report} 的
+ * {@code functional_org_id} 四元组唯一性），因此不新造数据模型。
+ */
+@Service
+@Slf4j
+@RequiredArgsConstructor
+public class ReportFillImportApplicationService {
+
+    private static final String SYSTEM_ADMIN_ROLE_CODE = "ROLE_SYSTEM_ADMIN";
+    /** 2026-11-05：战略发展部 org id 兜底值（与既有导入服务同口径）。 */
+    private static final Long DEFAULT_STRATEGY_ORG_ID = 35L;
+
+    private final ReportFillImportParser parser;
+    private final OrganizationRepository organizationRepository;
+    private final PlanRepository planRepository;
+    private final TaskRepository taskRepository;
+    private final IndicatorRepository indicatorRepository;
+    private final StrategyOrgProperties strategyOrgProperties;
+    private final ReportApplicationService reportApplicationService;
+    private final TransactionTemplate transactionTemplate;
+
+    /** 预览批次上下文（batchId → 上下文）。 */
+    private final Map<String, ReportFillPreviewContext> previews = new ConcurrentHashMap<>();
+
+    /** 预览批次上下文。 */
+    private record ReportFillPreviewContext(
+            String batchId,
+            String confirmToken,
+            Long cycleId,
+            String reportMonth,
+            Long collegeOrgId,
+            String collegeName,
+            List<ReportFillGroup> groups
+    ) {
+    }
+
+    // ==================== 预览 ====================
+
+    /**
+     * 解析预览。
+     *
+     * @param file              上传的填报导入 Excel
+     * @param cycleId           考核周期 id（用于定位「学院 × 归口」的已下发计划线）
+     * @param reportMonth       归属月份（yyyyMM 或 yyyy-MM）——模板不含月份列，由界面选择
+     * @param targetCollegeOrgId 目标学院（仅系统管理员可显式指定；普通用户恒为登录人所在学院）
+     * @param sheetName         工作表名（可空）
+     */
+    public ReportFillPreviewResponse preview(MultipartFile file,
+                                             Long cycleId,
+                                             String reportMonth,
+                                             Long targetCollegeOrgId,
+                                             String sheetName,
+                                             CurrentUser currentUser) {
+        if (currentUser == null || currentUser.getId() == null || currentUser.getOrgId() == null) {
+            throw new SecurityException("未登录或登录已过期");
+        }
+        if (cycleId == null) {
+            throw new IllegalArgumentException("考核周期不能为空");
+        }
+        String month = normalizeReportMonth(reportMonth);
+
+        SysOrg college = resolveTargetCollege(currentUser, targetCollegeOrgId);
+        ParsedWorkbook workbook = parser.parse(file, sheetName);
+
+        // 模板「填写说明」第 3 条：学院列必须等于登录人所在学院，不一致整单拒绝。
+        assertCollegeColumnMatches(workbook.rows(), college.getName());
+
+        List<ReportFillGroup> groups = buildGroups(workbook.rows(), cycleId, college);
+        boolean blocking = groups.stream().anyMatch(group -> !group.willSubmit())
+                || groups.stream().anyMatch(group -> group.rows().stream().anyMatch(ReportFillRow::hasErrors));
+
+        String batchId = UUID.randomUUID().toString();
+        String confirmToken = UUID.randomUUID().toString();
+        previews.put(batchId, new ReportFillPreviewContext(
+                batchId,
+                confirmToken,
+                cycleId,
+                month,
+                college.getId(),
+                college.getName(),
+                groups));
+
+        return new ReportFillPreviewResponse(
+                batchId,
+                cycleId,
+                month,
+                college.getId(),
+                college.getName(),
+                groups,
+                List.of(),
+                blocking,
+                confirmToken);
+    }
+
+    // ==================== 提交 ====================
+
+    /**
+     * 确认导入：逐归口线独立事务 —— 落填报明细 + 提交该线的上报审批。
+     *
+     * <p>一条线失败不影响其他线（与模板「填写说明」第 4/9 条一致）。
+     */
+    public ReportFillCommitResponse commit(String batchId,
+                                           ReportFillCommitRequest request,
+                                           CurrentUser currentUser) {
+        ReportFillPreviewContext context = previews.get(batchId);
+        if (context == null) {
+            throw new IllegalArgumentException("导入批次不存在或已过期，请重新上传文件");
+        }
+        if (request == null || request.confirmToken() == null
+                || !request.confirmToken().equals(context.confirmToken())) {
+            throw new IllegalArgumentException("确认令牌无效或已过期，请重新解析预览");
+        }
+
+        List<ReportFillGroupResult> results = new ArrayList<>();
+        int success = 0;
+        int skipped = 0;
+        int failed = 0;
+
+        for (ReportFillGroup group : context.groups()) {
+            ReportFillGroupResult result;
+            try {
+                result = transactionTemplate.execute(status -> commitGroup(group, context, request, currentUser));
+            } catch (Exception ex) {
+                log.warn("[ReportFillImport] 归口线提交失败: org={}, message={}",
+                        group.functionalOrgName(), ex.getMessage());
+                result = new ReportFillGroupResult(
+                        group.functionalOrgId(),
+                        group.functionalOrgName(),
+                        ReportFillGroupStatus.FAILED,
+                        null,
+                        group.rowsCount(),
+                        "导入失败：" + safeMessage(ex));
+            }
+            if (result == null) {
+                result = new ReportFillGroupResult(
+                        group.functionalOrgId(),
+                        group.functionalOrgName(),
+                        ReportFillGroupStatus.FAILED,
+                        null,
+                        group.rowsCount(),
+                        "导入失败：事务未返回结果");
+            }
+            results.add(result);
+            switch (result.status()) {
+                case SUCCESS -> success++;
+                case SKIPPED -> skipped++;
+                case FAILED -> failed++;
+            }
+        }
+
+        previews.remove(batchId);
+        return new ReportFillCommitResponse(results, new ReportFillCommitSummary(success, skipped, failed));
+    }
+
+    /**
+     * 单个归口线的落库 + 提交（在一个事务内）。
+     */
+    private ReportFillGroupResult commitGroup(ReportFillGroup group,
+                                               ReportFillPreviewContext context,
+                                               ReportFillCommitRequest request,
+                                               CurrentUser currentUser) {
+        if (!group.willSubmit() || group.planId() == null) {
+            return new ReportFillGroupResult(
+                    group.functionalOrgId(),
+                    group.functionalOrgName(),
+                    ReportFillGroupStatus.SKIPPED,
+                    null,
+                    group.rowsCount(),
+                    group.groupError() == null ? "该归口线不可导入，已跳过" : group.groupError());
+        }
+
+        List<UpdatePlanReportIndicatorDetailRequest> details = group.rows().stream()
+                .filter(row -> row.indicatorId() != null && !row.hasErrors())
+                .map(row -> {
+                    UpdatePlanReportIndicatorDetailRequest detail = new UpdatePlanReportIndicatorDetailRequest();
+                    detail.setIndicatorId(row.indicatorId());
+                    // 等级制填报：百分比恒为 0（与既有填报弹窗一致）
+                    detail.setProgress(0);
+                    detail.setSelfRating(row.level());
+                    detail.setContent(row.remark());
+                    return detail;
+                })
+                .toList();
+        if (details.isEmpty()) {
+            return new ReportFillGroupResult(
+                    group.functionalOrgId(),
+                    group.functionalOrgName(),
+                    ReportFillGroupStatus.SKIPPED,
+                    null,
+                    group.rowsCount(),
+                    "该归口线没有可导入的有效行，已跳过");
+        }
+
+        // 1) 建/取本月月报草稿（学院 × 归口 = 一份月报）
+        PlanReport report = reportApplicationService.createReport(
+                context.reportMonth(),
+                context.collegeOrgId(),
+                ReportOrgType.COLLEGE,
+                group.planId(),
+                currentUser.getId(),
+                group.functionalOrgId());
+
+        // 2) 落填报明细（不触碰附件关联）
+        reportApplicationService.upsertFillDetails(report.getId(), details, currentUser.getId());
+
+        // 3) 提交该线的上报审批（走系统既有的上报审批流，不自动审批通过）
+        reportApplicationService.submitReport(
+                report.getId(),
+                currentUser.getId(),
+                request.comment(),
+                currentUser);
+
+        return new ReportFillGroupResult(
+                group.functionalOrgId(),
+                group.functionalOrgName(),
+                ReportFillGroupStatus.SUCCESS,
+                report.getId(),
+                details.size(),
+                "已导入 " + details.size() + " 条填报数据并提交上报审批");
+    }
+
+    // ==================== 分组与定位 ====================
+
+    /**
+     * 按「归口职能部门」列拆组，并在组内定位已下发的子指标。
+     */
+    private List<ReportFillGroup> buildGroups(List<ParsedRow> rows, Long cycleId, SysOrg college) {
+        Map<String, List<ParsedRow>> byDeptName = new LinkedHashMap<>();
+        for (ParsedRow row : rows) {
+            String key = row.functionalDept() == null ? "" : row.functionalDept().trim();
+            byDeptName.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
+        }
+
+        List<ReportFillGroup> groups = new ArrayList<>();
+        for (Map.Entry<String, List<ParsedRow>> entry : byDeptName.entrySet()) {
+            String deptName = entry.getKey();
+            List<ParsedRow> deptRows = entry.getValue();
+
+            List<ReportFillRow> enriched = new ArrayList<>();
+            Long functionalOrgId = resolveFunctionalOrgIdByName(deptName);
+            Plan linePlan = null;
+            Map<String, List<Indicator>> indicatorByName = Map.of();
+            String groupError = null;
+
+            if (functionalOrgId == null) {
+                groupError = deptName.isEmpty()
+                        ? "归口职能部门不能为空，无法确定导入到哪条线"
+                        : "找不到归口职能部门「" + deptName + "」，请核对名称";
+            } else {
+                linePlan = findLinePlan(cycleId, college.getId(), functionalOrgId);
+                if (linePlan == null) {
+                    groupError = "本考核周期未找到（" + college.getName() + " × " + deptName
+                            + "）的下发计划，请先确认指标已下发给该学院";
+                } else {
+                    indicatorByName = loadLineIndicators(linePlan, college.getId());
+                }
+            }
+
+            for (ParsedRow row : deptRows) {
+                enriched.add(toPreviewRow(row, indicatorByName, functionalOrgId, linePlan));
+            }
+
+            boolean hasRowError = enriched.stream().anyMatch(ReportFillRow::hasErrors);
+            boolean willSubmit = groupError == null && !hasRowError && linePlan != null;
+            String finalGroupError = groupError;
+            if (finalGroupError == null && hasRowError) {
+                finalGroupError = "该归口线存在无法定位或不合法的行，请修正后重新上传";
+            }
+
+            groups.add(new ReportFillGroup(
+                    functionalOrgId,
+                    deptName,
+                    linePlan == null ? null : linePlan.getId(),
+                    deptRows.size(),
+                    willSubmit,
+                    finalGroupError,
+                    enriched));
+        }
+        return groups;
+    }
+
+    /**
+     * 把一行解析结果组装成预览行：列级校验 + 系统侧定位。
+     */
+    private ReportFillRow toPreviewRow(ParsedRow row,
+                                       Map<String, List<Indicator>> indicatorByName,
+                                       Long functionalOrgId,
+                                       Plan linePlan) {
+        List<String> errors = new ArrayList<>(ReportFillImportParser.validateRowContent(row));
+        List<String> warnings = new ArrayList<>(ReportFillImportParser.validateWeightHint(row));
+
+        Long indicatorId = null;
+        String matchedName = null;
+        ReportFillLevel level = ReportFillLevel.fromLabel(row.selfRating());
+
+        if (!errors.isEmpty()) {
+            // 列级已有错误 → 不再定位（定位无意义，且避免给出误导性的「找不到」提示）
+            return new ReportFillRow(
+                    row.rowNo(),
+                    row.college(),
+                    row.functionalDept(),
+                    row.indicatorName(),
+                    row.weight(),
+                    row.selfRating(),
+                    level == null ? null : level.name(),
+                    row.remark(),
+                    null,
+                    null,
+                    errors,
+                    warnings);
+        }
+
+        List<Indicator> candidates = indicatorByName.get(normalizeKey(row.indicatorName()));
+        if (candidates == null || candidates.isEmpty()) {
+            errors.add("系统里没有找到子指标「" + row.indicatorName() + "」，请核对名称是否与下发的指标完全一致");
+        } else if (candidates.size() > 1) {
+            errors.add("子指标「" + row.indicatorName() + "」在本归口线下存在多个同名项，无法定位，请改用唯一名称");
+        } else {
+            indicatorId = candidates.get(0).getId();
+            matchedName = candidates.get(0).getIndicatorDesc();
+        }
+
+        return new ReportFillRow(
+                row.rowNo(),
+                row.college(),
+                row.functionalDept(),
+                row.indicatorName(),
+                row.weight(),
+                row.selfRating(),
+                level == null ? null : level.name(),
+                row.remark(),
+                indicatorId,
+                matchedName,
+                errors,
+                warnings);
+    }
+
+    /**
+     * 按「学院 × 归口职能部门」查已下发的计划线。
+     */
+    private Plan findLinePlan(Long cycleId, Long collegeOrgId, Long functionalOrgId) {
+        return planRepository
+                .findActiveByCycleIdAndPlanLevelAndCreatedByOrgIdAndTargetOrgIdAndFunctionalOrgId(
+                        cycleId,
+                        PlanLevel.FUNC_TO_COLLEGE,
+                        strategyOrgId(),
+                        collegeOrgId,
+                        functionalOrgId)
+                .orElse(null);
+    }
+
+    /**
+     * 取该计划线下、归属该学院的子指标，按名称归一化分组。
+     */
+    private Map<String, List<Indicator>> loadLineIndicators(Plan plan, Long collegeOrgId) {
+        List<StrategicTask> tasks = taskRepository.findByPlanId(plan.getId());
+        if (tasks.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> taskIds = tasks.stream()
+                .map(StrategicTask::getId)
+                .filter(Objects::nonNull)
+                .toList();
+        if (taskIds.isEmpty()) {
+            return Map.of();
+        }
+        return indicatorRepository.findByTaskIds(taskIds).stream()
+                .filter(indicator -> indicator.getParentIndicatorId() != null)
+                .filter(indicator -> indicator.getTargetOrg() != null
+                        && Objects.equals(indicator.getTargetOrg().getId(), collegeOrgId))
+                .filter(indicator -> !Boolean.TRUE.equals(indicator.getIsDeleted()))
+                .collect(Collectors.groupingBy(
+                        indicator -> normalizeKey(indicator.getIndicatorDesc()),
+                        Collectors.toList()));
+    }
+
+    /**
+     * 归口部门名 → org id（只认职能部门类型；同名取第一个）。
+     */
+    private Long resolveFunctionalOrgIdByName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return null;
+        }
+        List<SysOrg> candidates = organizationRepository.findByNameContaining(name.trim()).stream()
+                .filter(org -> !Boolean.TRUE.equals(org.getIsDeleted()))
+                .filter(org -> normalizeKey(org.getName()).equals(normalizeKey(name)))
+                .toList();
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        SysOrg matched = candidates.get(0);
+        if (matched.getType() != OrgType.functional) {
+            return null;
+        }
+        return matched.getId();
+    }
+
+    // ==================== 守卫与工具 ====================
+
+    /**
+     * 解析目标学院：普通用户恒为登录人所在学院（不可代其他学院填报）；系统管理员可显式指定。
+     */
+    private SysOrg resolveTargetCollege(CurrentUser currentUser, Long requestedCollegeOrgId) {
+        boolean systemAdmin = isSystemAdmin(currentUser);
+        Long collegeOrgId = currentUser.getOrgId();
+        if (systemAdmin && requestedCollegeOrgId != null) {
+            collegeOrgId = requestedCollegeOrgId;
+        }
+        SysOrg org = organizationRepository.findById(collegeOrgId)
+                .orElseThrow(() -> new IllegalArgumentException("当前登录账号未关联组织，无法导入填报数据"));
+        if (!systemAdmin && org.getType() != OrgType.academic) {
+            throw new SecurityException("只有二级学院填报人可以使用导入式上报");
+        }
+        return org;
+    }
+
+    /**
+     * 模板「填写说明」第 3 条：学院列与登录学院不一致 → <b>整单拒绝</b>。
+     */
+    private void assertCollegeColumnMatches(List<ParsedRow> rows, String collegeName) {
+        List<String> mismatched = new ArrayList<>();
+        for (ParsedRow row : rows) {
+            String value = row.college() == null ? "" : row.college().trim();
+            if (value.isEmpty()) {
+                continue;
+            }
+            if (!normalizeKey(value).equals(normalizeKey(collegeName))) {
+                mismatched.add("第 " + row.rowNo() + " 行「" + value + "」");
+            }
+        }
+        if (!mismatched.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "「学院」列必须填写登录人所在学院（" + collegeName + "），以下行与登录账号不一致，整单拒绝导入："
+                            + String.join("、", mismatched));
+        }
+    }
+
+    private String normalizeReportMonth(String reportMonth) {
+        String normalized = PlanReport.normalizeReportMonth(reportMonth);
+        if (normalized == null) {
+            throw new IllegalArgumentException("归属月份必须提供（yyyyMM 或 yyyy-MM）");
+        }
+        return normalized;
+    }
+
+    private Long strategyOrgId() {
+        Long configured = strategyOrgProperties.getStrategyOrgId();
+        return configured == null ? DEFAULT_STRATEGY_ORG_ID : configured;
+    }
+
+    private boolean isSystemAdmin(CurrentUser currentUser) {
+        return currentUser.getAuthorities() != null
+                && currentUser.getAuthorities().stream()
+                .anyMatch(authority -> SYSTEM_ADMIN_ROLE_CODE.equals(authority.getAuthority()));
+    }
+
+    private static String normalizeKey(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", "").toLowerCase();
+    }
+
+    private static String safeMessage(Exception ex) {
+        String message = ex.getMessage();
+        return message == null || message.isBlank() ? ex.getClass().getSimpleName() : message;
+    }
+
+    /**
+     * 供测试与预览复用：某归口线下的子指标名集合。
+     */
+    public Set<String> resolveLineIndicatorNames(Long cycleId, Long collegeOrgId, Long functionalOrgId) {
+        Plan plan = findLinePlan(cycleId, collegeOrgId, functionalOrgId);
+        if (plan == null) {
+            return Set.of();
+        }
+        Set<String> names = new LinkedHashSet<>();
+        loadLineIndicators(plan, collegeOrgId).forEach((key, indicators) -> {
+            for (Indicator indicator : indicators) {
+                names.add(indicator.getIndicatorDesc());
+            }
+        });
+        return names;
+    }
+
+    /** 预留：便于测试注入的构造入口。 */
+    Optional<ReportFillPreviewContext> findPreview(String batchId) {
+        return Optional.ofNullable(previews.get(batchId));
+    }
+}

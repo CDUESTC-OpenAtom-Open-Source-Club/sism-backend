@@ -308,6 +308,48 @@ public class ReportApplicationService {
     }
 
     /**
+     * 2026-11-25（指标填报导入式上报 · 学院侧）：批量写入填报明细，<b>不触碰附件关联</b>。
+     *
+     * <p>为什么单独开一个入口：{@link #updateReportBatch} 走 {@code upsertIndicatorDetail}，
+     * 末尾会调 {@code attachFiles(planReportIndicatorId, attachmentIds)}——附件是<b>全量替换</b>语义
+     * （传空列表即 DELETE 该条全部附件关联）。而导入填报的文件里<b>没有附件列</b>，
+     * 若沿用该入口，会把填报人此前上传的「上报资料」全部清空。
+     *
+     * <p>本方法只写 {@code plan_report_indicator} 的进度/说明/等级三要素，
+     * <b>既不新增也不删除</b>附件关联——导入不携带附件，就不该动已有附件。
+     *
+     * <p>等级口径：走 {@link ProgressLevel#normalize} 归一（中文「超前完成 / 正常 / 滞后」均可识别）；
+     * 进度：等级制填报下百分比恒为 0（与既有填报弹窗一致）。
+     */
+    @Transactional
+    public PlanReport upsertFillDetails(Long reportId,
+                                         List<UpdatePlanReportIndicatorDetailRequest> indicatorDetails,
+                                         Long operatorUserId) {
+        PlanReport report = planReportRepository.findById(reportId)
+                .orElseThrow(() -> new ResourceNotFoundException("Report", reportId));
+        report.markCreatedByIfAbsent(operatorUserId);
+        PlanReport savedReport = planReportRepository.save(report);
+
+        for (UpdatePlanReportIndicatorDetailRequest detail : indicatorDetails == null
+                ? List.<UpdatePlanReportIndicatorDetailRequest>of()
+                : indicatorDetails) {
+            if (detail == null || detail.getIndicatorId() == null) {
+                continue;
+            }
+            ProgressLevel rating = ProgressLevel.normalize(detail.getSelfRating());
+            String normalizedRating = rating == null ? null : rating.name();
+            planReportIndicatorRepository.upsertDraftIndicator(
+                    savedReport.getId(),
+                    detail.getIndicatorId(),
+                    detail.getProgress(),
+                    detail.getContent(),
+                    normalizedRating,
+                    detail.getContent());
+        }
+        return enrichReportMetadata(savedReport);
+    }
+
+    /**
      * 2026-10-30：判断一次填报是否属于等级制（自评进度等级）语境。
      */
     private boolean isLevelBased(String selfRating) {
