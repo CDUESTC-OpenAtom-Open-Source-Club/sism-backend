@@ -32,7 +32,8 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li><b>责任部门</b>（来源）= 登录人所在组织，必须与登录身份一致（04 是部门、05/06 是学院）；</li>
  *   <li><b>目标部门 / 上报目标</b> = 这条填报流向上报到哪（05/06 = 归口职能部门；04 = 战略发展部）；</li>
- *   <li><b>（枚举来源，勿动）</b> = 给 Excel 下拉做数据源的辅助列，解析时<b>完全忽略</b>。</li>
+ *   <li><b>（枚举来源，勿动）</b> = 给 Excel 下拉做数据源的辅助列，解析时<b>完全忽略</b>
+ *       （2026-11-26 起判空扫描也排除该列：该列预填的枚举占行不再被误判为数据行——幻影行修复）。</li>
  * </ul>
  *
  * <p><b>与 {@link ExcelBusinessImportParser}（导入下发）刻意分开</b>——下发落 {@code plan}/{@code indicator}、
@@ -199,11 +200,14 @@ public class ReportFillImportParser {
             throw new IllegalStateException(
                     "未识别到有效表头：需要「责任部门」「子指标名称」两列，请使用最新模板后重试");
         }
+        // 2026-11-26（R3 幻影行修复）：先定位「（枚举来源，勿动）」辅助列，判空时排除——
+        // 该列固定预填 3 个枚举值（超前完成/正常/滞后）当下拉数据源，占行数与用户实际填写行数无关。
+        Integer enumSourceColumn = findEnumSourceColumn(sheet.getRow(headerRowIndex), formatter, evaluator);
 
         List<ParsedRow> rows = new ArrayList<>();
         for (int rowIndex = headerRowIndex + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
             Row row = sheet.getRow(rowIndex);
-            if (row == null || isRowBlank(row, formatter, evaluator)) {
+            if (row == null || isRowBlank(row, formatter, evaluator, enumSourceColumn)) {
                 continue;
             }
             // rowNo 记 Excel 物理行号（1-based），报错文案直接对得上用户在 Excel 里看到的行
@@ -246,9 +250,46 @@ public class ReportFillImportParser {
         return matched;
     }
 
-    private boolean isRowBlank(Row row, DataFormatter formatter, FormulaEvaluator evaluator) {
+    /**
+     * 2026-11-26（R3 幻影行修复）：定位「（枚举来源，勿动）」辅助列下标。
+     *
+     * <p>识别口径与既有列定位一致（读表头行单元格文本）：该列表头整体在括号内
+     * （「（枚举来源，勿动）」），{@link #normalizeHeader} 剥括号后为空串，
+     * 因此对归一化前后原文判断「枚举来源 / 勿动」关键字；找不到返回 null（旧文件无该列时判空口径不变）。
+     */
+    private Integer findEnumSourceColumn(Row headerRow, DataFormatter formatter, FormulaEvaluator evaluator) {
+        if (headerRow == null) {
+            return null;
+        }
+        int lastCell = headerRow.getLastCellNum();
+        for (int columnIndex = 0; columnIndex < lastCell; columnIndex++) {
+            String raw = cellText(headerRow, columnIndex, formatter, evaluator);
+            if (raw.isEmpty()) {
+                continue;
+            }
+            if (raw.contains("枚举来源") || raw.contains("勿动")) {
+                return columnIndex;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 整行判空（决定该行是否作为数据行解析）。
+     *
+     * <p>2026-11-26（R3 幻影行修复）：扫描时排除「（枚举来源，勿动）」列（{@code enumSourceColumn}）。
+     * 此前实现扫描全部列、与类注释「枚举来源列解析时完全忽略」自相矛盾——模板该列固定预填
+     * 超前完成/正常/滞后 3 个枚举值当下拉数据源，用户实际填报行数少于 3 时，剩余枚举占行
+     * 只有该列非空、其余列全空，却被误判为数据行（幻影行）→ 整行必填校验全挂 → 整单阻断。
+     * 修正后「除枚举列外整行为空」的行按空行跳过。
+     */
+    private boolean isRowBlank(Row row, DataFormatter formatter, FormulaEvaluator evaluator,
+                               Integer enumSourceColumn) {
         int lastCell = row.getLastCellNum();
         for (int columnIndex = 0; columnIndex < lastCell; columnIndex++) {
+            if (enumSourceColumn != null && columnIndex == enumSourceColumn.intValue()) {
+                continue;
+            }
             if (!cellText(row, columnIndex, formatter, evaluator).trim().isEmpty()) {
                 return false;
             }
