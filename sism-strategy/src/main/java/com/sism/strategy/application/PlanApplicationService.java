@@ -321,6 +321,13 @@ public class PlanApplicationService {
     })
     public PlanResponse publishPlan(Long id) {
         Plan plan = requirePlan(id);
+        // publish 同口径收窄（2026-11-26 用户拍板）：直发入口已废弃，任何计划下发必须走
+        // submit-dispatch 三级审批。publish 与 approve 同义（置 DISTRIBUTED + 指标同步），
+        // 必须过同一道 REST 直批旁路闸门，否则事故脚本换个端点仍能把在审计划直推 DISTRIBUTED。
+        // 注意 publish 不承担「存量在途单收尾」职责：守卫对存量「职能部门创建的
+        // FUNC_TO_COLLEGE」的放行口子，会被下一道 assertCollegeDispatchCreatedByStrategyOrg
+        // 拦下（该类计划无论何种状态都拒绝 publish），最终效果 = 全拦，无新增后门。
+        assertRestApprovalNotBypassingApprovalChain(plan);
         // 2026-11-05（学院指标直发改造）：publish 会把计划与计划下指标一并置为 DISTRIBUTED，
         // 等于「向学院下发」。存量「职能部门创建的 FUNC_TO_COLLEGE」计划必须在这里被拦住，
         // 否则旧链路等于没取消、存量也不是只读历史。

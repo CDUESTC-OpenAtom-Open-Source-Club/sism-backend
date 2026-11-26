@@ -696,6 +696,68 @@ class PlanApplicationServiceTest {
 
 
     @Test
+    @DisplayName("2026-11-26（publish 收窄）：无任何审批实例的草稿计划不能借 publish 直接下发")
+    void shouldRejectPublishingDraftPlanWithoutApprovalInstance() {
+        Plan plan = Plan.create(2026L, 2L, 35L, PlanLevel.STRAT_TO_FUNC);
+        plan.setId(9205L);
+        // Plan.create 默认 DRAFT，且没有任何审批实例（快照为空）
+
+        when(planRepository.findById(9205L)).thenReturn(Optional.of(plan));
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9205L)).thenReturn(null);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.publishPlan(9205L));
+
+        assertTrue(error.getMessage().contains("发起下发审批"));
+        // 状态不变（仍是草稿）
+        assertEquals(PlanStatus.DRAFT.value(), plan.getStatus());
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-26（publish 收窄）：三级审批在途的计划不能借 publish 绕过审批链")
+    void shouldRejectPublishingPlanWhileApprovalInstanceInReview() {
+        Plan plan = Plan.create(2026L, 2L, 35L, PlanLevel.STRAT_TO_FUNC);
+        plan.setId(9206L);
+        // submit-dispatch 后停在三级审批中（PENDING + 实例 IN_REVIEW）
+        plan.setStatus(PlanStatus.PENDING.value());
+
+        when(planRepository.findById(9206L)).thenReturn(Optional.of(plan));
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9206L)).thenReturn(inReviewSnapshot());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.publishPlan(9206L));
+
+        assertTrue(error.getMessage().contains("审批中心"));
+        assertEquals(PlanStatus.PENDING.value(), plan.getStatus());
+        verify(planRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-26（publish 收窄）：已下发的计划落到域守卫「请勿重复下发」")
+    void shouldRejectRepublishingAlreadyDistributedPlanByDomainGuard() {
+        Plan plan = Plan.create(2026L, 2L, 35L, PlanLevel.STRAT_TO_FUNC);
+        plan.setId(9207L);
+        plan.setStatus(PlanStatus.DISTRIBUTED.value());
+
+        when(planRepository.findById(9207L)).thenReturn(Optional.of(plan));
+        // 审批早已走完（实例终态 APPROVED），旁路闸门放行，由 plan.activate() 的域守卫拦重复下发
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9207L))
+                .thenReturn(PlanWorkflowSnapshotQueryService.WorkflowSnapshot.builder()
+                        .workflowInstanceId(7003L)
+                        .workflowStatus("APPROVED")
+                        .build());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.publishPlan(9207L));
+
+        assertTrue(error.getMessage().contains("请勿重复下发"));
+        assertEquals(PlanStatus.DISTRIBUTED.value(), plan.getStatus());
+        verify(planRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("2026-11-05（N11）：存量计划若没走过审批（仍是 DRAFT），审批入口仍然拒绝（防后门）")
     void shouldStillRejectLegacyCollegeDispatchPlanNotInApproval() {
         Long cycleId = 2026L;
