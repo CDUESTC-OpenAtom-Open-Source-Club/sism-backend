@@ -1,5 +1,5 @@
 # CI Pipeline - Build, Test, and Validate
-# Runs on pull requests and pushes to main branch
+# Runs on pull requests (main & develop) and pushes to main/develop
 
 name: CI
 
@@ -7,7 +7,12 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main]
+    # 2026-11-26：develop 的 ruleset 要求 Build and Test / Code Quality Checks /
+    # Validate Flyway Migrations 三个必需 check，而本 workflow 的 pull_request 只监听
+    # main → 开向 develop 的 PR 永远拿不到 check，ruleset 下永久 BLOCKED，只能靠
+    # admin 绕过合并（等于本地 CI 门禁失效）。此处补上 develop，使 develop PR 正常
+    # 触发 CI 并由 ruleset 强制把关。
+    branches: [main, develop]
   workflow_dispatch:
 
 env:
