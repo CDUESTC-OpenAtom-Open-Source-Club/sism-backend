@@ -890,4 +890,241 @@ class ExcelBusinessImportParserTest {
             throw new AssertionError(ex);
         }
     }
+
+    // ==================== 2026-11-26 学院导入序号语义改造（序号降级为子指标行号，纯展示） ====================
+
+    /**
+     * 2026-11-26 序号语义改造用例的行定义：序号|学院|任务类型|核心指标|核心指标类型|子指标名称|指标类型|权重。
+     * 序号传 {@code null} 表示该格留空；核心指标传 {@code null} 表示留空（sticky 继承）。
+     */
+    private void addDistributionRow(Sheet sheet, int rowIndex, Integer seq,
+                                    String parentIndicator, String childName, String weight) {
+        Row row = sheet.createRow(rowIndex);
+        if (seq != null) {
+            row.createCell(0).setCellValue(seq);
+        }
+        row.createCell(1).setCellValue("计算机学院");
+        row.createCell(2).setCellValue("基础性");
+        if (parentIndicator != null) {
+            row.createCell(3).setCellValue(parentIndicator);
+            row.createCell(4).setCellValue("定量");
+        }
+        row.createCell(5).setCellValue(childName);
+        row.createCell(6).setCellValue("定量");
+        row.createCell(7).setCellValue(weight);
+    }
+
+    @Test
+    @DisplayName("2026-11-26 序号语义改造: 同父级多子指标逐行递增序号 → 全部归同组，序号原样保留")
+    void shouldGroupByParentIndicatorWhenSeqIncrementsPerRow() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = distributionSheetV2(workbook);
+            addDistributionRow(sheet, 1, 1, "父级核心指标A", "子指标A1", "40");
+            addDistributionRow(sheet, 2, 2, "父级核心指标A", "子指标A2", "30");
+            addDistributionRow(sheet, 3, 3, "父级核心指标A", "子指标A3", "30");
+            addDistributionRow(sheet, 4, 4, "父级核心指标B", "子指标B1", "100");
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(4, parsed.rows().size());
+            // 归属锚定核心指标列：同父级三行全部归同组（序号不参与归属判定）
+            for (int i = 0; i < 3; i++) {
+                var row = parsed.rows().get(i);
+                assertTrue(row.errors().isEmpty(), "递增序号行不应报错: " + row.errors());
+                assertEquals("父级核心指标A", row.normalized().parentIndicator(),
+                        "同父级行应按核心指标列归组");
+            }
+            // 序号=子指标行号：每行原样保留（不再是组号语义，不做组号查重/继承覆盖）
+            for (int i = 0; i < 4; i++) {
+                assertEquals(i + 1, parsed.rows().get(i).normalized().seq(),
+                        "逐行递增序号应原样保留");
+            }
+            // 父级A 40+30+30=100、父级B 100 → 均无权重警告（权重按父级合计校验）
+            for (var row : parsed.rows()) {
+                assertTrue(row.warnings().stream().noneMatch(msg -> msg.contains("权重合计")),
+                        "父级合计均为 100 不应有权重警告: " + row.warnings());
+            }
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-26 序号语义改造: 权重警告按父级 groupKey 合计点名（不再按序号分组、不带「第 N 组」）")
+    void shouldWarnWeightSumByParentIndicatorGroupKey() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = distributionSheetV2(workbook);
+            // 父级A 三行合计 90（≠100）→ 三行都警告；父级B 单行 100 → 不警告
+            addDistributionRow(sheet, 1, 1, "父级核心指标A", "子指标A1", "40");
+            addDistributionRow(sheet, 2, 2, "父级核心指标A", "子指标A2", "30");
+            addDistributionRow(sheet, 3, 3, "父级核心指标A", "子指标A3", "20");
+            addDistributionRow(sheet, 4, 4, "父级核心指标B", "子指标B1", "100");
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(4, parsed.rows().size());
+            for (int i = 0; i < 3; i++) {
+                var row = parsed.rows().get(i);
+                assertTrue(row.warnings().stream().anyMatch(
+                                msg -> msg.contains("核心指标「父级核心指标A」内子指标")
+                                        && msg.contains("权重合计为 90") && msg.contains("应为 100")),
+                        "父级A 三行应按父级合计 90 警告: " + row.warnings());
+                assertTrue(row.warnings().stream().noneMatch(msg -> msg.contains("第 ")),
+                        "学院模板权重警告不应再按组号点名: " + row.warnings());
+            }
+            var lastRow = parsed.rows().get(3);
+            assertTrue(lastRow.warnings().stream().noneMatch(msg -> msg.contains("权重合计")),
+                    "父级B 合计 100 不应警告: " + lastRow.warnings());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-26 序号语义改造: 序号重复 → 行级警告（旧硬错误删除），归属仍按核心指标列")
+    void shouldWarnInsteadOfErrorWhenDistributionSeqDuplicated() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = distributionSheetV2(workbook);
+            // 旧口径：序号 1 被父级A 使用后又被父级B 使用 → 行级硬错误「序号已被…使用」；
+            // 新口径：序号=行号纯展示，重复仅警告，两行照常落库
+            addDistributionRow(sheet, 1, 1, "父级核心指标A", "子指标A1", "100");
+            addDistributionRow(sheet, 2, 1, "父级核心指标B", "子指标B1", "100");
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(2, parsed.rows().size());
+            var duplicated = parsed.rows().get(1);
+            assertEquals(ImportAction.CREATE, duplicated.action(),
+                    "序号重复不应再阻断（无其他错误时仍为可导入行）");
+            assertTrue(duplicated.errors().isEmpty(),
+                    "学院模板序号重复不应产生任何错误: " + duplicated.errors());
+            assertTrue(duplicated.warnings().stream().anyMatch(msg -> msg.contains("序号 1 重复，已按行处理")),
+                    "重复序号应给出行级警告: " + duplicated.warnings());
+            assertEquals("父级核心指标B", duplicated.normalized().parentIndicator(),
+                    "归属仍按核心指标列判定，不受序号重复影响");
+            var first = parsed.rows().get(0);
+            assertTrue(first.warnings().stream().noneMatch(msg -> msg.contains("重复")),
+                    "首次出现的序号不应警告: " + first.warnings());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-26 序号语义改造: 序号留空 → 按物理行号自动补号（纯展示定位用）")
+    void shouldAutoFillMissingSeqWithPhysicalRowNumber() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = distributionSheetV2(workbook);
+            // 全部行序号留空（新模板口径：留空自动按行补）；数据行位于 Excel 第 2/3 行
+            addDistributionRow(sheet, 1, null, "父级核心指标A", "子指标A1", "50");
+            addDistributionRow(sheet, 2, null, "父级核心指标B", "子指标B1", "100");
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(2, parsed.rows().size());
+            for (int i = 0; i < 2; i++) {
+                var row = parsed.rows().get(i);
+                assertTrue(row.errors().isEmpty(), "序号留空不应报错: " + row.errors());
+                int expectedPhysicalRowNo = i + 2; // 表头在第 1 行，数据行物理行号从 2 起
+                assertEquals(expectedPhysicalRowNo, row.normalized().seq(),
+                        "留空序号应自动补物理行号");
+                assertEquals(expectedPhysicalRowNo, row.rowNo(), "预览「序号」列应显示补号后的行号");
+            }
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-26 序号语义改造: 旧文件写法（序号=组号+组内留空延续）兼容解析，组号当行号显示")
+    void shouldParseLegacyGroupNumberStyleFileWithoutDataLoss() {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = distributionSheetV2(workbook);
+            // 旧写法：组首行带组号 1，组内两行序号/核心指标留空（sticky 延续）
+            addDistributionRow(sheet, 1, 1, "父级核心指标A", "子指标A1", "40");
+            addDistributionRow(sheet, 2, null, null, "子指标A2", "30");
+            addDistributionRow(sheet, 3, null, null, "子指标A3", "30");
+
+            var parsed = parser.parseSheet(sheet, ImportType.DISTRIBUTION);
+
+            assertEquals(3, parsed.rows().size());
+            for (int i = 0; i < 3; i++) {
+                var row = parsed.rows().get(i);
+                assertTrue(row.errors().isEmpty(), "旧写法文件不应报错: " + row.errors());
+                assertTrue(row.warnings().stream().noneMatch(msg -> msg.contains("重复")),
+                        "旧写法组首行唯一组号不应触发重复警告: " + row.warnings());
+                assertEquals(1, row.normalized().seq(),
+                        "旧组号按展示行号沿用（延续行继承组首行序号）");
+                assertEquals(1, row.rowNo(), "预览「序号」列显示组号（无数据损失）");
+                assertEquals("父级核心指标A", row.normalized().parentIndicator(),
+                        "组内归属按核心指标列 sticky 继承");
+            }
+            // 40+30+30=100 → 无权重警告
+            for (var row : parsed.rows()) {
+                assertTrue(row.warnings().stream().noneMatch(msg -> msg.contains("权重合计")),
+                        "旧写法组内合计 100 不应警告: " + row.warnings());
+            }
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    @DisplayName("2026-11-26 序号语义改造: STRATEGIC_TASK 不受影响——组号重复仍硬错误、缺组号仍拒绝")
+    void strategicTaskKeepsLegacyGroupNumberSemantics() {
+        // 场景1：职能部门模板同组号不同任务 → 仍为行级硬错误（模板01 口径不变）
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet strategic = strategicSheet(workbook);
+            Row first = strategic.createRow(1);
+            first.createCell(0).setCellValue(1);
+            first.createCell(2).setCellValue("任务一");
+            first.createCell(3).setCellValue("发展性");
+            first.createCell(4).setCellValue("指标甲");
+            first.createCell(5).setCellValue("定量");
+            first.createCell(6).setCellValue(10);
+            Row second = strategic.createRow(2);
+            second.createCell(0).setCellValue(1);
+            second.createCell(2).setCellValue("任务二");
+            second.createCell(3).setCellValue("发展性");
+            second.createCell(4).setCellValue("指标乙");
+            second.createCell(5).setCellValue("定量");
+            second.createCell(6).setCellValue(10);
+
+            var parsedStrategic = parser.parseSheet(strategic, ImportType.STRATEGIC_TASK);
+            var duplicated = parsedStrategic.rows().get(1);
+            assertEquals(ImportAction.ERROR, duplicated.action(),
+                    "职能部门模板组号重复仍是硬错误（本次改造不涉及）");
+            assertTrue(duplicated.errors().stream().anyMatch(msg -> msg.contains("组号（序号）不能重复")),
+                    "职能部门模板组号查重文案不变: " + duplicated.errors());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+
+        // 场景2：新组首行缺组号 → 仍拒绝（序号在模板01 仍是必填组号）
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet strategic2 = strategicSheet(workbook);
+            Row head = strategic2.createRow(1);
+            head.createCell(0).setCellValue(1);
+            head.createCell(2).setCellValue("任务一");
+            head.createCell(3).setCellValue("发展性");
+            head.createCell(4).setCellValue("指标甲");
+            head.createCell(5).setCellValue("定量");
+            head.createCell(6).setCellValue(10);
+            Row noSeq = strategic2.createRow(2);
+            noSeq.createCell(2).setCellValue("任务二");
+            noSeq.createCell(3).setCellValue("发展性");
+            noSeq.createCell(4).setCellValue("指标乙");
+            noSeq.createCell(5).setCellValue("定量");
+            noSeq.createCell(6).setCellValue(10);
+
+            var parsedStrategic2 = parser.parseSheet(strategic2, ImportType.STRATEGIC_TASK);
+            var invalid = parsedStrategic2.rows().get(1);
+            assertEquals(ImportAction.ERROR, invalid.action(),
+                    "职能部门模板新组首行缺组号仍拒绝");
+            assertTrue(invalid.errors().stream().anyMatch(msg -> msg.contains("组首行「序号」（组号）不能为空")),
+                    "职能部门模板缺组号文案不变: " + invalid.errors());
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
+    }
 }
