@@ -1,5 +1,6 @@
 package com.sism.workflow.application.runtime;
 
+import com.sism.exception.BusinessConflictException;
 import com.sism.shared.domain.notification.WorkflowChainWithdrawnEvent;
 import com.sism.workflow.application.support.WorkflowEventDispatcher;
 import com.sism.workflow.application.WorkflowBusinessStatusSyncService;
@@ -23,6 +24,13 @@ public class CancelWorkflowUseCase {
 
     @Transactional
     public AuditInstance cancel(AuditInstance instance) {
+        // 2026-11-26（撤回窗口收窄，用户定调最初设计）：仅第一个审批环节（学院审核人/
+        // 职能部门审批人）审核前可撤。领域层 AuditInstance.cancel → canRequesterWithdraw
+        // 一直有此门（当前待办步的上一步必须是发起人提交步=尚无任何审批人通过），但失败
+        // 一律落成 IllegalStateException → HTTP 400 英文通用文案，调用方无从区分「环节已
+        // 推进」。这里在用例层先做同口径预判：审批中且环节已推进 → 409 业务冲突，文案带
+        // 当前环节；非审批中等其余非法态仍走领域层原异常（原语义保留）。
+        assertWithdrawWindowOpen(instance);
         // 撤回前抓取原待审批人（cancel 会把 PENDING 步骤置回 WAITING）
         List<Long> pendingApproverIds = instance.getPendingApproverIds();
         instance.cancel();
@@ -38,6 +46,32 @@ public class CancelWorkflowUseCase {
                 pendingApproverIds
         ));
         return saved;
+    }
+
+    /**
+     * 2026-11-26（撤回窗口收窄，用户定调最初设计）：撤回窗口=「填报人提交之后 →
+     * 第一个审批环节审核之前」。学院线第一审批环节=学院审核人审批，职能线=职能
+     * 部门审批人审批（口径泛化：当前待办步的上一步仍是发起人提交步，即尚无任何
+     * 审批人通过）。窗口关闭时抛 {@link BusinessConflictException}（HTTP 409），
+     * 文案带当前环节，前端透出后填报人能明确知道撤回为何不可用。实例不在审批中
+     * （已完结/已撤回/不存在待办步）时不在此拦截，保留领域层 AuditInstance.cancel
+     * 的原 IllegalStateException 语义（HTTP 400）。
+     */
+    private void assertWithdrawWindowOpen(AuditInstance instance) {
+        if (instance.canRequesterWithdraw()) {
+            return;
+        }
+        if (!AuditInstance.STATUS_PENDING.equals(instance.getStatus())) {
+            return;
+        }
+        instance.resolveCurrentPendingStep().ifPresent(currentStep -> {
+            String stepName = currentStep.getStepName() == null || currentStep.getStepName().isBlank()
+                    ? "下一审批环节"
+                    : currentStep.getStepName().trim();
+            throw new BusinessConflictException(
+                    "审批已推进至「" + stepName + "」环节，不可撤回：仅提交后第一个审批环节"
+                            + "（学院审核人/职能部门审批人）审核前可撤回");
+        });
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.sism.workflow.application.runtime;
 
+import com.sism.exception.BusinessConflictException;
 import com.sism.workflow.application.WorkflowBusinessStatusSyncService;
 import com.sism.workflow.application.support.WorkflowEventDispatcher;
 import com.sism.workflow.domain.runtime.AuditInstance;
@@ -18,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -29,6 +31,9 @@ import static org.mockito.Mockito.when;
  * 「取消异动」终态动作——退回待重报的整批异动实例一次终结为 CANCELLED。
  * 2026-10-30 二次定案（异动撤回零新增行）：撤回不再追加「退回提交步骤」行，
  * 提交步由领域层原地翻转 WITHDRAWN，链位回到填报人。
+ * 2026-11-26（撤回窗口收窄，用户定调最初设计）：撤回窗口=提交后→第一个审批
+ * 环节审核前（学院线=学院审核人审批 / 职能线=职能部门审批人审批），环节推进
+ * 后撤回 409 业务冲突且文案带当前环节。
  */
 @ExtendWith(MockitoExtension.class)
 class CancelWorkflowUseCaseTest {
@@ -257,5 +262,116 @@ class CancelWorkflowUseCaseTest {
         assertEquals(2, instance.getStepInstances().size());
         assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, instance.getStepInstances().get(0).getStatus());
         assertEquals(AuditInstance.STEP_STATUS_WITHDRAWN, instance.getStepInstances().get(1).getStatus());
+    }
+
+    // ==================== 2026-11-26 撤回环节门（撤回窗口=第一审批环节审核前） ====================
+
+    /**
+     * 构造一条学院线「上报审批中」实例：填报人提交步 APPROVED，其后审批步按传入
+     * 状态铺开（第一环节=学院审核人审批，第二环节=分管职能部门负责人审批）。
+     */
+    private AuditInstance inReviewReportInstance(String firstApprovalStatus, String secondApprovalStatus) {
+        AuditInstance instance = new AuditInstance();
+        instance.setId(20L);
+        instance.setEntityType("PLAN_REPORT");
+        instance.setEntityId(3L);
+        instance.setRequesterId(370L);
+        instance.setStatus(AuditInstance.STATUS_PENDING);
+        instance.setCompletedAt(null);
+
+        AuditStepInstance submitStep = new AuditStepInstance();
+        submitStep.setStepNo(1);
+        submitStep.setStepName("填报人提交");
+        submitStep.setStatus(AuditInstance.STEP_STATUS_APPROVED);
+        submitStep.setApproverId(370L);
+        submitStep.setApprovedAt(java.time.LocalDateTime.now().minusHours(1));
+        instance.addStepInstance(submitStep);
+
+        AuditStepInstance firstApproval = new AuditStepInstance();
+        firstApproval.setStepNo(2);
+        firstApproval.setStepName("学院审核人审批");
+        firstApproval.setStatus(firstApprovalStatus);
+        firstApproval.setApproverId(371L);
+        if (AuditInstance.STEP_STATUS_APPROVED.equals(firstApprovalStatus)) {
+            firstApproval.setApprovedAt(java.time.LocalDateTime.now().minusMinutes(30));
+        }
+        instance.addStepInstance(firstApproval);
+
+        if (secondApprovalStatus != null) {
+            AuditStepInstance secondApproval = new AuditStepInstance();
+            secondApproval.setStepNo(3);
+            secondApproval.setStepName("分管职能部门负责人审批");
+            secondApproval.setStatus(secondApprovalStatus);
+            secondApproval.setApproverId(380L);
+            instance.addStepInstance(secondApproval);
+        }
+        return instance;
+    }
+
+    @Test
+    void cancel_shouldAllowWithdrawWhileFirstApprovalStagePending() {
+        // 第一环节（学院审核人审批）未审：窗口开着，撤回照常（原语义保留）
+        AuditInstance instance = inReviewReportInstance(
+                AuditInstance.STEP_STATUS_PENDING, null);
+        when(auditInstanceRepository.save(any(AuditInstance.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AuditInstance saved = cancelWorkflowUseCase.cancel(instance);
+
+        assertEquals(AuditInstance.STATUS_WITHDRAWN, saved.getStatus());
+        assertNotNull(saved.getCompletedAt());
+        verify(auditInstanceRepository, times(1)).save(any(AuditInstance.class));
+        // publishEvent 有 ApplicationEvent / Object 两个重载，事件走 Object 通道
+        verify(eventPublisher, times(1))
+                .publishEvent(any(com.sism.shared.domain.notification.WorkflowChainWithdrawnEvent.class));
+    }
+
+    @Test
+    void cancel_shouldRejectWithStageAwareConflictWhenFirstApprovalApproved() {
+        // 学院审核人已通过、推进到「分管职能部门负责人审批」：撤回窗口关闭 →
+        // 409 业务冲突（BusinessConflictException），文案带当前环节
+        AuditInstance instance = inReviewReportInstance(
+                AuditInstance.STEP_STATUS_APPROVED, AuditInstance.STEP_STATUS_PENDING);
+
+        BusinessConflictException conflict = assertThrows(BusinessConflictException.class,
+                () -> cancelWorkflowUseCase.cancel(instance));
+
+        assertTrue(conflict.getMessage().contains("分管职能部门负责人审批"),
+                "文案应带当前环节，实际：" + conflict.getMessage());
+        assertTrue(conflict.getMessage().contains("不可撤回"));
+        // 窗口关闭时不得落库/广播（事务回滚前置失败）
+        verify(auditInstanceRepository, never()).save(any(AuditInstance.class));
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    void cancel_shouldKeepOriginalIllegalStateWhenInstanceNotInReview() {
+        // 全部审批通过（已完结）：不在审批中，保留领域层原 IllegalStateException 语义
+        AuditInstance instance = inReviewReportInstance(
+                AuditInstance.STEP_STATUS_APPROVED, AuditInstance.STEP_STATUS_APPROVED);
+        instance.setStatus(AuditInstance.STATUS_APPROVED);
+        instance.setCompletedAt(java.time.LocalDateTime.now().minusMinutes(5));
+
+        IllegalStateException illegalState = assertThrows(IllegalStateException.class,
+                () -> cancelWorkflowUseCase.cancel(instance));
+
+        assertEquals("Cannot cancel: first approval step has already been handled", illegalState.getMessage());
+        verify(auditInstanceRepository, never()).save(any(AuditInstance.class));
+    }
+
+    @Test
+    void cancel_shouldRejectWithStageAwareConflictOnFunctionalDeptChainToo() {
+        // 职能部门线同口径：职能部门审批人已通过 → 撤回 409 且文案带当前环节
+        AuditInstance instance = inReviewReportInstance(
+                AuditInstance.STEP_STATUS_APPROVED, AuditInstance.STEP_STATUS_PENDING);
+        instance.getStepInstances().get(1).setStepName("职能部门审批人审批");
+        instance.getStepInstances().get(2).setStepName("分管校领导审批");
+
+        BusinessConflictException conflict = assertThrows(BusinessConflictException.class,
+                () -> cancelWorkflowUseCase.cancel(instance));
+
+        assertTrue(conflict.getMessage().contains("分管校领导审批"),
+                "文案应带当前环节，实际：" + conflict.getMessage());
+        verify(auditInstanceRepository, never()).save(any(AuditInstance.class));
     }
 }
