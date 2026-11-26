@@ -434,6 +434,11 @@ public class PlanApplicationService {
     })
     public PlanResponse approvePlan(Long id) {
         Plan plan = requirePlan(id);
+        // 2026-11-26（生产事故修复）：REST 直批旁路封堵。预置数据脚本用
+        // 「submit-dispatch 后立即 POST /plans/{id}/approve」把在三级审批中的计划
+        // 直推 DISTRIBUTED（审批实例仍停在中间环），校领导在终环点通过时与域守卫互斥，
+        // 事务回滚、终环永远无法通过。任何 REST 直批都不允许绕过在途审批链。
+        assertRestApprovalNotBypassingApprovalChain(plan);
         // 2026-11-05（N11）：approve 与 publish 同义（计划置 DISTRIBUTED + 指标同步下发），
         // 必须走同一道「学院下发只能由战略发展部发起」的闸门，否则审批通过入口能把旧链路复活。
         //
@@ -516,6 +521,17 @@ public class PlanApplicationService {
             // 本方法只被 workflow 终审回调调用（无 REST 端点），能走到这里即说明审批流程已走完，
             // 故不再核验「在审实例」（此刻实例已是 APPROVED 终态）。
             assertCollegeDispatchApprovalAdvanceAllowed(plan, false);
+            // 2026-11-26 生产事故幂等修复：预置脚本曾借 REST 直批把 plan 先于审批链推成
+            // DISTRIBUTED（审批实例停在第③环 PENDING）。此前此处照常调 plan.approve()，
+            // 域守卫抛「该计划已下发，请勿重复下发」→ 整个 approveTask 事务回滚 →
+            // 第③环永远无法通过（终审死锁）。终审回调必须幂等：计划已 DISTRIBUTED 时
+            // 跳过 approve()（权重校验在当年下发时已做过），仍同步指标状态并正常返回，
+            // 让 workflow 引擎把终环/实例收尾为 APPROVED。
+            // REST 路径的防重仍由 Plan.approve() 的域守卫把住（见 approvePlan 的新旁路闸门）。
+            if (PlanStatus.DISTRIBUTED.value().equals(plan.getStatus())) {
+                syncIndicatorStatusWithPlan(plan);
+                return;
+            }
             basicTaskWeightValidationService.validatePlanBasicWeight(plan.getId(), plan.getTargetOrgId());
             plan.approve();
             Plan saved = planRepository.save(plan);
@@ -791,6 +807,67 @@ public class PlanApplicationService {
         }
         String status = snapshot.getWorkflowStatus().trim().toUpperCase(java.util.Locale.ROOT);
         return "IN_REVIEW".equals(status) || "PENDING".equals(status);
+    }
+
+    /**
+     * 2026-11-26（生产事故修复）：封堵 REST 直批旁路。
+     *
+     * <p>事故还原：预置数据脚本用「POST /plans/{id}/submit-dispatch → 立即
+     * POST /plans/{id}/approve」把 19 条 STRAT_TO_FUNC 计划直推 DISTRIBUTED，
+     * 绕过 PLAN_DISPATCH_STRATEGY 三环审批链（填报人提交 → 战略发展部负责人 →
+     * 分管校领导）。审批实例停在中间环 PENDING，校领导在终环点通过时
+     * markWorkflowApproved → {@code plan.approve()} 抛「该计划已下发」→ 事务回滚，
+     * 终环永远无法通过（死锁）。旧守卫
+     * {@link #assertCollegeDispatchApprovalAdvanceAllowed(Plan, boolean)} 只管
+     * FUNC_TO_COLLEGE 存量线，STRAT_TO_FUNC 走该端点零核验直通。
+     *
+     * <p>目标语义：任何 REST 直批都不允许把「受在途审批实例管辖」的计划绕过审批链
+     * 推成 DISTRIBUTED。具体口径：
+     * <ul>
+     *   <li>存在在审审批实例（entity_type='PLAN'，status=IN_REVIEW/PENDING）或计划状态
+     *       停在审批中（PENDING/IN_REVIEW 等，经 {@link PlanStatus#fromRaw} 归一）→ 拒绝，
+     *       引导用户到审批中心完成三级审批；</li>
+     *   <li>草稿/退回（无任何实例）→ 同样拒绝：计划下发必须经「发起下发审批」
+     *       （submit-dispatch）进入审批链，否则审批接口就是第二个直批后门；</li>
+     *   <li>已是 DISTRIBUTED → 不在此拦，交给 {@code plan.approve()} 的域守卫
+     *       （「该计划已下发，请勿重复下发；请刷新后查看最新状态」）；</li>
+     *   <li>唯一保留口子：存量「职能部门创建的 FUNC_TO_COLLEGE」在途单的收尾推进
+     *       （N11 语义，见 {@link #assertCollegeDispatchApprovalAdvanceAllowed(Plan, boolean)}），
+     *       该分支直接放行、由后者核验状态与在审实例。</li>
+     * </ul>
+     *
+     * <p>调用方审计（2026-11-26）：前端全仓无 {@code /plans/{id}/approve} 调用
+     * （审批中心走 {@code /workflows/tasks/{id}/approve}），导入链走自己的域方法路径，
+     * 不经本方法——封堵无合法调用方回归。
+     *
+     * <p>publish 同口径收窄（2026-11-26 用户拍板）：直发入口已废弃，任何计划下发必须走
+     * submit-dispatch 三级审批，故 {@link #publishPlan(Long)} 复用本守卫；其放行口子
+     * （存量职能部门 FUNC_TO_COLLEGE）在 publish 侧由 assertCollegeDispatchCreatedByStrategyOrg
+     * 兜底拦截，最终效果 = 全拦。
+     */
+    private void assertRestApprovalNotBypassingApprovalChain(Plan plan) {
+        if (plan == null) {
+            return;
+        }
+        // 唯一保留口子：存量「职能部门创建的 FUNC_TO_COLLEGE」在途单收尾（N11）。
+        // 状态/实例核验交给 assertCollegeDispatchApprovalAdvanceAllowed(plan, true)，
+        // 文案与口径维持不变（含「实例被取消/孤儿计划」的专门提示）。
+        if (plan.getPlanLevel() == PlanLevel.FUNC_TO_COLLEGE
+                && !Objects.equals(plan.getCreatedByOrgId(), strategyOrgId())) {
+            return;
+        }
+        boolean inReviewInstance = hasInReviewAuditInstance(plan.getId());
+        if (inReviewInstance || PlanStatus.fromRaw(plan.getStatus()) == PlanStatus.PENDING) {
+            throw new IllegalStateException(
+                    "该计划正在三级审批中，不能通过审批接口直接下发；"
+                            + "请到审批中心完成审批，终审通过后计划将自动下发");
+        }
+        PlanStatus normalized = PlanStatus.fromRaw(plan.getStatus());
+        if (normalized == PlanStatus.DRAFT || normalized == PlanStatus.RETURNED) {
+            throw new IllegalStateException(
+                    "计划下发必须经「发起下发审批」进入三级审批流程，不能直接审批通过；"
+                            + "请先发起下发审批，再在审批中心完成审批");
+        }
     }
 
     /**

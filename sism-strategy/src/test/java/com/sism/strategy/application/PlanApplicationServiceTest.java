@@ -602,6 +602,99 @@ class PlanApplicationServiceTest {
         verify(planRepository).save(any(Plan.class));
     }
 
+    // ==================== 2026-11-26 生产事故修复（REST 直批旁路封堵 + 终审幂等） ====================
+
+    @Test
+    @DisplayName("2026-11-26（生产事故修复）：submit-dispatch 后立即 REST approve 必须被拒（旁路封堵）")
+    void shouldRejectRestApproveWhilePlanApprovalInstanceInReview() {
+        Long cycleId = 2026L;
+        Plan plan = Plan.create(cycleId, 2L, 35L, PlanLevel.STRAT_TO_FUNC);
+        plan.setId(9201L);
+        // 预置脚本的现场：submit-dispatch 已把计划置为审批中（PENDING），实例停在 IN_REVIEW
+        plan.setStatus(PlanStatus.PENDING.value());
+
+        when(planRepository.findById(9201L)).thenReturn(Optional.of(plan));
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9201L)).thenReturn(inReviewSnapshot());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.approvePlan(9201L));
+
+        assertTrue(error.getMessage().contains("审批中心"));
+        // 状态不变（仍是审批中）、计划未被推成 DISTRIBUTED
+        assertEquals(PlanStatus.PENDING.value(), plan.getStatus());
+        verify(planRepository, never()).save(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-26（生产事故修复）：无任何审批实例的草稿计划同样不能借 REST approve 直接下发")
+    void shouldRejectRestApproveOnDraftPlanWithoutApprovalInstance() {
+        Plan plan = Plan.create(2026L, 2L, 35L, PlanLevel.STRAT_TO_FUNC);
+        plan.setId(9202L);
+        // Plan.create 默认 DRAFT，且没有任何审批实例（快照为空）
+
+        when(planRepository.findById(9202L)).thenReturn(Optional.of(plan));
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9202L)).thenReturn(null);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.approvePlan(9202L));
+
+        assertTrue(error.getMessage().contains("发起下发审批"));
+        assertEquals(PlanStatus.DRAFT.value(), plan.getStatus());
+        verify(planRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("2026-11-26（生产事故修复）：plan 已 DISTRIBUTED 时终审回调幂等放行（第③环不再死锁）")
+    void shouldIdempotentlyReturnWhenWorkflowApprovesAlreadyDistributedPlan() {
+        Plan plan = Plan.create(2026L, 2L, 35L, PlanLevel.STRAT_TO_FUNC);
+        plan.setId(9203L);
+        // 预置脚本留下的现场：plan 已被直批成 DISTRIBUTED，但审批实例停在第③环 PENDING；
+        // 校领导在终环点通过 → workflow 引擎回调 markWorkflowApproved
+        plan.setStatus(PlanStatus.DISTRIBUTED.value());
+
+        StrategicTask task = createTask(92031L, 9203L);
+        Indicator indicator = mock(Indicator.class);
+
+        when(planRepository.findById(9203L)).thenReturn(Optional.of(plan));
+        when(taskRepository.findByPlanId(9203L)).thenReturn(List.of(task));
+        lenient().when(indicatorRepository.findByTaskIds(List.of(92031L))).thenReturn(List.of(indicator));
+
+        assertDoesNotThrow(() -> service.markWorkflowApproved(9203L));
+
+        // 幂等：不再走 plan.approve()（无状态事件、无重复落库），权重校验跳过（当年下发时已校验过）
+        verify(planRepository, never()).save(any(Plan.class));
+        verify(basicTaskWeightValidationService, never()).validatePlanBasicWeight(anyLong(), anyLong());
+        verify(eventPublisher, never()).publish(any());
+        // 指标状态同步仍执行（幂等，指标统一置 DISTRIBUTED）
+        verify(indicator).setStatus(IndicatorStatus.DISTRIBUTED);
+        verify(indicatorRepository).saveAll(List.of(indicator));
+    }
+
+    @Test
+    @DisplayName("2026-11-26（回归保护）：存量 N11 在途单收尾推进不受新旁路闸门影响")
+    void shouldStillAllowLegacyCollegeDispatchFinalizationAfterBypassGuard() {
+        Long cycleId = 2026L;
+        Long functionalDeptOrgId = 44L;
+        Long collegeOrgId = 36L;
+        Plan plan = Plan.create(cycleId, collegeOrgId, functionalDeptOrgId, PlanLevel.FUNC_TO_COLLEGE);
+        plan.setId(9204L);
+        plan.setStatus(PlanStatus.PENDING.value());
+
+        when(planRepository.findById(9204L)).thenReturn(Optional.of(plan));
+        when(planRepository.save(any(Plan.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(planWorkflowSnapshotQueryService.getWorkflowSnapshotByPlanId(9204L)).thenReturn(inReviewSnapshot());
+
+        PlanResponse response = service.approvePlan(9204L);
+
+        assertNotNull(response);
+        assertEquals(PlanStatus.DISTRIBUTED.value(), plan.getStatus());
+        verify(planRepository).save(any(Plan.class));
+    }
+
+    // ==================== 2026-11-26 publish 同口径收窄（用户拍板） ====================
+
+
     @Test
     @DisplayName("2026-11-05（N11）：存量计划若没走过审批（仍是 DRAFT），审批入口仍然拒绝（防后门）")
     void shouldStillRejectLegacyCollegeDispatchPlanNotInApproval() {
