@@ -29,6 +29,7 @@ import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -82,7 +83,9 @@ public class ExcelBusinessImportParser {
             Map.entry("weight", List.of("权重", "指标权重", "子指标权重", "权重（可填 10 / 10% / 0.1）", "权重(可填 10 / 10% / 0.1)",
                     "权重（纯数字）", "权重(纯数字)")),
             Map.entry("remark", List.of("备注", "说明")),
-            // 2026-10-31 层级化定案：序号=父级核心指标组号（组首行必填，组内留空=同上）；别名向后兼容
+            // 2026-10-31 层级化定案：序号=父级核心指标组号（组首行必填，组内留空=同上）；别名向后兼容。
+            // 2026-11-26（学院导入序号语义改造）：序号降级为子指标行号（纯展示、可选、留空自动按行补号），
+            // 归组与校验全部锚定「核心指标」列；列仍须存在（缺列拦截口径不变），旧文件（序号=组号写法）兼容
             Map.entry("seq", List.of("序号", "序 号")),
             // 2026-11-19（学院「全部导入」）：新增「职能部门」列——该行指标由哪个职能部门下发。
             // 三重作用：①拆批依据（显式按该列分组）②与父级核心指标归属交叉校验（防张冠李戴）
@@ -127,7 +130,9 @@ public class ExcelBusinessImportParser {
         HeaderMatch header = findHeader(sheet, aliases)
                 .orElseThrow(() -> new IllegalStateException("未识别到有效表头，请使用最新导出的表格或下载模板"));
 
-        // 2026-10-19 用户定案：序号列必填——没有序号列的文件直接拦截（格式规范才能导入）
+        // 2026-10-19 用户定案：序号列必填——没有序号列的文件直接拦截（格式规范才能导入）。
+        // 2026-11-26（学院导入序号语义改造）：必填仅指「列存在」；列内单元格可留空——
+        // 学院模板序号=子指标行号（纯展示、留空按行自动补号），职能部门模板序号仍=组号
         if (!header.fieldColumns().containsKey("seq")) {
             throw new IllegalStateException(
                     "导入文件缺少「序号」列（1、2、3…），请使用最新导出的表格或下载最新模板后重试");
@@ -138,16 +143,22 @@ public class ExcelBusinessImportParser {
                 .toList();
 
         List<ImportRowPreview> rows = new ArrayList<>();
-        // 2026-10-31 层级化模板定案：序号=组号（职能部门=战略任务组、学院=父级核心指标组），
-        // 组内后续行组列（序号/战略任务+任务类型；序号/任务类型+核心指标+核心指标类型）留空
-        // = 延续上一组（sticky 向下继承）。合并单元格的非锚点格读取为空，与纯留空同等走 sticky 继承。
+        // 2026-10-31 层级化模板定案：组归属按「战略任务/核心指标」列解析（显式填写或留空 sticky
+        // 向下继承，合并单元格的非锚点格读取为空与纯留空同等）。
+        // 2026-11-26（学院导入序号语义改造）：学院模板序号降级为子指标行号（纯展示、可选），
+        // 不再承担组号语义；职能部门模板序号仍=战略任务组号（组首行必填，组内留空=同上）。
         Integer currentGroupSeq = null;
         String currentGroupKey = null;
         String currentGroupValue = null;
         // 2026-10-31 终版表头（学院模板加「任务类型」列）：组级只读列从单个扩展为按字段跟踪——
         // 职能部门=任务类型；学院=任务类型+核心指标类型。键=NormalizedImportRow 字段名，值=组首行归一值。
         Map<String, String> currentGroupTypes = new LinkedHashMap<>();
+        // 组号查重表（键=序号，值=首次使用者）：2026-11-26（学院导入序号语义改造）起仅
+        // 职能部门模板（序号=组号）参与查重；学院模板序号重复只给行级警告，不再硬拦截
         Map<Integer, String> usedGroupNumbers = new LinkedHashMap<>();
+        // 2026-11-26（学院导入序号语义改造）：学院模板「本文件已出现过的显式序号」——
+        // 同值重复出现时对后出现的行给行级警告（纯展示列，不影响归属与落库）
+        Set<Integer> declaredSeqSeen = new LinkedHashSet<>();
 
         for (int rowIndex = header.rowIndex() + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
             Row row = sheet.getRow(rowIndex);
@@ -174,8 +185,10 @@ public class ExcelBusinessImportParser {
                     inherited = true;
                 }
             } else if (currentGroupKey == null || !groupKey.equals(currentGroupKey)) {
-                // 新组开启：组首行必须带组号，且组号不能与其他任务/父级重复
-                if (declaredSeq != null) {
+                // 新组开启。2026-11-26（学院导入序号语义改造）：序号查重与「重复且父级不同→硬错误」
+                // 仅保留在职能部门模板（序号=战略任务组号）；学院模板序号已降级为子指标行号，
+                // 重复只告警（见下方重复检查），分组归属完全按核心指标列判定、不受序号影响
+                if (type == ImportType.STRATEGIC_TASK && declaredSeq != null) {
                     String previousOwner = usedGroupNumbers.get(declaredSeq);
                     if (previousOwner != null && !groupKey(previousOwner).equals(groupKey)) {
                         errors.add("序号 " + declaredSeq + " 已被「" + previousOwner + "」使用，同一文件内组号（序号）不能重复");
@@ -202,12 +215,36 @@ public class ExcelBusinessImportParser {
                                 + "，与组首行（" + headTypeValue + "）不一致，已按组首行为准");
                     }
                 }
-                normalized = withInheritedGroup(normalized, currentGroupSeq, currentGroupValue, currentGroupTypes, type);
+                // 2026-11-26（学院导入序号语义改造）：序号继承仅作展示——延续行显式填写的序号
+                // 保留本行值（新模板序号=子指标行号、每行一号，同一父级多行序号逐行递增）；
+                // 未填写时沿用组首行序号（旧文件「序号=组号、组内留空=同上」写法兼容），
+                // 组首行也没填时由下方按物理行号自动补号。职能部门模板维持组号整组沿用不变。
+                Integer inheritedSeq = type == ImportType.DISTRIBUTION && declaredSeq != null
+                        ? declaredSeq
+                        : currentGroupSeq;
+                normalized = withInheritedGroup(normalized, inheritedSeq, currentGroupValue, currentGroupTypes, type);
+            }
+
+            // 2026-11-26（学院导入序号语义改造）：序号降级为子指标行号（纯展示列）——
+            // ① 显式填写的序号在本文件内重复 → 行级警告（不再按硬错误拦截，旧口径
+            //    「序号已被其他父级使用」删除），数据照常按行处理；归属仍按核心指标列。
+            // ② 序号缺失（未填、填了无法识别的非正整数、或继承链上没有组号）时用物理
+            //    行号自动补号（预览「序号」列定位友好；展示值必为正整数）。
+            if (type == ImportType.DISTRIBUTION) {
+                if (declaredSeq != null && !declaredSeqSeen.add(declaredSeq)) {
+                    warnings.add("序号 " + declaredSeq + " 重复，已按行处理");
+                }
+                Integer effectiveSeq = normalized.seq();
+                if (effectiveSeq == null || effectiveSeq <= 0) {
+                    normalized = withSeq(normalized, rowIndex + 1);
+                }
             }
 
             errors.addAll(validate(normalized, type));
             warnings.addAll(validateWarnings(normalized, type));
-            // 2026-10-31：预览行的行号展示为「序号」（组号）；组号缺失时退回物理行号便于定位
+            // 预览「序号」列展示：2026-10-31 口径为组号；2026-11-26（学院导入序号语义改造）起
+            // 学院模板显示补号后的子指标行号（缺失已自动补物理行号），职能部门模板仍显示组号；
+            // 组号/行号缺失时退回物理行号便于定位（兜底口径与本轮「自动补号」一致）
             Integer seqValue = normalized.seq();
             int displayNo = (seqValue != null && seqValue > 0) ? seqValue : rowIndex + 1;
             rows.add(new ImportRowPreview(
@@ -242,6 +279,10 @@ public class ExcelBusinessImportParser {
      * <p>2026-11-19（学院「全部导入」）：「职能部门」列<b>不参与 sticky 继承</b>——
      * 该列为空时的语义是「走父级核心指标反查兜底」，若从上一组继承会把别的归口带进来
      * （表现为「职能部门与核心指标归属不符」的假冲突），与「留空=反查兜底」的口径冲突。
+     *
+     * <p>2026-11-26（学院导入序号语义改造）：groupSeq 继承<b>仅作展示</b>保留（旧文件
+     * 序号=组号写法的延续行沿用组首行序号显示）；序号不再参与归属判定。继承链上没有
+     * 组号（组首行序号留空）时，由 parseSheet 对最终 seq 仍为空的行按物理行号自动补号。
      */
     private NormalizedImportRow withInheritedGroup(NormalizedImportRow row,
                                                    Integer groupSeq,
@@ -285,6 +326,30 @@ public class ExcelBusinessImportParser {
     }
 
     /**
+     * 2026-11-26（学院导入序号语义改造）：序号缺失自动补行号——把展示用行号回填到
+     * normalized 行（其余字段原样保留的浅拷贝）。序号已是纯展示列，补号只影响预览
+     * 「序号」列与权重/重复检查之外的字段值，不改变归属（归属锚定核心指标列）。
+     */
+    private NormalizedImportRow withSeq(NormalizedImportRow row, int seq) {
+        return new NormalizedImportRow(
+                seq,
+                row.department(),
+                row.college(),
+                row.taskType(),
+                row.strategicTask(),
+                row.parentStrategicTask(),
+                row.parentIndicator(),
+                row.parentIndicatorType(),
+                row.indicatorName(),
+                row.indicatorType(),
+                row.weight(),
+                row.remark(),
+                row.parentIndicatorId(),
+                row.functionalDept()
+        );
+    }
+
+    /**
      * 组级只读列清单（随组合并、组内继承、延续行与组首行冲突时警告归一）：
      * 键=NormalizedImportRow 字段名，值=表头文案（用于警告点名）。List 保序，警告顺序确定。
      * 2026-10-31 终版表头（学院模板加「任务类型」列）：学院模板为 任务类型+核心指标类型 两列。
@@ -308,17 +373,22 @@ public class ExcelBusinessImportParser {
      * 职能部门模板：组内「基础性」行合计=100（沿用现行口径，只换分组）；
      * 学院模板：组内子指标合计=100。空权重按默认值 100 参与合计。
      * 合计不符 → 组内每行追加警告（不阻断预览；自动下发时仍有最终权重校验兜底）。
+     *
+     * <p>2026-11-26（学院导入序号语义改造）：分组键改为<b>真实业务分组</b>——学院模板按
+     * 父级核心指标 groupKey 归组（序号已降级为子指标行号、不再承担归组语义；同一父级多个
+     * 子指标合计才应与 100 比较，序号缺失/跳号的文件不再漏掉权重校验）；职能部门模板维持
+     * 旧口径按序号（战略任务组号）归组，警告文案「第 N 组」不变。
      */
     private void appendGroupWeightWarnings(List<ImportRowPreview> rows, ImportType type) {
-        Map<Integer, List<Integer>> groups = new LinkedHashMap<>();
+        Map<String, List<Integer>> groups = new LinkedHashMap<>();
         for (int i = 0; i < rows.size(); i++) {
-            Integer seq = rows.get(i).normalized().seq();
-            if (seq != null) {
-                groups.computeIfAbsent(seq, key -> new ArrayList<>()).add(i);
+            String group = weightGroupKey(rows.get(i).normalized(), type);
+            if (group != null) {
+                groups.computeIfAbsent(group, key -> new ArrayList<>()).add(i);
             }
         }
         BigDecimal required = BigDecimal.valueOf(100);
-        for (Map.Entry<Integer, List<Integer>> entry : groups.entrySet()) {
+        for (Map.Entry<String, List<Integer>> entry : groups.entrySet()) {
             List<Integer> indexes = entry.getValue();
             List<Integer> weighted = indexes.stream()
                     .filter(index -> type != ImportType.STRATEGIC_TASK
@@ -343,8 +413,13 @@ public class ExcelBusinessImportParser {
             String scope = type == ImportType.STRATEGIC_TASK
                     ? "战略任务「" + head.strategicTask() + "」内基础性指标"
                     : "核心指标「" + head.parentIndicator() + "」内子指标";
-            String message = "第 " + entry.getKey() + " 组（" + scope + "）权重合计为 "
-                    + total.stripTrailingZeros().toPlainString() + "，应为 100，请核对组内权重";
+            // 职能部门模板维持旧文案（按组号「第 N 组」点名）；学院模板序号不再承担组号
+            // 语义，直接按父级核心指标点名（2026-11-26 学院导入序号语义改造）
+            String message = (type == ImportType.STRATEGIC_TASK
+                    ? "第 " + entry.getKey() + " 组（" + scope + "）"
+                    : scope)
+                    + "权重合计为 " + total.stripTrailingZeros().toPlainString()
+                    + "，应为 100，请核对组内权重";
             for (Integer index : indexes) {
                 ImportRowPreview row = rows.get(index);
                 List<String> warnings = new ArrayList<>(row.warnings());
@@ -360,6 +435,21 @@ public class ExcelBusinessImportParser {
                 ));
             }
         }
+    }
+
+    /**
+     * 权重合计的分组键（2026-11-26 学院导入序号语义改造）：
+     * 职能部门模板=序号（战略任务组号，旧口径不变；null=不参与合计）；
+     * 学院模板=父级核心指标 groupKey（序号已降级不再承担归组；核心指标为空=归属本身就是
+     * 行级硬错误，不参与合计，避免把无父级的散行错误地并成一组）。
+     */
+    private String weightGroupKey(NormalizedImportRow row, ImportType type) {
+        if (type == ImportType.STRATEGIC_TASK) {
+            Integer seq = row.seq();
+            return seq == null ? null : String.valueOf(seq);
+        }
+        String key = groupKey(row.parentIndicator());
+        return key.isEmpty() ? null : key;
     }
 
     private Optional<Sheet> resolveSheet(Workbook workbook, String sheetName) {
@@ -506,7 +596,10 @@ public class ExcelBusinessImportParser {
 
     private List<String> validate(NormalizedImportRow row, ImportType type) {
         List<String> errors = new ArrayList<>();
-        // 2026-10-31 层级化定案：序号=组号，组首行必填（延续行由 sticky 继承补齐，不在此报错）
+        // 2026-10-31 层级化定案：序号=组号，组首行必填（延续行由 sticky 继承补齐，不在此报错）。
+        // 2026-11-26（学院导入序号语义改造）：该硬校验仅对职能部门模板生效——学院模板序号
+        // 降级为子指标行号（可选、纯展示），缺失已在 parseSheet 按物理行号自动补号，
+        // DISTRIBUTION 行走到这里时 seq 必不为 null
         if (row.seq() == null) {
             errors.add("组首行「序号」（组号）不能为空或不合法（应为 1、2、3… 的正整数）");
         }
