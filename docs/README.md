@@ -33,10 +33,7 @@
 
 **数据库**
 
-- `flyway-migration-guide.md`
-  - Flyway 迁移命名与执行规范
-- `seed-change-system-admin-auto-approval.md`
-  - 种子变更与系统管理员自动审批约定
+- 数据库迁移以各模块 `*/src/main/resources/db/migration/` 下 Flyway 脚本为准（当前最大 V 号 V106）
 
 **测试与账号**
 
@@ -50,6 +47,8 @@
 
 **已归档（`docs/archive/`）**
 
+- `archive/flyway-migration-guide.md` — 2026-02 Flyway 迁移指南（已过时，当前迁移已到 V106）
+- `archive/seed-change-system-admin-auto-approval.md` — 2026-06 种子变更一次性记录
 - `2026-05-opentenbase-experiment/` — OpenTenBase 实验环境（非生产路径）
 - `2026-03-superseded-guides/workflow-test-guide.md` — 早期审批联调汇总（被 PLAN_* 清单取代）
 - `generated/` — 自动生成报告与 OpenTenBase 阶段记录（2026-05）

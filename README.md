@@ -8,6 +8,7 @@
 - **语言**: Java 17
 - **构建工具**: Maven
 - **数据库**: PostgreSQL
+- **数据库双栈**: OpenTenBase（兼容 PostgreSQL 协议，通过 `SPRING_PROFILES_ACTIVE=opentenbase` 切换）
 - **数据库迁移**: Flyway
 - **ORM**: Spring Data JPA (Hibernate)
 - **API 文档**: SpringDoc OpenAPI
@@ -32,10 +33,11 @@ sism-backend/
 ├── sism-analytics/           # 数据分析与洞察
 ├── sism-alert/               # 预警与通知
 ├── database/                 # 数据库相关
-│   ├── migrations/           # 迁移归档与说明（不再作为活跃 Flyway 目录）
-│   └── scripts/              # 辅助数据库脚本
+│   ├── seeds/                # clean seeds 种子数据脚本（结构冻结后的权威种子）
+│   └── scripts/              # 辅助数据库脚本（清洗/校验/归档 SQL 与本地重建脚本）
+├── deploy/                   # 部署编排（compose、nginx、离线部署说明）
 ├── docs/                     # 项目文档
-└── scripts/                  # 应用层维护和测试脚本
+└── scripts/                  # 维护脚本（deployment/testing/dev/archive）
 ```
 
 ## 文档入口
@@ -56,6 +58,7 @@ sism-backend/
 - 当前数据库结构已经冻结为新的 Flyway `V1` 基线
 - 活跃 Flyway 目录是 `sism-main/src/main/resources/db/migration/`
 - 当前以该目录为唯一权威迁移链
+- Flyway 迁移以 `*/src/main/resources/db/migration/` 最大 V 号为准（当前 V106），不在文档中固定具体版本号
 - 尽量不要改数据库结构，除非客户需求明确要求
 - 如必须改表结构，不要修改 `V1__baseline_current_schema.sql`，应在活跃目录新增一个全局唯一版本号的迁移文件
 
@@ -540,60 +543,8 @@ open target/site/jacoco/index.html
 
 ### 测试覆盖率
 
-**当前状态** (2026-02-14):
-- **总测试数**: 536
-- **通过测试**: 342 (64%)
-- **指令覆盖率**: 22% 整体，100% 新实体
-- **测试框架**: JUnit 5, Mockito, jqwik (属性测试)
-
-**覆盖率配置**:
-- 使用 JaCoCo 0.8.11 进行覆盖率测量
-- 排除生成代码（entity, dto, vo, enums, config）
-- 目标覆盖率：80% (业务逻辑层)
-
-**详细报告**:
-- 完整分析: `docs/audit/test-coverage-report.md`
-- 测试改进: `docs/audit/test-improvement-report-2026-02-14.md`
-- HTML 报告: `target/site/jacoco/index.html`
-
-### 性能测试
-
-运行性能基准测试:
-
-```bash
-# 运行性能测试
-./mvnw test -Dtest=PerformanceBenchmarkTest
-
-# 查看性能报告
-cat docs/performance/performance-benchmarks.md
-```
-
-**性能目标**:
-- 认证操作: < 500ms
-- 简单查询: < 200ms
-- 列表查询: < 300ms
-- 写入操作: < 300ms
-- 复杂查询: < 1000ms
-
-### 安全扫描
-
-运行 OWASP 依赖漏洞扫描:
-
-```bash
-# 运行安全扫描
-./mvnw dependency-check:check
-
-# 查看报告
-open target/dependency-check-report.html
-```
-
-配置 NVD API Key (推荐):
-```bash
-# 在 .env 文件中添加
-NVD_API_KEY=your_nvd_api_key_here
-```
-
-详细指南: `docs/security/owasp-dependency-check-guide.md`
+- 使用 JaCoCo 0.8.11 进行覆盖率测量（排除 entity/dto/vo/enums/config 等生成代码）
+- 覆盖率数据以本地 `./mvnw test` 后生成的 `target/site/jacoco/index.html` 为准，不在文档中固定数字
 
 ## 使用示例
 
@@ -820,227 +771,23 @@ void targetValueShouldBeNonNegative(@ForAll @Positive BigDecimal targetValue) {
 }
 ```
 
-## 架构重构完成 ✅
+## 审批链与导入现状
 
-本项目已完成全面的架构重构，提升了代码质量、可维护性和测试覆盖率。
+### 审批链（2026-11 四环定案）
 
-### 重构成果总结 (2026-02-14)
+审批链以 `database/seeds/audit_step_def-data.sql` 与最新迁移（V106）为准，此处只列结论：
 
-**状态**: ✅ **100% 完成，生产就绪**
+- **学院上报链（flow 4，四环）**: 填报人提交 → 学院审核人审批 → 归口职能部门负责人审批 → 战略发展部审核人审批
+- **职能部门上报链（flow 3，四环）**: 填报人提交 → 职能部门审批人审批 → 分管校领导审批 → 战略发展部审核人审批
+- **职能部门下发链（flow 1，三环）**: 填报人提交 → 战略发展部负责人审批 → 分管校领导审批
+- **学院线下发链（flow 6，三环）**: 节点与 flow 1 同构、定义独立，导入发起的下发走系统自动审批（系统管理员统一处理）
 
-**总体成果**:
-- ✅ 3 个主要阶段全部完成（Phase 1-3）
-- ✅ 5 个可选改进任务完成（Phase 4-6）
-- ✅ 28.5 小时实际工作（26 小时预估，效率 110%）
-- ✅ 165 个新单元测试创建（100% 通过率）
-- ✅ 21 个新业务层组件（DTOs/VOs/Services/Controllers）
-- ✅ 3 个数据库迁移成功执行
-- ✅ 测试通过率：64% (342/536 tests)
-- ✅ 性能基准框架建立（8 个基准测试）
-- ✅ 安全扫描配置（OWASP Dependency Check）
-- ✅ **12 个架构决策记录（ADRs）完成**
+### 数据导入
 
-### 架构决策记录 (ADRs)
+导入接口为 `/api/v1/imports`（业务导入，下发侧含自动审批）与 `/api/v1/imports/fill`（填报侧），前端入口在 `/strategic-tasks` 与 `/indicators`，共 6 份模板：
 
-项目的所有重大架构决策都已文档化为 ADRs，提供清晰的历史记录和决策依据。
-
-**ADR 目录**: `docs/architecture/adr/`
-
-**关键决策**:
-1. **ADR-001**: 删除废弃实体 - 清理代码库
-2. **ADR-002**: 保留双 Repository 模式 - 遵循接口隔离原则
-3. **ADR-003**: 推迟实体重命名 - 降低风险，保持稳定
-4. **ADR-004**: 实现缺失核心实体 - 完整业务功能
-5. **ADR-005**: 使用扁平包结构 - 简单清晰，团队熟悉
-6. **ADR-006**: 附件软删除模式 - 完整审计跟踪
-7. **ADR-007**: 采用 Flyway 管理 Schema - 自动化迁移
-8. **ADR-008**: 使用幂等迁移脚本 - 安全可重复
-9. **ADR-009**: 使用 H2 进行单元测试 - 快速简单
-10. **ADR-010**: 推迟 TestContainers 集成 - 优先生产力
-11. **ADR-011**: 分阶段迁移方法 - 降低风险，增量交付
-12. **ADR-012**: 推迟 DDD 包重构 - 避免高风险变更
-
-**ADR 统计**:
-- 总决策数：12
-- 已实施：10 (83%)
-- 已推迟：2 (17%)
-- 总文档：2,331 行，~58 KB
-
-**查看 ADRs**:
-- 完整索引：`docs/architecture/adr/README.md`
-- 决策摘要：`docs/architecture/adr/ADR-SUMMARY.md`
-- 完成报告：`docs/architecture/adr/COMPLETION-REPORT.md`
-
-ADRs 为当前和未来的团队成员提供了宝贵的资源，解释了为什么做出这些决策、考虑了哪些替代方案，以及每个决策的后果。
-
-### 已完成的重构任务
-
-#### Phase 1: 基础清理 (100%)
-
-**Task 1: 测试基础设施** ✅
-- H2 内存数据库配置用于测试
-- 修复 78 个测试编译错误
-- ApplicationContext 成功加载
-- 测试通过率从 24% 提升到 64%
-- JaCoCo 测试覆盖率工具配置
-
-**Task 1.1: 废弃代码删除** ✅
-- 删除 `Org.java.deprecated` 文件
-- 确认 `SysOrg` 为活跃实体
-- 保留 `UserRepository` 和 `SysUserRepository` 共存（设计决策）
-- 代码审查通过，零编译错误
-
-**Task 1.2: 代码库基线文档** ✅
-- 创建 9 个综合审计文档（4,000+ 行）
-- 完整的实体、服务、控制器、Repository、DTO/VO 清单
-- 依赖关系图和架构分析
-- 详细报告：`docs/audit/README.md`
-
-#### Phase 2: 新实体业务层 (100%)
-
-**Task 2.1: Attachment 实体** ✅
-- 文件管理实体实现
-- AttachmentRepository（12 个自定义查询）
-- AttachmentService（CRUD + 文件操作）
-- AttachmentController（8 个 REST 端点）
-- **38 个单元测试，100% 通过率**
-
-**Task 2.2-2.4: 完整业务层** ✅
-- 13 个 DTOs/VOs（Plan, AuditFlow, WarnLevel 模块）
-- 4 个 Services（PlanService, AuditFlowService, WarnLevelService, AttachmentService）
-- 4 个 Controllers（21 个 REST 端点）
-- 新实体：AuditFlowDef, AuditStepDef, AuditInstance, WarnLevel, PlanReportIndicator
-- **127 个单元测试，100% 通过率**
-
-#### Phase 3: Flyway 集成 (100%)
-
-**Task 3.1: Flyway 配置** ✅
-- Flyway Maven Plugin 配置
-- 环境变量支持（DB_URL, DB_USERNAME, DB_PASSWORD）
-- 迁移脚本幂等性设计（PostgreSQL DO 块）
-- 生产数据库迁移成功（Schema 版本: 3）
-- JPA ddl-auto 设置为 'validate'
-
-#### Phase 4-6: 可选改进 (100%)
-
-**Task 4.1: CI/CD Flyway 验证** ✅
-- GitHub Actions CI 工作流
-- PostgreSQL 服务配置
-- 自动化迁移验证
-
-**Task 4.2: Flyway 迁移指南** ✅
-- 400+ 行综合文档
-- 最佳实践和故障排除
-- CI/CD 集成示例
-- 详细报告：`docs/flyway-migration-guide.md`
-
-**Task 4.3: H2 兼容性修复** 🟡
-- 修复 "year" 保留关键字冲突
-- 修复 TaskType 枚举映射
-- 测试通过率提升 28% (36% → 64%)
-- 错误减少 69% (236 → 73)
-
-**Task 4.4: OWASP 安全扫描** ✅
-- OWASP Dependency Check 配置
-- 自动化漏洞扫描
-- 详细报告：`docs/security/owasp-dependency-check-guide.md`
-
-**Task 6.1: 性能基准测试** ✅
-- 8 个性能基准测试实现
-- 明确的性能目标（认证 <500ms, 查询 <200ms）
-- 监控策略文档
-- 详细报告：`docs/performance/performance-benchmarks.md`
-
-### 架构改进
-
-**新增实体** (5 个):
-- `Attachment` - 文件管理
-- `AuditFlowDef` - 审批流程定义
-- `AuditStepDef` - 审批步骤定义
-- `AuditInstance` - 审批实例
-- `WarnLevel` - 预警级别配置
-- `PlanReportIndicator` - 计划报告指标
-- `PlanReportIndicatorAttachment` - 报告指标附件
-
-**新增 Services** (4 个):
-- `PlanService` - 计划管理
-- `AttachmentService` - 附件管理
-- `AuditFlowService` - 审批流程管理
-- `WarnLevelService` - 预警级别管理
-
-**新增 Controllers** (4 个):
-- `PlanController` - 计划 REST API
-- `AttachmentController` - 附件 REST API
-- `AuditFlowController` - 审批流程 REST API
-- `WarnLevelController` - 预警级别 REST API
-
-### 测试改进
-
-**测试统计**:
-- 总测试数：536 个（从 409 增加）
-- 通过测试：342 个（64% 通过率）
-- 新增单元测试：165 个（100% 通过率）
-- 测试覆盖率：22% 整体，100% 新实体
-
-**测试套件**:
-- AttachmentEntityTest: 38/38 ✅
-- AuditFlowDefEntityTest: 13/13 ✅
-- AuditStepDefEntityTest: 13/13 ✅
-- AuditInstanceEntityTest: 13/13 ✅
-- WarnLevelEntityTest: 31/31 ✅
-- PlanReportIndicatorEntityTest: 13/13 ✅
-- PlanReportIndicatorAttachmentEntityTest: 13/13 ✅
-- PerformanceBenchmarkTest: 8/8 ✅
-
-### 数据库迁移
-
-**Flyway 迁移历史**:
-- V1.0 - Flyway Baseline (2026-02-13)
-- V2 - Add audit flow entities (2026-02-13)
-- V3 - Add warn level entity (2026-02-13)
-
-**当前 Schema 版本**: 3
-
-### 关键设计决策
-
-1. **Repository 共存**:
-   - `UserRepository`: 扩展接口，自定义查询（7+ 处使用）
-   - `SysUserRepository`: 基础 JPA 操作
-   - 两者映射到同一实体，服务不同目的
-
-2. **测试策略**:
-   - H2 内存数据库用于单元测试
-   - TestContainers + PostgreSQL 用于集成测试（可选）
-   - 属性测试（jqwik）用于业务逻辑验证
-
-3. **迁移策略**:
-   - 幂等性迁移脚本（可重复执行）
-   - 渐进式部署（无停机时间）
-   - 完整的回滚程序
-
-### 详细文档
-
-**架构文档**:
-- 代码库审计：`docs/audit/README.md`
-- 实体清单：`docs/audit/entity-inventory.md`
-- 服务清单：`docs/audit/service-inventory.md`
-- 控制器清单：`docs/audit/controller-inventory.md`
-- 依赖关系图：`docs/audit/dependency-graph.md`
-
-**迁移文档**:
-- Flyway 迁移指南：`docs/flyway-migration-guide.md`
-- 任务规范：`.kiro/specs/backend-architecture-refactoring/`
-
-**测试文档**:
-- 测试覆盖率报告：`docs/audit/test-coverage-report.md`
-- 测试改进报告：`docs/audit/test-improvement-report-2026-02-14.md`
-- 测试通过率报告：`docs/audit/test-pass-rate-final-report-2026-02-14.md`
-
-**性能文档**:
-- 性能基准测试：`docs/performance/performance-benchmarks.md`
-
-**安全文档**:
-- OWASP 依赖检查：`docs/security/owasp-dependency-check-guide.md`
+- **下发侧（模板 01-03）**: 职能部门导入 / 学院单点导入 / 学院全部导入
+- **上报侧（模板 04-06）**: 职能部门上报 / 学院单归口上报 / 学院多归口批量上报
 
 ---
 
@@ -1523,18 +1270,11 @@ server:
 ./mvnw flyway:migrate
 ```
 
-**迁移文件位置**: `src/main/resources/db/migration/`
+**迁移文件位置**: `sism-main/src/main/resources/db/migration/`
 
-**当前迁移历史**:
-- V1.0 - Flyway Baseline (2026-02-13)
-- V2 - Add audit flow entities (2026-02-13)
-- V3 - Add warn level entity (2026-02-13)
+**当前迁移版本**: 以 `*/src/main/resources/db/migration/` 目录内最大 V 号为准（当前 V106），不在此罗列清单，避免腐化。
 
-**详细指南**: 查看 `docs/flyway-migration-guide.md` 获取完整的迁移指南，包括：
-- 命名规范和最佳实践
-- 编写幂等性迁移脚本
-- 故障排除
-- CI/CD 集成
+**详细指南**: 2026-02 旧版《Flyway 迁移指南》已归档至 `docs/archive/flyway-migration-guide.md`，其命名规范与幂等脚本写法仍可参考；版本与清单信息一律以迁移目录为准。
 
 ---
 

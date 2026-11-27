@@ -198,8 +198,8 @@ curl -I http://127.0.0.1/
 ## 7. 相关文档
 
 - `docs/deployment-image-arch-note.md` — 镜像架构要求与历史替换复盘
-- `docs/flyway-migration-guide.md` — Flyway 迁移命名与执行规范
-- `docs/seed-change-system-admin-auto-approval.md` — 种子变更与系统管理员自动审批约定
+- `docs/archive/flyway-migration-guide.md` — Flyway 迁移命名与执行规范（2026-02 旧版，已归档）
+- `docs/archive/seed-change-system-admin-auto-approval.md` — 种子变更与系统管理员自动审批约定（2026-06 一次性记录，已归档）
 - `docs/opentenbase-deployment-guide.md` — OpenTenBase 实验环境（非常规生产路径）
 - `docs/Ubuntu-24.04-生产换机部署手册.md` — 换机操作
 - `backend/scripts/deployment/README.md` — 离线脚本逐支说明
