@@ -19,9 +19,7 @@ VALUES
 
     -- 职能部门
     (402, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '党委办[演示]', NULL, 'dangban_demo', 36, NULL, 0, true),
-    (403, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '纪委办[演示]', NULL, 'jiwei_demo', 37, NULL, 0, true),
     (404, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '党委宣传部[演示]', NULL, 'dangxuan_demo', 38, NULL, 0, true),
-    (405, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '党委组织部[演示]', NULL, 'zuzhi_demo', 39, NULL, 0, true),
     (406, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '人力资源部[演示]', NULL, 'renli_demo', 40, NULL, 0, true),
     (407, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '党委学工部[演示]', NULL, 'xuegong_demo', 41, NULL, 0, true),
     (408, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '保卫处[演示]', NULL, 'baowei_demo', 42, NULL, 0, true),
@@ -36,11 +34,11 @@ VALUES
     (417, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '图书馆档案馆[演示]', NULL, 'tushu_demo', 51, NULL, 0, true),
     (418, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '后勤资产处[演示]', NULL, 'houqin_demo', 52, NULL, 0, true),
     (419, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '继续教育部[演示]', NULL, 'jixujiaoyu_demo', 53, NULL, 0, true),
-    (420, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际交流处[演示]', NULL, 'guoji_demo', 54, NULL, 0, true),
     (428, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '国际教育学院[演示]', NULL, 'guojijiaoyu_demo', 62, NULL, 0, true),
     (429, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '预算部[演示]', NULL, 'yusuan_demo', 63, NULL, 0, true),
     (430, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '什邡管委会[演示]', NULL, 'shifang_demo', 64, NULL, 0, true),
     (431, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '产教合作部[演示]', NULL, 'chanjiao_demo', 65, NULL, 0, true),
+    (436, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '战略发展·部[演示]', NULL, 'zhanfa_demo', 66, NULL, 0, true),
 
     -- 二级学院
     (421, NOW(), NOW(), true, '$2a$10$uS55dBSn9Rhp/OTJZK2iuu2r5B3gwL/WJygS8oudo2deLaMU6m/0.', '马院[演示]', NULL, 'makesi_demo', 55, NULL, 0, true),
@@ -71,9 +69,7 @@ VALUES
 
     -- 职能部门 (roles 1,2,3,4)
     (402, 1, NOW()), (402, 2, NOW()), (402, 3, NOW()), (402, 4, NOW()),
-    (403, 1, NOW()), (403, 2, NOW()), (403, 3, NOW()), (403, 4, NOW()),
     (404, 1, NOW()), (404, 2, NOW()), (404, 3, NOW()), (404, 4, NOW()),
-    (405, 1, NOW()), (405, 2, NOW()), (405, 3, NOW()), (405, 4, NOW()),
     (406, 1, NOW()), (406, 2, NOW()), (406, 3, NOW()), (406, 4, NOW()),
     (407, 1, NOW()), (407, 2, NOW()), (407, 3, NOW()), (407, 4, NOW()),
     (408, 1, NOW()), (408, 2, NOW()), (408, 3, NOW()), (408, 4, NOW()),
@@ -88,11 +84,11 @@ VALUES
     (417, 1, NOW()), (417, 2, NOW()), (417, 3, NOW()), (417, 4, NOW()),
     (418, 1, NOW()), (418, 2, NOW()), (418, 3, NOW()), (418, 4, NOW()),
     (419, 1, NOW()), (419, 2, NOW()), (419, 3, NOW()), (419, 4, NOW()),
-    (420, 1, NOW()), (420, 2, NOW()), (420, 3, NOW()), (420, 4, NOW()),
     (428, 1, NOW()), (428, 2, NOW()), (428, 3, NOW()), (428, 4, NOW()),
     (429, 1, NOW()), (429, 2, NOW()), (429, 3, NOW()), (429, 4, NOW()),
     (430, 1, NOW()), (430, 2, NOW()), (430, 3, NOW()), (430, 4, NOW()),
     (431, 1, NOW()), (431, 2, NOW()), (431, 3, NOW()), (431, 4, NOW()),
+    (436, 1, NOW()), (436, 2, NOW()), (436, 3, NOW()), (436, 4, NOW()),
 
     -- 二级学院 (roles 1,2,3)
     -- 2026-10-26 用户定案：二级学院不设「分管校领导」席位（role 4）——

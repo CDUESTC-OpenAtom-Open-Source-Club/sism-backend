@@ -26,19 +26,13 @@ INSERT INTO public.sys_user_role (id, user_id, role_id, created_at) VALUES
     (DEFAULT, 267, 1, NOW()),
     (DEFAULT, 268, 2, NOW()),
     (DEFAULT, 269, 2, NOW()),
-    (DEFAULT, 303, 4, NOW()),
     (DEFAULT, 307, 4, NOW()),
-    (DEFAULT, 311, 4, NOW()),
     (DEFAULT, 315, 4, NOW()),
     (DEFAULT, 319, 4, NOW()),
     (DEFAULT, 324, 4, NOW()),
     (DEFAULT, 326, 4, NOW()),
-    (DEFAULT, 301, 1, NOW()),
-    (DEFAULT, 302, 2, NOW()),
     (DEFAULT, 305, 1, NOW()),
     (DEFAULT, 306, 2, NOW()),
-    (DEFAULT, 309, 1, NOW()),
-    (DEFAULT, 310, 2, NOW()),
     (DEFAULT, 313, 1, NOW()),
     (DEFAULT, 314, 2, NOW()),
     (DEFAULT, 317, 1, NOW()),
@@ -72,9 +66,6 @@ INSERT INTO public.sys_user_role (id, user_id, role_id, created_at) VALUES
     (DEFAULT, 359, 1, NOW()),
     (DEFAULT, 360, 2, NOW()),
     (DEFAULT, 361, 4, NOW()),
-    (DEFAULT, 363, 1, NOW()),
-    (DEFAULT, 364, 2, NOW()),
-    (DEFAULT, 365, 4, NOW()),
     (DEFAULT, 367, 1, NOW()),
     (DEFAULT, 368, 2, NOW()),
     (DEFAULT, 369, 2, NOW()),
@@ -104,7 +95,10 @@ INSERT INTO public.sys_user_role (id, user_id, role_id, created_at) VALUES
     (DEFAULT, 394, 4, NOW()),
     (DEFAULT, 396, 1, NOW()),
     (DEFAULT, 397, 2, NOW()),
-    (DEFAULT, 398, 4, NOW());
+    (DEFAULT, 398, 4, NOW()),
+    (DEFAULT, 432, 1, NOW()),
+    (DEFAULT, 433, 2, NOW()),
+    (DEFAULT, 434, 4, NOW());
 
 DELETE FROM public.sys_user_role
 WHERE role_id NOT IN (1, 2, 3, 4, 5);
