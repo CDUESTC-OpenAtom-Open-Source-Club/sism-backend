@@ -30,6 +30,20 @@
 - [ ] nginx 已限制 `/api/v1/actuator/` 访问
 - [ ] nginx 已禁止 Swagger / OpenAPI 对公网暴露
 
+### 连接池容量（2026-11-27 看板 500 事故后新增）
+
+事故现象：生产看板顶部弹红色「服务器内部错误」；后端日志
+`SQLTransientConnectionException: Connection is not available, request timed out after 10000ms
+(total=20, active=20, idle=0, waiting=24)`。
+
+- [ ] `DB_HIKARI_MAX_POOL_SIZE` 已确认 ≥ 32（compose 兜底值已提到 32；
+      生产若显式设过旧值 20/24，必须改掉，否则仍会覆盖新默认值）
+- [ ] 变更后容器实际生效值已核对：
+      `docker compose exec backend printenv DB_HIKARI_MAX_POOL_SIZE`
+- [ ] 数据库侧 `max_connections` ≥ 连接池上限 + 10（PostgreSQL 默认 100，无需调整）
+- [ ] 未在连接池打满期间改小该值（看板父指标归口水合已被前端限流到 6 并发，
+      32 已是留足余量后的值，回收余量需同步确认前端限流仍然生效）
+
 ### 数据库
 
 - [ ] 已确认当前备份可用

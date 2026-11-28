@@ -43,7 +43,12 @@ services:
       JAVA_HEAP_SIZE: ${JAVA_HEAP_SIZE:-768m}
       JAVA_METASPACE_SIZE: ${JAVA_METASPACE_SIZE:-128m}
       JAVA_STACK_SIZE: ${JAVA_STACK_SIZE:-512k}
-      DB_HIKARI_MAX_POOL_SIZE: ${DB_HIKARI_MAX_POOL_SIZE:-20}
+      # 2026-11-27（生产看板 500）：兜底值 20 → 32。
+      # 20 的池在看板父指标归口批量水合 + 指标列表 + 看板汇总并发时会打满
+      # （total=20, active=20, idle=0, waiting=24 → SQLTransientConnectionException → 500）。
+      # 前端已把该批量水合限流到 6 并发，此处只需给足余量。
+      # 生产显式设置 DB_HIKARI_MAX_POOL_SIZE 时以显式值为准。
+      DB_HIKARI_MAX_POOL_SIZE: ${DB_HIKARI_MAX_POOL_SIZE:-32}
       DB_HIKARI_MIN_IDLE: ${DB_HIKARI_MIN_IDLE:-5}
       DINGTALK_ENABLED: ${DINGTALK_ENABLED:-false}
       DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}

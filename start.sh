@@ -114,7 +114,8 @@ echo ""
 
 APP_JAVA_OPTS="${APP_JAVA_OPTS:-${JAVA_OPTS:-$DEFAULT_APP_JAVA_OPTS}}"
 echo "✓ JVM 参数: $APP_JAVA_OPTS"
-echo "✓ Hikari 连接池: max=${DB_HIKARI_MAX_POOL_SIZE:-8}, minIdle=${DB_HIKARI_MIN_IDLE:-2}"
+# 2026-11-27：回显的兜底值与 application.yml 的实际默认值对齐（此前写 8，与 24 不符，误导排障）
+echo "✓ Hikari 连接池: max=${DB_HIKARI_MAX_POOL_SIZE:-32}, minIdle=${DB_HIKARI_MIN_IDLE:-6}"
 echo ""
 
 cleanup_backend_processes

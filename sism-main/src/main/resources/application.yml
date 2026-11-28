@@ -20,7 +20,14 @@ spring:
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: ${DB_HIKARI_MAX_POOL_SIZE:24}
+      # 2026-11-27（生产看板 500）：默认值 24 → 32。
+      # 看板父指标归口批量水合已在前端限流（任一时刻在途 ≤ 6），20 的池在
+      # 「指标列表 + 看板汇总 + 告警 + 父指标水合」并发时会打满
+      # （total=20, active=20, idle=0, waiting=24 → SQLTransientConnectionException → 500）。
+      # 32 与 PostgreSQL 默认 max_connections=100 相比仍有充足余量。
+      # 注意：deploy/compose 模板此前把 20 写死为兜底值，会覆盖这里的默认值，
+      # 已同步改为 32；生产若显式设 DB_HIKARI_MAX_POOL_SIZE 则以显式值为准。
+      maximum-pool-size: ${DB_HIKARI_MAX_POOL_SIZE:32}
       minimum-idle: ${DB_HIKARI_MIN_IDLE:6}
       connection-timeout: ${DB_HIKARI_CONNECTION_TIMEOUT:10000}
       idle-timeout: ${DB_HIKARI_IDLE_TIMEOUT:120000}
