@@ -57,6 +57,18 @@ class AppraisalSummaryServiceTest {
                 new BigDecimal("20.00"), status);
     }
 
+    /** 职能部门线月报行（指定上报部门；reportOrgType=FUNC_DEPT，指标 target=上报部门自身） */
+    private static AppraisalRow functionalRowOf(
+            long orgId, String orgName, String month, long indicatorId, String level, String status) {
+        return new AppraisalRow(orgId, orgName, "FUNC_DEPT", null, null, month, indicatorId,
+                "指标" + indicatorId, orgId, orgName, level, new BigDecimal("10.00"), status);
+    }
+
+    /** 按 orgId 取部门行（测试数据里 orgId 唯一；找不到直接失败） */
+    private static DepartmentLevelDTO deptOf(List<DepartmentLevelDTO> departments, long orgId) {
+        return departments.stream().filter(d -> d.getOrgId() == orgId).findFirst().orElseThrow();
+    }
+
     @Test
     @DisplayName("快照口径：10 月与 11 月各自独立显示，互不沿用（2026-11-18 拍板核心回归）")
     void appraisalSummaryShouldReturnIndependentMonthlySnapshots() {
@@ -192,8 +204,8 @@ class AppraisalSummaryServiceTest {
     }
 
     @Test
-    @DisplayName("B2 修复：学院月报按 functionalOrgId 归到归口部门，部门分布不再恒空；无归口学院行跳过")
-    void academicRowsShouldAggregateUnderFunctionalOrg() {
+    @DisplayName("部门行口径（2026-11-27 拍板）：全量视角下学院线月报不再并入归口部门行；无归口学院行跳过")
+    void academicRowsShouldNotBeMergedIntoFunctionalOrgInFullScope() {
         List<AppraisalRow> rows = List.of(
                 // 学院月报：3 项指标归口预算部，AHEAD/NORMAL/DELAYED 各一
                 academicRowForFunctionalOrg(63L, "预算部", "202611", 1L, "AHEAD", "APPROVED"),
@@ -201,9 +213,9 @@ class AppraisalSummaryServiceTest {
                 academicRowForFunctionalOrg(63L, "预算部", "202611", 3L, "DELAYED", "APPROVED"),
                 // 另一学院月报归口产教融合处
                 academicRowForFunctionalOrg(88L, "产教融合处", "202611", 4L, "DELAYED", "APPROVED"),
-                // 学院月报审批中行仍按归口进入分布图（供前端置灰），不贡献鉴定值
+                // 学院月报审批中行
                 academicRowForFunctionalOrg(63L, "预算部", "202611", 5L, null, "SUBMITTED"),
-                // 旧库学院行 functionalOrgId=null → 跳过，不能凭空归组
+                // 旧库学院行 functionalOrgId=null
                 academicRow("202611", 6L, "DELAYED", "APPROVED"),
                 // 职能部门月报仍按上报组织自身归组
                 functionalRow("202611", 7L, "NORMAL", "APPROVED")
@@ -215,42 +227,48 @@ class AppraisalSummaryServiceTest {
 
         AppraisalSummaryResponseDTO response = service.getAppraisalSummary(2026, 11, null);
 
-        // 预算部 + 产教融合处（学院归口）+ 学生处（职能部门）；学院自身 300L 与无归口行都不出现
-        assertEquals(3, response.getDepartments().size());
+        // 预算部（只剩灰柱底座）+ 学生处（职能部门自身）；产教融合处没有自身上报行也没有下发计数，不出现；
+        // 学院自身 300L 与无归口行都不出现
+        assertEquals(2, response.getDepartments().size());
         assertTrue(response.getDepartments().stream().noneMatch(d -> d.getOrgId() == 300L));
-        DepartmentLevelDTO budget = response.getDepartments().stream()
-                .filter(d -> d.getOrgId() == 63L).findFirst().orElseThrow();
+        assertTrue(response.getDepartments().stream().noneMatch(d -> d.getOrgId() == 88L));
+        DepartmentLevelDTO budget = deptOf(response.getDepartments(), 63L);
         assertEquals("预算部", budget.getOrgName());
-        assertEquals(1L, budget.getAhead());
-        assertEquals(1L, budget.getNormal());
-        assertEquals(1L, budget.getDelayed());
-        assertEquals(3L, budget.getTotal());
-        assertEquals(7L, budget.getDispatchedCount()); // 灰柱高度按同一归组键取值
-        assertEquals(MonthState.APPROVED, budget.getMonthState());
-        DepartmentLevelDTO industry = response.getDepartments().stream()
-                .filter(d -> d.getOrgId() == 88L).findFirst().orElseThrow();
-        assertEquals("产教融合处", industry.getOrgName());
-        assertEquals(0L, industry.getDispatchedCount());
-        DepartmentLevelDTO studentAffairs = response.getDepartments().stream()
-                .filter(d -> d.getOrgId() == 100L).findFirst().orElseThrow();
+        // 归口到预算部的学院线（含审批中行）不算预算部自己的上报
+        assertFalse(budget.isReported());
+        assertEquals(MonthState.NOT_REPORTED, budget.getMonthState());
+        assertEquals(0L, budget.getAhead());
+        assertEquals(0L, budget.getNormal());
+        assertEquals(0L, budget.getDelayed());
+        assertEquals(0L, budget.getTotal());
+        assertEquals(7L, budget.getDispatchedCount()); // 灰柱高度仍取本部门已下发数
+        DepartmentLevelDTO studentAffairs = deptOf(response.getDepartments(), 100L);
         assertEquals("学生处", studentAffairs.getOrgName());
+        assertTrue(studentAffairs.isReported());
+        assertEquals(MonthState.APPROVED, studentAffairs.getMonthState());
         assertEquals(1L, studentAffairs.getNormal());
         assertEquals(0L, studentAffairs.getAhead());
         assertEquals(0L, studentAffairs.getDelayed());
+        assertEquals(1L, studentAffairs.getTotal());
         // 只有 11 月有上报：1-10 月逐月快照只有灰柱底座（预算部已下发 7），不沿用 11 月彩段
         assertEquals(11, response.getDepartmentMonths().size());
         assertEquals(1, response.getDepartmentMonths().get(9).getDepartments().size());
-        DepartmentLevelDTO octGray = response.getDepartmentMonths().get(9).getDepartments().get(0);
-        assertEquals(63L, octGray.getOrgId());
+        DepartmentLevelDTO octGray = deptOf(response.getDepartmentMonths().get(9).getDepartments(), 63L);
         assertFalse(octGray.isReported());
         assertEquals(MonthState.NOT_REPORTED, octGray.getMonthState());
         assertEquals(7L, octGray.getDispatchedCount());
-        assertEquals(3, response.getDepartmentMonths().get(10).getDepartments().size());
+        assertEquals(2, response.getDepartmentMonths().get(10).getDepartments().size());
+        // 简报/滞后清单口径不变：仍是全部 APPROVED 行（含学院线）
+        assertEquals(1L, response.getAnnual().getAhead());
+        assertEquals(2L, response.getAnnual().getNormal());
+        assertEquals(3L, response.getAnnual().getDelayed());
+        assertEquals(6L, response.getAnnual().getTotal());
+        assertEquals(3, response.getLaggingTasks().size());
     }
 
     @Test
-    @DisplayName("B2 修复：学院归口部门与职能部门同 ID 时合并到同一部门（所有 map 用同一归组键）")
-    void academicAndFunctionalRowsShouldShareSameGroupKey() {
+    @DisplayName("部门行口径（2026-11-27 拍板）：学院线归口部门与职能部门同 ID 时不再合并，部门行只含自身上报行")
+    void collegeLineAndFunctionalRowsShouldNotBeMergedInFullScope() {
         List<AppraisalRow> rows = List.of(
                 // 学院月报归口学生处（functionalOrgId=100，与职能部门上报组织同 ID）
                 academicRowForFunctionalOrg(100L, "学生处", "202611", 1L, "AHEAD", "APPROVED"),
@@ -266,10 +284,13 @@ class AppraisalSummaryServiceTest {
         assertEquals(1, response.getDepartments().size());
         DepartmentLevelDTO dept = response.getDepartments().get(0);
         assertEquals(100L, dept.getOrgId());
-        assertEquals(1L, dept.getAhead());
+        assertEquals(0L, dept.getAhead()); // 学院线的 AHEAD 不再计入部门行
+        assertEquals(0L, dept.getNormal());
         assertEquals(1L, dept.getDelayed());
-        assertEquals(2L, dept.getTotal());
+        assertEquals(1L, dept.getTotal());
         assertEquals(9L, dept.getDispatchedCount());
+        // 简报口径不变：仍统计全部行
+        assertEquals(2L, response.getAnnual().getTotal());
     }
 
     @Test
@@ -407,8 +428,9 @@ class AppraisalSummaryServiceTest {
     @DisplayName("B2 灰柱底座：同月已上报部门（彩段+高度）与纯下发部门（灰柱）并存，同一部门不重复建行")
     void reportedAndDispatchOnlyDepartmentsShouldCoexist() {
         List<AppraisalRow> rows = List.of(
-                academicRowForFunctionalOrg(63L, "预算部", "202611", 1L, "AHEAD", "APPROVED"),
-                academicRowForFunctionalOrg(63L, "预算部", "202611", 2L, "NORMAL", "APPROVED")
+                // 预算部自身上报（2026-11-27 起部门行只认部门自己上报的月报）
+                functionalRowOf(63L, "预算部", "202611", 1L, "AHEAD", "APPROVED"),
+                functionalRowOf(63L, "预算部", "202611", 2L, "NORMAL", "APPROVED")
         );
         when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
         when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
@@ -440,8 +462,9 @@ class AppraisalSummaryServiceTest {
     @DisplayName("B2 灰柱底座：审批中部门仍为 IN_REVIEW 灰柱（不被并集改判 NOT_REPORTED），高度=已下发数")
     void inReviewDepartmentShouldStayGrayWithDispatchHeight() {
         List<AppraisalRow> rows = List.of(
-                academicRowForFunctionalOrg(63L, "预算部", "202611", 1L, null, "SUBMITTED"),
-                academicRowForFunctionalOrg(63L, "预算部", "202611", 2L, null, "IN_REVIEW")
+                // 预算部自身上报、审批中（2026-11-27 起部门行只认部门自己上报的月报）
+                functionalRowOf(63L, "预算部", "202611", 1L, null, "SUBMITTED"),
+                functionalRowOf(63L, "预算部", "202611", 2L, null, "IN_REVIEW")
         );
         when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
         when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
@@ -459,5 +482,304 @@ class AppraisalSummaryServiceTest {
         assertEquals(0L, budget.getNormal());
         assertEquals(0L, budget.getDelayed());
         assertEquals(0L, budget.getTotal());
+    }
+
+    // ==================================================================
+    // 2026-11-27 角色分流（看板数据视角）
+    // ==================================================================
+
+    @Test
+    @DisplayName("学院视角：annual/滞后清单只统计本院（target=本院），departments 只含本院归口部门，"
+            + "不并入全校灰柱底座")
+    void collegeScopeShouldLimitToOwnIndicators() {
+        List<AppraisalRow> rows = List.of(
+                // 本院（计算机学院 300）自报行：归口预算部 2 项 + 无归口 1 项
+                academicRowForFunctionalOrg(63L, "预算部", "202611", 1L, "AHEAD", "APPROVED"),
+                academicRowForFunctionalOrg(63L, "预算部", "202611", 2L, "DELAYED", "APPROVED"),
+                academicRow("202611", 3L, "NORMAL", "APPROVED"),
+                // 其他学院（工学院 400）的行：target≠本院 → 学院视角不可见
+                new AppraisalRow(400L, "工学院", "academic", 63L, "预算部", "202611", 4L, "指标4",
+                        400L, "工学院", "DELAYED", new BigDecimal("20.00"), "APPROVED"),
+                // 职能部门线行：target=学生处 → 学院视角不可见
+                functionalRow("202611", 5L, "DELAYED", "APPROVED")
+        );
+        when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        // 全校各归口部门的下发计数：学院视角不得混入（departments 不并灰柱底座）
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(63L, "预算部", 7L),
+                new DispatchCountRow(100L, "学生处", 9L)
+        ));
+
+        AppraisalSummaryResponseDTO response = service.getAppraisalSummary(
+                2026, 11, null, DashboardScope.college(300L));
+
+        // 简报 = 本院 3 项（AHEAD 1 + NORMAL 1 + DELAYED 1）
+        assertEquals(1L, response.getAnnual().getAhead());
+        assertEquals(1L, response.getAnnual().getNormal());
+        assertEquals(1L, response.getAnnual().getDelayed());
+        assertEquals(3L, response.getAnnual().getTotal());
+        // departments 只含本院归口部门（预算部），工学院/学生处不出现
+        assertEquals(1, response.getDepartments().size());
+        DepartmentLevelDTO budget = response.getDepartments().get(0);
+        assertEquals(63L, budget.getOrgId());
+        assertEquals("预算部", budget.getOrgName());
+        assertEquals(2L, budget.getTotal());
+        // 学院视角不并全校灰柱底座
+        assertTrue(response.getLaggingTasks().stream().allMatch(t -> t.getOrgId() == 300L));
+        // 逐月快照同样只含本院归口部门
+        assertEquals(11, response.getDepartmentMonths().size());
+        assertEquals(1, response.getDepartmentMonths().get(10).getDepartments().size());
+    }
+
+    @Test
+    @DisplayName("职能部门视角：简报/滞后清单只统计本部门（本部门职能线 + 归口到本部门的学院线），"
+            + "departments 部门行只含本部门自身上报行，下发计数只保留本部门")
+    void functionalScopeShouldLimitToOwnDepartment() {
+        List<AppraisalRow> rows = List.of(
+                // 本部门（学生处 100）自身上报行
+                functionalRow("202611", 1L, "NORMAL", "APPROVED"),
+                // 学院线归口到本部门：进简报/滞后清单，不进部门行（2026-11-27 拍板）
+                academicRowForFunctionalOrg(100L, "学生处", "202611", 2L, "DELAYED", "APPROVED"),
+                // 其他职能部门（预算部 63）职能线行：不可见
+                new AppraisalRow(63L, "预算部", "FUNC_DEPT", null, null, "202611", 3L, "指标3",
+                        63L, "预算部", "DELAYED", new BigDecimal("10.00"), "APPROVED"),
+                // 学院线归口到别的部门：不可见
+                academicRowForFunctionalOrg(63L, "预算部", "202611", 4L, "DELAYED", "APPROVED")
+        );
+        when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(100L, "学生处", 5L),
+                new DispatchCountRow(63L, "预算部", 7L)
+        ));
+
+        AppraisalSummaryResponseDTO response = service.getAppraisalSummary(
+                2026, 11, null, DashboardScope.functional(100L));
+
+        // 简报只含本部门口径的 2 项（NORMAL + DELAYED）
+        assertEquals(1L, response.getAnnual().getNormal());
+        assertEquals(1L, response.getAnnual().getDelayed());
+        assertEquals(2L, response.getAnnual().getTotal());
+        // departments 只有本部门一行：只含自身上报的 1 项（归口学院线不并入），灰柱高度只取本部门下发计数
+        assertEquals(1, response.getDepartments().size());
+        DepartmentLevelDTO own = response.getDepartments().get(0);
+        assertEquals(100L, own.getOrgId());
+        assertEquals("学生处", own.getOrgName());
+        assertEquals(5L, own.getDispatchedCount());
+        assertEquals(0L, own.getAhead());
+        assertEquals(1L, own.getNormal());
+        assertEquals(0L, own.getDelayed());
+        assertEquals(1L, own.getTotal());
+        assertEquals(MonthState.APPROVED, own.getMonthState());
+        // 逐月快照同口径：11 月只有本部门自身的 1 项
+        assertEquals(1, response.getDepartmentMonths().get(10).getDepartments().size());
+        assertEquals(1L, response.getDepartmentMonths().get(10).getDepartments().get(0).getTotal());
+        // 滞后清单只含本部门口径的行（指标1 自报 + 指标2 归口学院线，责任单位 100/300）
+        assertEquals(1, response.getLaggingTasks().size());
+        assertEquals(2L, response.getLaggingTasks().get(0).getIndicatorId());
+    }
+
+    // ==================================================================
+    // 2026-11-27 部门行口径（用户拍板）：「指标完成情况分布」是部门专用卡，
+    // 部门行只统计部门自己上报的指标，不并入归口到该部门的学院线指标
+    // ==================================================================
+
+    @Test
+    @DisplayName("部门行口径：有归口学院线的部门只统计部门自身上报的指标（逐月快照同口径），"
+            + "简报/滞后清单仍是全部行")
+    void departmentWithCollegeLinesShouldOnlyCountOwnIndicatorsInFullScope() {
+        List<AppraisalRow> rows = List.of(
+                // 11 月：学生处（100）自身上报 正常 2 + 滞后 1
+                functionalRowOf(100L, "学生处", "202611", 1L, "NORMAL", "APPROVED"),
+                functionalRowOf(100L, "学生处", "202611", 2L, "NORMAL", "APPROVED"),
+                functionalRowOf(100L, "学生处", "202611", 3L, "DELAYED", "APPROVED"),
+                // 11 月：归口到学生处的学院线（计算机学院、工学院各自上报）正常 3 + 滞后 1
+                academicRowForFunctionalOrg(100L, "学生处", "202611", 11L, "NORMAL", "APPROVED"),
+                academicRowForFunctionalOrg(100L, "学生处", "202611", 12L, "NORMAL", "APPROVED"),
+                academicRowForFunctionalOrg(100L, "学生处", "202611", 13L, "DELAYED", "APPROVED"),
+                new AppraisalRow(400L, "工学院", "COLLEGE", 100L, "学生处", "202611", 14L, "指标14",
+                        400L, "工学院", "NORMAL", new BigDecimal("20.00"), "APPROVED"),
+                // 10 月：学生处自身已报 1 项，归口学院线 2 项
+                functionalRowOf(100L, "学生处", "202610", 1L, "NORMAL", "APPROVED"),
+                academicRowForFunctionalOrg(100L, "学生处", "202610", 11L, "DELAYED", "APPROVED"),
+                academicRowForFunctionalOrg(100L, "学生处", "202610", 12L, "DELAYED", "APPROVED"),
+                // 11 月：另一部门教务处（44）自身上报 1 项
+                functionalRowOf(44L, "教务处", "202611", 21L, "NORMAL", "APPROVED")
+        );
+        when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(100L, "学生处", 3L),
+                new DispatchCountRow(44L, "教务处", 1L),
+                new DispatchCountRow(57L, "计算机学院", 4L) // 学院灰柱底座
+        ));
+
+        AppraisalSummaryResponseDTO response = service.getAppraisalSummary(2026, 11, null);
+
+        // 学生处一行 = 自身 3 项（正常 2 + 滞后 1），不含归口学院线 4 项
+        DepartmentLevelDTO studentAffairs = deptOf(response.getDepartments(), 100L);
+        assertEquals("学生处", studentAffairs.getOrgName());
+        assertTrue(studentAffairs.isReported());
+        assertEquals(MonthState.APPROVED, studentAffairs.getMonthState());
+        assertEquals(0L, studentAffairs.getAhead());
+        assertEquals(2L, studentAffairs.getNormal());
+        assertEquals(1L, studentAffairs.getDelayed());
+        assertEquals(3L, studentAffairs.getTotal());
+        assertEquals(3L, studentAffairs.getDispatchedCount());
+        // 教务处自身 1 项；计算机学院只有灰柱底座；学院线行不进任何部门行
+        DepartmentLevelDTO academicAffairs = deptOf(response.getDepartments(), 44L);
+        assertEquals(1L, academicAffairs.getTotal());
+        assertEquals(1L, academicAffairs.getNormal());
+        DepartmentLevelDTO collegeGray = deptOf(response.getDepartments(), 57L);
+        assertFalse(collegeGray.isReported());
+        assertEquals(0L, collegeGray.getTotal());
+        assertEquals(4L, collegeGray.getDispatchedCount());
+        assertEquals(3, response.getDepartments().size());
+        assertTrue(response.getDepartments().stream().noneMatch(d -> d.getOrgId() == 300L));
+        assertTrue(response.getDepartments().stream().noneMatch(d -> d.getOrgId() == 400L));
+        // 10 月逐月快照同口径：学生处自身 1 项，不含归口学院线 2 项
+        DepartmentLevelDTO oct = deptOf(response.getDepartmentMonths().get(9).getDepartments(), 100L);
+        assertEquals(0L, oct.getAhead());
+        assertEquals(1L, oct.getNormal());
+        assertEquals(0L, oct.getDelayed());
+        assertEquals(1L, oct.getTotal());
+        // 11 月逐月快照与选中月 departments 一致
+        assertEquals(3L, deptOf(response.getDepartmentMonths().get(10).getDepartments(), 100L).getTotal());
+        // 简报/滞后清单口径不变：仍是全部 APPROVED 行（自身 + 学院线）
+        assertEquals(6L, response.getAnnual().getNormal());
+        assertEquals(2L, response.getAnnual().getDelayed());
+        assertEquals(8L, response.getAnnual().getTotal());
+        assertEquals(2, response.getLaggingTasks().size());
+    }
+
+    @Test
+    @DisplayName("部门行口径：没有归口学院线的部门，部门行只由自身上报行决定（与学院线无关）")
+    void departmentWithoutCollegeLinesShouldOnlyCountOwnIndicatorsInFullScope() {
+        List<AppraisalRow> rows = List.of(
+                // 党委宣传部（38）自身上报：正常 1 + 滞后 1
+                functionalRowOf(38L, "党委宣传部", "202611", 1L, "NORMAL", "APPROVED"),
+                functionalRowOf(38L, "党委宣传部", "202611", 2L, "DELAYED", "APPROVED"),
+                // 归口到别的部门（教务处 44）的学院线：不影响宣传部
+                academicRowForFunctionalOrg(44L, "教务处", "202611", 3L, "DELAYED", "APPROVED"),
+                // 无归口的旧库学院行：不影响任何部门行
+                academicRow("202611", 4L, "DELAYED", "APPROVED")
+        );
+        when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(38L, "党委宣传部", 12L)
+        ));
+
+        AppraisalSummaryResponseDTO response = service.getAppraisalSummary(2026, 11, null);
+
+        // 只有宣传部一行（教务处没有自身上报行也没有下发计数，不出现）
+        assertEquals(1, response.getDepartments().size());
+        DepartmentLevelDTO propaganda = deptOf(response.getDepartments(), 38L);
+        assertEquals("党委宣传部", propaganda.getOrgName());
+        assertTrue(propaganda.isReported());
+        assertEquals(MonthState.APPROVED, propaganda.getMonthState());
+        assertEquals(0L, propaganda.getAhead());
+        assertEquals(1L, propaganda.getNormal());
+        assertEquals(1L, propaganda.getDelayed());
+        assertEquals(2L, propaganda.getTotal());
+        assertEquals(12L, propaganda.getDispatchedCount());
+        assertEquals(1, response.getDepartmentMonths().get(10).getDepartments().size());
+        assertEquals(2L, deptOf(response.getDepartmentMonths().get(10).getDepartments(), 38L).getTotal());
+        // 简报仍是全部行
+        assertEquals(4L, response.getAnnual().getTotal());
+    }
+
+    @Test
+    @DisplayName("学院视角不变：departments 仍是本院各归口线的行（学院线月报按归口部门归组），不并入下发计数灰柱")
+    void collegeScopeShouldKeepGroupingCollegeLinesByFunctionalOrg() {
+        List<AppraisalRow> rows = List.of(
+                // 本院（计算机学院 300）自报行：归口预算部 AHEAD/NORMAL/DELAYED 各一 + 审批中一条
+                academicRowForFunctionalOrg(63L, "预算部", "202611", 1L, "AHEAD", "APPROVED"),
+                academicRowForFunctionalOrg(63L, "预算部", "202611", 2L, "NORMAL", "APPROVED"),
+                academicRowForFunctionalOrg(63L, "预算部", "202611", 3L, "DELAYED", "APPROVED"),
+                academicRowForFunctionalOrg(63L, "预算部", "202611", 5L, null, "SUBMITTED"),
+                // 归口产教融合处
+                academicRowForFunctionalOrg(88L, "产教融合处", "202611", 4L, "DELAYED", "APPROVED"),
+                // 无归口学院行：进简报，不进 departments
+                academicRow("202611", 6L, "DELAYED", "APPROVED"),
+                // 其他学院（工学院 400）的行：target≠本院 → 不可见
+                new AppraisalRow(400L, "工学院", "COLLEGE", 63L, "预算部", "202611", 7L, "指标7",
+                        400L, "工学院", "DELAYED", new BigDecimal("20.00"), "APPROVED"),
+                // 职能部门线行：target≠本院 → 不可见
+                functionalRowOf(63L, "预算部", "202611", 8L, "DELAYED", "APPROVED")
+        );
+        when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        // 全校下发计数：学院视角不得混入
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(63L, "预算部", 7L),
+                new DispatchCountRow(100L, "学生处", 9L)
+        ));
+
+        AppraisalSummaryResponseDTO response = service.getAppraisalSummary(
+                2026, 11, null, DashboardScope.college(300L));
+
+        // departments = 本院各归口线：预算部（AHEAD/NORMAL/DELAYED 各一）+ 产教融合处（滞后一）
+        assertEquals(2, response.getDepartments().size());
+        DepartmentLevelDTO budget = deptOf(response.getDepartments(), 63L);
+        assertEquals("预算部", budget.getOrgName());
+        assertTrue(budget.isReported());
+        assertEquals(MonthState.APPROVED, budget.getMonthState());
+        assertEquals(1L, budget.getAhead());
+        assertEquals(1L, budget.getNormal());
+        assertEquals(1L, budget.getDelayed());
+        assertEquals(3L, budget.getTotal());
+        assertEquals(0L, budget.getDispatchedCount()); // 学院视角不并下发计数
+        DepartmentLevelDTO industry = deptOf(response.getDepartments(), 88L);
+        assertEquals("产教融合处", industry.getOrgName());
+        assertEquals(0L, industry.getAhead());
+        assertEquals(0L, industry.getNormal());
+        assertEquals(1L, industry.getDelayed());
+        assertEquals(1L, industry.getTotal());
+        // 逐月快照同样按归口部门归组；无上报月份为空（不并灰柱底座）
+        assertEquals(2, response.getDepartmentMonths().get(10).getDepartments().size());
+        assertEquals(3L, deptOf(response.getDepartmentMonths().get(10).getDepartments(), 63L).getTotal());
+        assertTrue(response.getDepartmentMonths().get(9).getDepartments().isEmpty());
+        // 简报 = 本院 5 项（AHEAD 1 + NORMAL 1 + DELAYED 3）
+        assertEquals(1L, response.getAnnual().getAhead());
+        assertEquals(1L, response.getAnnual().getNormal());
+        assertEquals(3L, response.getAnnual().getDelayed());
+        assertEquals(5L, response.getAnnual().getTotal());
+    }
+
+    @Test
+    @DisplayName("职能部门视角：本部门那一行与全校视图里本部门行完全一致（只含自身上报）")
+    void functionalScopeDepartmentRowShouldMatchFullScopeRow() {
+        List<AppraisalRow> rows = List.of(
+                // 学生处（100）自身上报：正常 1 + 滞后 1
+                functionalRowOf(100L, "学生处", "202611", 1L, "NORMAL", "APPROVED"),
+                functionalRowOf(100L, "学生处", "202611", 2L, "DELAYED", "APPROVED"),
+                // 归口到学生处的学院线：滞后 1
+                academicRowForFunctionalOrg(100L, "学生处", "202611", 3L, "DELAYED", "APPROVED"),
+                // 其他部门的行
+                academicRowForFunctionalOrg(44L, "教务处", "202611", 4L, "DELAYED", "APPROVED"),
+                functionalRowOf(44L, "教务处", "202611", 5L, "NORMAL", "APPROVED")
+        );
+        when(queryRepository.fetchAppraisalRows("202601", "202612")).thenReturn(rows);
+        when(queryRepository.fetchDispatchCounts(2026)).thenReturn(List.of(
+                new DispatchCountRow(100L, "学生处", 5L),
+                new DispatchCountRow(44L, "教务处", 6L)
+        ));
+
+        AppraisalSummaryResponseDTO full = service.getAppraisalSummary(2026, 11, null);
+        AppraisalSummaryResponseDTO functional = service.getAppraisalSummary(
+                2026, 11, null, DashboardScope.functional(100L));
+
+        // 职能部门视角只有本部门一行，且与全校视图里学生处那一行逐字段相等
+        assertEquals(1, functional.getDepartments().size());
+        assertEquals(deptOf(full.getDepartments(), 100L), functional.getDepartments().get(0));
+        assertEquals(deptOf(full.getDepartmentMonths().get(10).getDepartments(), 100L),
+                functional.getDepartmentMonths().get(10).getDepartments().get(0));
+        DepartmentLevelDTO own = functional.getDepartments().get(0);
+        assertEquals(0L, own.getAhead());
+        assertEquals(1L, own.getNormal());
+        assertEquals(1L, own.getDelayed());
+        assertEquals(2L, own.getTotal());
+        assertEquals(5L, own.getDispatchedCount());
+        // 简报/滞后清单口径不变：自身 + 归口学院线
+        assertEquals(3L, functional.getAnnual().getTotal());
+        assertEquals(2L, functional.getAnnual().getDelayed());
+        assertEquals(2, functional.getLaggingTasks().size());
     }
 }

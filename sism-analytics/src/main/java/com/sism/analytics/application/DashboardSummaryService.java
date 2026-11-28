@@ -43,11 +43,17 @@ public class DashboardSummaryService {
 
     /**
      * Get dashboard summary aggregating indicator stats
+     *
+     * @param scope 数据视角（2026-11-27 角色分流，必须非 null：controller 侧由
+     *              {@link DashboardScopeResolver} 解析；null 视为全量，
+     *              缓存 key 表达式已做 null 兜底）
      */
-    @Cacheable(cacheNames = "dashboard-summary", cacheManager = "analyticsCacheManager", key = "'summary'")
-    public DashboardSummaryDTO getDashboardSummary() {
+    @Cacheable(cacheNames = "dashboard-summary", cacheManager = "analyticsCacheManager",
+            key = "'summary:' + (#scope == null or #scope.isFull() ? 'FULL' : 'org' + #scope.orgId())")
+    public DashboardSummaryDTO getDashboardSummary(DashboardScope scope) {
+        Long scopeOrgId = scopeOrgIdOrNull(scope);
         DashboardSummaryQueryRepository.DashboardSummaryMetrics metrics =
-                dashboardSummaryQueryRepository.fetchDashboardSummaryMetrics();
+                dashboardSummaryQueryRepository.fetchDashboardSummaryMetrics(scopeOrgId);
 
         long totalIndicators = metrics.totalIndicators();
         long completedIndicators = metrics.completedIndicators();
@@ -78,10 +84,14 @@ public class DashboardSummaryService {
 
     /**
      * Get department progress grouped by target_org_id
+     *
+     * <p>2026-11-27 角色分流：学院/职能部门视角只返回本组织一行（ departments 收敛为
+     * 本学院/本部门），全量视角返回全部活跃组织。缓存 key 带视角维度，防止不同角色串数据。</p>
      */
-    @Cacheable(cacheNames = "department-progress", cacheManager = "analyticsCacheManager", key = "'progress'")
-    public List<DepartmentProgressDTO> getDepartmentProgress() {
-        return dashboardSummaryQueryRepository.fetchDepartmentProgressRows().stream()
+    @Cacheable(cacheNames = "department-progress", cacheManager = "analyticsCacheManager",
+            key = "'progress:' + (#scope == null or #scope.isFull() ? 'FULL' : 'org' + #scope.orgId())")
+    public List<DepartmentProgressDTO> getDepartmentProgress(DashboardScope scope) {
+        return dashboardSummaryQueryRepository.fetchDepartmentProgressRows(scopeOrgIdOrNull(scope)).stream()
                 .map(this::toDepartmentProgress)
                 .toList();
     }
@@ -89,10 +99,12 @@ public class DashboardSummaryService {
     /**
      * Get recent activities - recent indicator changes
      */
-    @Cacheable(cacheNames = "recent-activities", cacheManager = "analyticsCacheManager", key = "'recent'")
-    public List<Map<String, Object>> getRecentActivities() {
+    @Cacheable(cacheNames = "recent-activities", cacheManager = "analyticsCacheManager",
+            key = "'recent:' + (#scope == null or #scope.isFull() ? 'FULL' : 'org' + #scope.orgId())")
+    public List<Map<String, Object>> getRecentActivities(DashboardScope scope) {
         List<Map<String, Object>> result = new ArrayList<>();
-        for (DashboardSummaryQueryRepository.RecentActivityRow row : dashboardSummaryQueryRepository.fetchRecentActivityRows(RECENT_ACTIVITY_LIMIT)) {
+        for (DashboardSummaryQueryRepository.RecentActivityRow row : dashboardSummaryQueryRepository
+                .fetchRecentActivityRows(RECENT_ACTIVITY_LIMIT, scopeOrgIdOrNull(scope))) {
             Map<String, Object> activity = new LinkedHashMap<>();
             activity.put("id", row.id());
             activity.put("description", row.description());
@@ -109,6 +121,12 @@ public class DashboardSummaryService {
         evictCache("dashboard-summary");
         evictCache("department-progress");
         evictCache("recent-activities");
+    }
+
+    /** 全量视角传 null（SQL 不带组织过滤）；学院/职能部门视角传本组织 ID */
+    private static Long scopeOrgIdOrNull(DashboardScope scope) {
+        DashboardScope effective = scope == null ? DashboardScope.full() : scope;
+        return effective.isFull() ? null : effective.orgId();
     }
 
     private DepartmentProgressDTO toDepartmentProgress(DashboardSummaryQueryRepository.DepartmentProgressRow row) {

@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -91,23 +92,47 @@ public class AppraisalSummaryService {
      * @param limit  滞后任务条数上限（可选，默认 5，最大 50）
      */
     public AppraisalSummaryResponseDTO getAppraisalSummary(Integer year, Integer month, Integer limit) {
+        return getAppraisalSummary(year, month, limit, DashboardScope.full());
+    }
+
+    /**
+     * 汇总指定年月的看板数据（严格当月快照口径），按 {@link DashboardScope} 分流视角。
+     *
+     * <p>2026-11-27 角色分流：学院视角只统计本院（行按指标 target=本院过滤，
+     * departments 只含本院归口部门）；职能部门视角只统计本部门（简报与滞后清单取
+     * 本部门职能线上报行 + 归口到本部门的学院线行；departments 只有本部门自身上报行，
+     * 与全校视图里本部门那一行数字一致）；全量视角（战略部/admin）返回结构与原先完全一致。</p>
+     *
+     * <p>仍按整年拉取明细：{@code departmentMonths}（1 月至选中月的逐月快照）与
+     * {@code latestMonth} 自动跳月都需要全年视野；但每个月的鉴定值只来自该月自己的
+     * APPROVED 月报，互不沿用。</p>
+     *
+     * @param year   年份（必填，2000-2999）
+     * @param month  月份（必填，1-12）
+     * @param limit  滞后任务条数上限（可选，默认 5，最大 50）
+     * @param scope  数据视角（null 视为全量）
+     */
+    public AppraisalSummaryResponseDTO getAppraisalSummary(
+            Integer year, Integer month, Integer limit, DashboardScope scope) {
         requireYear(year);
         requireMonth(month);
+        DashboardScope effectiveScope = scope == null ? DashboardScope.full() : scope;
         int laggingLimit = normalizeLimit(limit);
 
         String startMonth = toReportMonth(year, MIN_MONTH);
         String endMonth = toReportMonth(year, MAX_MONTH);
-        List<AppraisalRow> rows = appraisalSummaryQueryRepository.fetchAppraisalRows(startMonth, endMonth);
+        List<AppraisalRow> rows = filterRowsByScope(
+                effectiveScope, appraisalSummaryQueryRepository.fetchAppraisalRows(startMonth, endMonth));
         // 灰柱数据源（2026-11-18 验收补齐 + 2026-11-25 B2 灰柱底座）：当年已下发指标数
         // （含部门名），口径对齐 CollegeLevelDTO.dispatchedCount；纯下发部门据此长出灰柱行
-        Map<Long, DispatchCountRow> dispatchByOrgId = indexDispatchCounts(year);
+        Map<Long, DispatchCountRow> dispatchByOrgId = indexDispatchCounts(year, effectiveScope);
 
         // 逐月独立快照：第 m 月的部门分布只由第 m 月自己的月报决定（2026-11-18 拍板，废除沿用）
         List<DepartmentLevelMonthDTO> departmentMonths = new ArrayList<>(month);
         for (int m = MIN_MONTH; m <= month; m++) {
             departmentMonths.add(DepartmentLevelMonthDTO.builder()
                     .month(m)
-                    .departments(departmentLevels(rows, m, dispatchByOrgId))
+                    .departments(departmentLevels(rows, m, dispatchByOrgId, effectiveScope))
                     .build());
         }
 
@@ -126,6 +151,45 @@ public class AppraisalSummaryService {
     }
 
     /**
+     * 按视角过滤上报明细行（2026-11-27 角色分流）。
+     *
+     * <ul>
+     *   <li>学院视角：行按指标 target=本院过滤（学院月报 target_org = report_org，
+     *       即本院自报的行）；</li>
+     *   <li>职能部门视角：本部门职能线上报行（report_org=本部门）∪ 归口到本部门的
+     *       学院线行（functional_org=本部门）——简报、滞后清单、latestMonth 用这份行集；
+     *       部门行不在此处收窄，由 {@link #departmentLevels} 只取本部门自身上报行；</li>
+     *   <li>全量视角：不过滤。</li>
+     * </ul>
+     */
+    private static List<AppraisalRow> filterRowsByScope(DashboardScope scope, List<AppraisalRow> rows) {
+        if (scope.isFull()) {
+            return rows;
+        }
+        List<AppraisalRow> result = new ArrayList<>(rows.size());
+        for (AppraisalRow row : rows) {
+            if (matchesScope(scope, row)) {
+                result.add(row);
+            }
+        }
+        return result;
+    }
+
+    private static boolean matchesScope(DashboardScope scope, AppraisalRow row) {
+        Long orgId = scope.orgId();
+        if (orgId == null) {
+            return true;
+        }
+        if (scope.kind() == DashboardScope.Kind.COLLEGE) {
+            // 学院视角：指标 target=本院（学院月报 target_org 恒等于 report_org）
+            return row.targetOrgId() != null && row.targetOrgId().equals(orgId);
+        }
+        // 职能部门视角：本部门职能线 + 归口到本部门的学院线
+        return Objects.equals(row.reportOrgId(), orgId)
+                || (row.functionalOrgId() != null && row.functionalOrgId().equals(orgId));
+    }
+
+    /**
      * 指定月份的 APPROVED 明细行（按月快照的唯一鉴定值来源）。
      */
     private static List<AppraisalRow> approvedRowsOfMonth(List<AppraisalRow> rows, int month) {
@@ -139,7 +203,14 @@ public class AppraisalSummaryService {
     }
 
     /**
-     * 选中月当月快照下的各职能部门三档计数（2026-11-18 拍板，2026-11-25 B2 修复归组键 + 灰柱底座）。
+     * 指定月份当月快照下的各职能部门三档计数（2026-11-18 拍板，2026-11-25 B2 修复归组键 + 灰柱底座）。
+     *
+     * <p><b>2026-11-27 部门行口径（用户拍板）</b>：「指标完成情况分布」是部门专用卡，部门行只统计
+     * <b>部门自己上报的指标</b>——职能部门月报（report_org_type=职能部门，report_org=该部门）按
+     * 上报组织归组；归口到该部门的学院线月报<b>不再并入部门行</b>，与下钻 {@code indicator-levels}
+     * 的「部门自身」口径同屏对得上。全量视角与职能部门视角同此口径，所以职能部门视角里本部门
+     * 那一行与全校视图里本部门行完全一致。学院视角例外：它的 departments 是「本院各归口线」
+     * 的行（学院卡在用），学院线月报仍按归口部门归组。</p>
      *
      * <p>行集 = 当月上报归组部门 ∪ 当年有下发记录的部门（与学院卡 toCollegeLevel 同构）：
      * 上报部门按既有归口归组逻辑生成彩段/灰段；纯下发部门（当月无上报行）以
@@ -147,8 +218,9 @@ public class AppraisalSummaryService {
      * 长出灰柱行，供前端画「已下发 n 项·未填报」督办。</p>
      *
      * <ul>
-     *   <li>只统计该月自己的行（report_month == month）；职能部门月报按 reportOrgId 归组，
-     *       学院月报按 functionalOrgId 归到归口职能部门（归口为空的旧库行跳过）；</li>
+     *   <li>只统计该月自己的行（report_month == month）；职能部门月报按 reportOrgId 归组；
+     *       学院线月报仅在学院视角按 functionalOrgId 归到归口职能部门（归口为空跳过），
+     *       全量/职能部门视角不进部门行；</li>
      *   <li>鉴定值只来自 APPROVED 月报；</li>
      *   <li>该月已填报但审批中（SUBMITTED/IN_REVIEW）的部门：鉴定值全 0，
      *       {@code monthState=IN_REVIEW}，仍返回（前端置灰标「审批中」）；</li>
@@ -160,11 +232,16 @@ public class AppraisalSummaryService {
      *
      * <p>{@code dispatchByOrgId}：当年各组织下发计数行（orgId → (orgName, dispatchedCount)，
      * 口径对齐 CollegeLevelDTO.dispatchedCount）；无下发记录的部门计 0。
-     * 归组键统一：上报行与下发行用同一 orgId，因此「学院归口部门」与「职能部门自身」
-     * 同 ID 时合并到同一行（灰段+彩段并存）。</p>
+     * 归组键统一：上报行与下发行用同一 orgId，因此部门自身上报行与它的下发计数落在同一行
+     * （灰段+彩段并存）。</p>
      */
     private static List<DepartmentLevelDTO> departmentLevels(
-            List<AppraisalRow> rows, int month, Map<Long, DispatchCountRow> dispatchByOrgId) {
+            List<AppraisalRow> rows, int month, Map<Long, DispatchCountRow> dispatchByOrgId,
+            DashboardScope scope) {
+        // 学院线月报只有学院视角按归口部门归组（departments = 本院各归口线）；
+        // 全量/职能部门视角的部门行只认部门自己上报的月报
+        boolean groupCollegeLinesByFunctionalOrg = scope.kind() == DashboardScope.Kind.COLLEGE;
+
         Map<Long, String> orgNames = new LinkedHashMap<>();
         Set<Long> reportedOrgIds = new HashSet<>();
         Map<Long, Boolean> approvedByOrg = new HashMap<>();
@@ -174,15 +251,16 @@ public class AppraisalSummaryService {
             if (monthOf(row.reportMonth()) != month) {
                 continue;
             }
-            // 2026-11-25（B2 修复）：学院月报按 functionalOrgId 归到归口职能部门，部门分布图不再恒空；
-            // functionalOrgId 为空的旧库学院行跳过（不能凭空归组）。functional 行仍按上报组织自身归组。
             Long groupOrgId;
             String groupOrgName;
             if (isFunctionalOrgType(row.reportOrgType())) {
+                // 职能部门月报：按上报组织自身归组（部门自身口径）
                 groupOrgId = row.reportOrgId();
                 groupOrgName = row.reportOrgName();
             } else {
-                if (row.functionalOrgId() == null) {
+                // 学院线月报：2026-11-27 起不再并入归口部门行，只服务学院视角的「本院各归口线」；
+                // functionalOrgId 为空的学院行跳过（不能凭空归组）
+                if (!groupCollegeLinesByFunctionalOrg || row.functionalOrgId() == null) {
                     continue;
                 }
                 groupOrgId = row.functionalOrgId();
@@ -244,10 +322,24 @@ public class AppraisalSummaryService {
         return result;
     }
 
-    /** 当年各组织下发计数行（灰柱数据源）：orgId → (orgName, dispatchedCount) */
-    private Map<Long, DispatchCountRow> indexDispatchCounts(Integer year) {
+    /**
+     * 当年各组织下发计数行（灰柱数据源）：orgId → (orgName, dispatchedCount)。
+     *
+     * <p>2026-11-27 角色分流：学院视角不取下发计数——departments 只由本院上报行
+     * 归口生成，不并入全校灰柱底座（否则会混入全校各部门的行，且「全校归口部门
+     * 已下发数」对学院视角无意义）；职能部门视角只保留本部门的下发计数（未填报月份
+     * 的灰柱行仍按「已下发 n 项」出高度，与全校视图本部门行一致）。</p>
+     */
+    private Map<Long, DispatchCountRow> indexDispatchCounts(Integer year, DashboardScope scope) {
+        if (scope.kind() == DashboardScope.Kind.COLLEGE) {
+            return Map.of();
+        }
         Map<Long, DispatchCountRow> byOrgId = new HashMap<>();
         for (DispatchCountRow row : appraisalSummaryQueryRepository.fetchDispatchCounts(year)) {
+            if (scope.kind() == DashboardScope.Kind.FUNCTIONAL
+                    && !Objects.equals(row.orgId(), scope.orgId())) {
+                continue;
+            }
             byOrgId.put(row.orgId(), row);
         }
         return byOrgId;

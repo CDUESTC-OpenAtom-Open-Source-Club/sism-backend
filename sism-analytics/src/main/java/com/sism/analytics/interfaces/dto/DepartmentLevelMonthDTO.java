@@ -22,7 +22,8 @@ public class DepartmentLevelMonthDTO {
     @Schema(description = "月份（1-12）")
     private int month;
 
-    @Schema(description = "该月有已填报月报的职能部门列表（鉴定值只算该月 APPROVED；"
-            + "审批中部门鉴定值为 0 且 monthState=IN_REVIEW；该月未填报/无已鉴定数据的部门不返回）")
+    @Schema(description = "该月有已填报月报的职能部门列表（全量/职能部门视角下只含部门自己上报的指标；"
+            + "鉴定值只算该月 APPROVED；审批中部门鉴定值为 0 且 monthState=IN_REVIEW；"
+            + "该月未填报/无已鉴定数据的部门不返回）")
     private List<DepartmentLevelDTO> departments;
 }

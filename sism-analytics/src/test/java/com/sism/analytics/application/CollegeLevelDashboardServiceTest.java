@@ -6,6 +6,7 @@ import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.CollegeL
 import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.CollegeLevelMonthlyCountRow;
 import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.CollegeReportedMonthRow;
 import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.DelayedIndicatorRow;
+import com.sism.analytics.domain.repository.DashboardScopeQueryRepository;
 import com.sism.analytics.interfaces.dto.CollegeLevelsResponseDTO;
 import com.sism.analytics.interfaces.dto.CollegeLevelTrendResponseDTO;
 import com.sism.analytics.interfaces.dto.DelayedIndicatorsResponseDTO;
@@ -21,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -28,7 +30,10 @@ import static org.mockito.Mockito.when;
 class CollegeLevelDashboardServiceTest {
 
     private final CollegeLevelQueryRepository queryRepository = mock(CollegeLevelQueryRepository.class);
-    private final CollegeLevelDashboardService service = new CollegeLevelDashboardService(queryRepository);
+    private final DashboardScopeQueryRepository dashboardScopeQueryRepository =
+            mock(DashboardScopeQueryRepository.class);
+    private final CollegeLevelDashboardService service =
+            new CollegeLevelDashboardService(queryRepository, dashboardScopeQueryRepository);
 
     @Test
     @DisplayName("getCollegeLevels 应把 yyyyMM 月份与聚合行映射为契约 DTO（APPROVED 月带 monthState=APPROVED）")
@@ -274,5 +279,159 @@ class CollegeLevelDashboardServiceTest {
         assertTrue(missingDelayedMonth.getMessage().contains("month"));
 
         verifyNoInteractions(queryRepository);
+    }
+
+    // ==================================================================
+    // 2026-11-27 角色分流（看板数据视角）
+    // ==================================================================
+
+    @Test
+    @DisplayName("学院视角：getCollegeLevels 只返回本院一行")
+    void collegeScopeShouldReturnOwnRowOnly() {
+        when(queryRepository.fetchCollegeDispatchCounts(2026)).thenReturn(List.of(
+                new CollegeDispatchCountRow(57L, "计算机学院", 5, 2),
+                new CollegeDispatchCountRow(58L, "电子学院", 3, 1)
+        ));
+        when(queryRepository.fetchCollegeReportedMonths("202610", "202610")).thenReturn(List.of(
+                new CollegeReportedMonthRow(10, 57L, "计算机学院", "APPROVED"),
+                new CollegeReportedMonthRow(10, 58L, "电子学院", "APPROVED")
+        ));
+        when(queryRepository.fetchCollegeLevelCounts("202610")).thenReturn(List.of(
+                new CollegeLevelCountRow(57L, "计算机学院", 3, 1, 0, 4),
+                new CollegeLevelCountRow(58L, "电子学院", 0, 2, 1, 3)
+        ));
+
+        CollegeLevelsResponseDTO response = service.getCollegeLevels(
+                2026, 10, DashboardScope.college(57L));
+
+        assertEquals(1, response.getColleges().size());
+        assertEquals(57L, response.getColleges().get(0).getOrgId());
+        assertEquals(4L, response.getColleges().get(0).getTotal());
+    }
+
+    @Test
+    @DisplayName("学院视角：getCollegeLevelsTrend 逐月只返回本院一行")
+    void collegeScopeShouldReturnOwnRowInTrend() {
+        when(queryRepository.fetchCollegeDispatchCounts(2026)).thenReturn(List.of(
+                new CollegeDispatchCountRow(57L, "计算机学院", 5, 2),
+                new CollegeDispatchCountRow(58L, "电子学院", 3, 1)
+        ));
+        when(queryRepository.fetchCollegeReportedMonths("202601", "202612")).thenReturn(List.of(
+                new CollegeReportedMonthRow(11, 58L, "电子学院", "APPROVED")
+        ));
+        when(queryRepository.fetchCollegeLevelMonthlyCounts("202601", "202612")).thenReturn(List.of(
+                new CollegeLevelMonthlyCountRow(11, 58L, "电子学院", 0, 2, 1, 3)
+        ));
+
+        CollegeLevelTrendResponseDTO response = service.getCollegeLevelsTrend(2026, DashboardScope.college(57L));
+
+        assertEquals(12, response.getMonths().size());
+        // 1-10 月本院无数据 → 空列表；11 月也只有本院行（58 不出现）
+        assertTrue(response.getMonths().stream().allMatch(m -> m.getColleges().size() <= 1));
+        assertTrue(response.getMonths().stream()
+                .flatMap(m -> m.getColleges().stream())
+                .allMatch(c -> c.getOrgId() == 57L));
+    }
+
+    @Test
+    @DisplayName("学院视角：getDelayedIndicators 只返回责任单位=本院的行")
+    void collegeScopeShouldFilterDelayedIndicatorsByOwnOrg() {
+        when(queryRepository.fetchDelayedIndicators("202611")).thenReturn(List.of(
+                new DelayedIndicatorRow(1L, "指标1", 57L, "计算机学院", "就业创业指导中心", "DELAYED", "DELAYED"),
+                new DelayedIndicatorRow(2L, "指标2", 48L, "就业创业指导中心", null, "DELAYED", "DELAYED")
+        ));
+
+        DelayedIndicatorsResponseDTO response = service.getDelayedIndicators(
+                2026, 11, DashboardScope.college(57L));
+
+        assertEquals(1, response.getItems().size());
+        assertEquals(1L, response.getItems().get(0).getIndicatorId());
+        assertEquals(57L, response.getItems().get(0).getOrgId());
+    }
+
+    // ==================================================================
+    // 2026-11-27 拍板：职能部门视角只看「本部门已下发指标关联」的学院
+    // ==================================================================
+
+    @Test
+    @DisplayName("职能部门视角：getCollegeLevels 只返回本部门有下发关联的学院")
+    void functionalScopeShouldOnlyShowLinkedColleges() {
+        // 教务处(44) 关联 57/58 两院；59 未建归口线 → 不可见
+        when(dashboardScopeQueryRepository.findLinkedCollegeIds(44L))
+                .thenReturn(List.of(57L, 58L));
+        when(queryRepository.fetchCollegeDispatchCounts(2026)).thenReturn(List.of(
+                new CollegeDispatchCountRow(57L, "计算机学院", 5, 2),
+                new CollegeDispatchCountRow(58L, "电子学院", 3, 1),
+                new CollegeDispatchCountRow(59L, "外语学院", 2, 0)
+        ));
+        when(queryRepository.fetchCollegeReportedMonths("202610", "202610")).thenReturn(List.of());
+        when(queryRepository.fetchCollegeLevelCounts("202610")).thenReturn(List.of());
+
+        CollegeLevelsResponseDTO response = service.getCollegeLevels(
+                2026, 10, DashboardScope.functional(44L));
+
+        assertEquals(2, response.getColleges().size());
+        assertEquals(57L, response.getColleges().get(0).getOrgId());
+        assertEquals(58L, response.getColleges().get(1).getOrgId());
+        verify(dashboardScopeQueryRepository).findLinkedCollegeIds(44L);
+    }
+
+    @Test
+    @DisplayName("职能部门视角：getCollegeLevelsTrend 逐月只返回本部门有关联的学院")
+    void functionalScopeShouldFilterTrendByLinkedColleges() {
+        when(dashboardScopeQueryRepository.findLinkedCollegeIds(47L)).thenReturn(List.of(57L));
+        when(queryRepository.fetchCollegeDispatchCounts(2026)).thenReturn(List.of(
+                new CollegeDispatchCountRow(57L, "计算机学院", 5, 2),
+                new CollegeDispatchCountRow(58L, "电子学院", 3, 1)
+        ));
+        when(queryRepository.fetchCollegeReportedMonths("202601", "202612")).thenReturn(List.of(
+                new CollegeReportedMonthRow(11, 58L, "电子学院", "APPROVED")
+        ));
+        when(queryRepository.fetchCollegeLevelMonthlyCounts("202601", "202612")).thenReturn(List.of());
+
+        CollegeLevelTrendResponseDTO response = service.getCollegeLevelsTrend(
+                2026, DashboardScope.functional(47L));
+
+        assertEquals(12, response.getMonths().size());
+        // 58 未建本部门归口线：即使 11 月已上报也不可见；57 全年都可见（有下发指标）
+        assertTrue(response.getMonths().stream()
+                .flatMap(m -> m.getColleges().stream())
+                .allMatch(c -> c.getOrgId() == 57L));
+        verify(dashboardScopeQueryRepository).findLinkedCollegeIds(47L);
+    }
+
+    @Test
+    @DisplayName("职能部门视角：getDelayedIndicators = 本部门行 ∪ 关联学院的学院线行")
+    void functionalScopeShouldIncludeLinkedCollegeDelayedRows() {
+        when(dashboardScopeQueryRepository.findLinkedCollegeIds(44L)).thenReturn(List.of(57L));
+        when(queryRepository.fetchDelayedIndicators("202611")).thenReturn(List.of(
+                new DelayedIndicatorRow(1L, "指标1", 44L, "教务处", null, "DELAYED", "DELAYED"),
+                new DelayedIndicatorRow(2L, "指标2", 57L, "计算机学院", "教务处", "DELAYED", "DELAYED"),
+                new DelayedIndicatorRow(3L, "指标3", 59L, "外语学院", "招生工作处", "DELAYED", "DELAYED")
+        ));
+
+        DelayedIndicatorsResponseDTO response = service.getDelayedIndicators(
+                2026, 11, DashboardScope.functional(44L));
+
+        // 44=本部门行、57=关联学院行保留；59=无关联学院行不可见
+        assertEquals(2, response.getItems().size());
+        assertEquals(44L, response.getItems().get(0).getOrgId());
+        assertEquals(57L, response.getItems().get(1).getOrgId());
+        verify(dashboardScopeQueryRepository).findLinkedCollegeIds(44L);
+    }
+
+    @Test
+    @DisplayName("学院/全量视角不触发下发关联查询（仅职能部门视角查询关联学院）")
+    void nonFunctionalScopesShouldNotQueryLinkedColleges() {
+        when(queryRepository.fetchCollegeDispatchCounts(2026)).thenReturn(List.of(
+                new CollegeDispatchCountRow(57L, "计算机学院", 5, 2)
+        ));
+        when(queryRepository.fetchCollegeReportedMonths("202610", "202610")).thenReturn(List.of());
+        when(queryRepository.fetchCollegeLevelCounts("202610")).thenReturn(List.of());
+
+        service.getCollegeLevels(2026, 10, DashboardScope.college(57L));
+        service.getCollegeLevels(2026, 10, DashboardScope.full());
+
+        verify(dashboardScopeQueryRepository, times(0)).findLinkedCollegeIds(org.mockito.ArgumentMatchers.any());
     }
 }

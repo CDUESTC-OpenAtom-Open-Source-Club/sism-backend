@@ -60,6 +60,41 @@ public class NativeDashboardSummaryQueryRepository implements DashboardSummaryQu
                 FROM analytics_unresolved_alert_dashboard_view
             ) a
             """;
+    /**
+     * 视角收缩版汇总（2026-11-27 角色分流）：指标与预警都限定 target_org = 本组织。
+     * 预警视图不带 target_org_id，需经 indicator_id 回连指标视图过滤。
+     */
+    private static final String SQL_DASHBOARD_SUMMARY_METRICS_SCOPED = """
+            SELECT
+                i.total_indicators,
+                i.completed_indicators,
+                i.average_progress,
+                i.basic_score,
+                i.development_score,
+                a.severe_alerts,
+                a.moderate_alerts,
+                a.normal_alerts
+            FROM (
+                SELECT
+                    COUNT(*) AS total_indicators,
+                    COUNT(CASE WHEN status = :completedStatus THEN 1 END) AS completed_indicators,
+                    COALESCE(AVG(progress), 0) AS average_progress,
+                    COALESCE(AVG(CASE WHEN type = :basicType THEN progress END), 0) AS basic_score,
+                    COALESCE(AVG(CASE WHEN type = :developmentType THEN progress END), 0) AS development_score
+                FROM analytics_indicator_dashboard_view
+                WHERE target_org_id = :scopeOrgId
+            ) i
+            CROSS JOIN (
+                SELECT
+                    COALESCE(SUM(CASE WHEN ae.severity = :criticalSeverity THEN 1 ELSE 0 END), 0) AS severe_alerts,
+                    COALESCE(SUM(CASE WHEN ae.severity = :warningSeverity THEN 1 ELSE 0 END), 0) AS moderate_alerts,
+                    COALESCE(SUM(CASE WHEN ae.severity = :infoSeverity THEN 1 ELSE 0 END), 0) AS normal_alerts
+                FROM analytics_unresolved_alert_dashboard_view ae
+                INNER JOIN analytics_indicator_dashboard_view i2
+                        ON i2.id = ae.indicator_id
+                       AND i2.target_org_id = :scopeOrgId
+            ) a
+            """;
     private static final String SQL_DEPARTMENT_PROGRESS = """
             SELECT
                 o.name AS dept,
@@ -78,12 +113,42 @@ public class NativeDashboardSummaryQueryRepository implements DashboardSummaryQu
             GROUP BY o.id, o.name
             ORDER BY o.name
             """;
+    /** 视角收缩版部门进度（2026-11-27 角色分流）：只返回本组织一行 */
+    private static final String SQL_DEPARTMENT_PROGRESS_SCOPED = """
+            SELECT
+                o.name AS dept,
+                COALESCE(AVG(i.progress), 0) AS avg_progress,
+                COUNT(i.id) AS total_indicators,
+                COUNT(CASE WHEN i.status = :completedStatus THEN 1 END) AS completed_indicators,
+                COALESCE(MAX(a.alert_count), 0) AS alert_count
+            FROM analytics_active_org_dashboard_view o
+            LEFT JOIN analytics_indicator_dashboard_view i ON i.target_org_id = o.id
+            LEFT JOIN (
+                SELECT i2.target_org_id, COUNT(*) AS alert_count
+                FROM analytics_unresolved_alert_dashboard_view ae
+                INNER JOIN analytics_indicator_dashboard_view i2 ON i2.id = ae.indicator_id
+                GROUP BY i2.target_org_id
+            ) a ON a.target_org_id = o.id
+            WHERE o.id = :scopeOrgId
+            GROUP BY o.id, o.name
+            ORDER BY o.name
+            """;
     private static final String SQL_RECENT_ACTIVITIES_TEMPLATE = """
             SELECT i.id, i.indicator_desc, i.status, i.progress, i.updated_at,
                    o.name AS org_name
             FROM analytics_indicator_dashboard_view i
             LEFT JOIN analytics_active_org_dashboard_view o ON o.id = i.target_org_id
             WHERE i.updated_at IS NOT NULL
+            ORDER BY i.updated_at DESC
+            """;
+    /** 视角收缩版最近活动（2026-11-27 角色分流）：只统计指标 target=本组织的行 */
+    private static final String SQL_RECENT_ACTIVITIES_SCOPED_TEMPLATE = """
+            SELECT i.id, i.indicator_desc, i.status, i.progress, i.updated_at,
+                   o.name AS org_name
+            FROM analytics_indicator_dashboard_view i
+            LEFT JOIN analytics_active_org_dashboard_view o ON o.id = i.target_org_id
+            WHERE i.updated_at IS NOT NULL
+              AND i.target_org_id = :scopeOrgId
             ORDER BY i.updated_at DESC
             """;
 
@@ -122,15 +187,20 @@ public class NativeDashboardSummaryQueryRepository implements DashboardSummaryQu
     }
 
     @Override
-    public DashboardSummaryMetrics fetchDashboardSummaryMetrics() {
-        Object[] row = (Object[]) entityManager.createNativeQuery(SQL_DASHBOARD_SUMMARY_METRICS)
+    public DashboardSummaryMetrics fetchDashboardSummaryMetrics(Long targetOrgId) {
+        boolean scoped = targetOrgId != null;
+        var query = entityManager
+                .createNativeQuery(scoped ? SQL_DASHBOARD_SUMMARY_METRICS_SCOPED : SQL_DASHBOARD_SUMMARY_METRICS)
                 .setParameter("completedStatus", STATUS_COMPLETED)
                 .setParameter("basicType", "基础性指标")
                 .setParameter("developmentType", "发展性指标")
                 .setParameter("criticalSeverity", "CRITICAL")
                 .setParameter("warningSeverity", "WARNING")
-                .setParameter("infoSeverity", "INFO")
-                .getSingleResult();
+                .setParameter("infoSeverity", "INFO");
+        if (scoped) {
+            query.setParameter("scopeOrgId", targetOrgId);
+        }
+        Object[] row = (Object[]) query.getSingleResult();
         requireColumnCount(row, DASHBOARD_SUMMARY_COLUMN_COUNT, "dashboard summary");
         return new DashboardSummaryMetrics(
                 toLong(row[0]),
@@ -146,10 +216,14 @@ public class NativeDashboardSummaryQueryRepository implements DashboardSummaryQu
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<DepartmentProgressRow> fetchDepartmentProgressRows() {
-        List<Object[]> rows = entityManager.createNativeQuery(SQL_DEPARTMENT_PROGRESS)
-                .setParameter("completedStatus", STATUS_COMPLETED)
-                .getResultList();
+    public List<DepartmentProgressRow> fetchDepartmentProgressRows(Long targetOrgId) {
+        var query = entityManager
+                .createNativeQuery(targetOrgId == null ? SQL_DEPARTMENT_PROGRESS : SQL_DEPARTMENT_PROGRESS_SCOPED)
+                .setParameter("completedStatus", STATUS_COMPLETED);
+        if (targetOrgId != null) {
+            query.setParameter("scopeOrgId", targetOrgId);
+        }
+        List<Object[]> rows = query.getResultList();
         List<DepartmentProgressRow> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
             requireColumnCount(row, DEPARTMENT_PROGRESS_COLUMN_COUNT, "department progress");
@@ -166,11 +240,17 @@ public class NativeDashboardSummaryQueryRepository implements DashboardSummaryQu
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<RecentActivityRow> fetchRecentActivityRows(int limit) {
+    public List<RecentActivityRow> fetchRecentActivityRows(int limit, Long targetOrgId) {
         int safeLimit = Math.max(limit, 1);
-        List<Object[]> rows = entityManager.createNativeQuery(SQL_RECENT_ACTIVITIES_TEMPLATE)
-                .setMaxResults(safeLimit)
-                .getResultList();
+        var query = entityManager
+                .createNativeQuery(targetOrgId == null
+                        ? SQL_RECENT_ACTIVITIES_TEMPLATE
+                        : SQL_RECENT_ACTIVITIES_SCOPED_TEMPLATE)
+                .setMaxResults(safeLimit);
+        if (targetOrgId != null) {
+            query.setParameter("scopeOrgId", targetOrgId);
+        }
+        List<Object[]> rows = query.getResultList();
         List<RecentActivityRow> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
             requireColumnCount(row, RECENT_ACTIVITY_COLUMN_COUNT, "recent activities");

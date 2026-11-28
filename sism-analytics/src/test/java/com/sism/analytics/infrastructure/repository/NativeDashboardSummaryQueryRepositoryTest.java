@@ -26,6 +26,49 @@ class NativeDashboardSummaryQueryRepositoryTest {
     @Test
     @DisplayName("fetchDepartmentProgressRows should aggregate alert counts without losing org rows")
     void fetchDepartmentProgressRowsShouldAggregateAlertCounts() {
+        createProgressSchemaAndSeed();
+
+        var rows = repository.fetchDepartmentProgressRows(null);
+
+        assertThat(rows).hasSize(2);
+        assertThat(rows).extracting(DashboardSummaryQueryRepository.DepartmentProgressRow::departmentName)
+                .containsExactly("部门A", "部门B");
+        assertThat(rows.get(0).alertCount()).isEqualTo(1L);
+        assertThat(rows.get(0).totalIndicators()).isEqualTo(2L);
+        assertThat(rows.get(0).completedIndicators()).isEqualTo(1L);
+        assertThat(rows.get(1).alertCount()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("fetchDepartmentProgressRows(targetOrgId) 视角收缩：只返回本组织一行（2026-11-27 角色分流）")
+    void fetchDepartmentProgressRowsShouldScopeToTargetOrg() {
+        createProgressSchemaAndSeed();
+
+        var rows = repository.fetchDepartmentProgressRows(1L);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).departmentName()).isEqualTo("部门A");
+        assertThat(rows.get(0).totalIndicators()).isEqualTo(2L);
+        assertThat(rows.get(0).alertCount()).isEqualTo(1L);
+    }
+
+    /**
+     * 建表/建视图并植入两部门样例数据（两个用例共用；H2 DDL 隐式提交，
+     * 先 DROP IF EXISTS 保证用例无论先后执行都能从干净 schema 开始）。
+     */
+    private void createProgressSchemaAndSeed() {
+        entityManager.getEntityManager().createNativeQuery(
+                "DROP VIEW IF EXISTS analytics_indicator_dashboard_view").executeUpdate();
+        entityManager.getEntityManager().createNativeQuery(
+                "DROP VIEW IF EXISTS analytics_unresolved_alert_dashboard_view").executeUpdate();
+        entityManager.getEntityManager().createNativeQuery(
+                "DROP VIEW IF EXISTS analytics_active_org_dashboard_view").executeUpdate();
+        entityManager.getEntityManager().createNativeQuery(
+                "DROP TABLE IF EXISTS alert_event").executeUpdate();
+        entityManager.getEntityManager().createNativeQuery(
+                "DROP TABLE IF EXISTS indicator").executeUpdate();
+        entityManager.getEntityManager().createNativeQuery(
+                "DROP TABLE IF EXISTS sys_org").executeUpdate();
         entityManager.getEntityManager().createNativeQuery("""
                 CREATE TABLE sys_org (
                     id BIGINT PRIMARY KEY,
@@ -137,15 +180,5 @@ class NativeDashboardSummaryQueryRepositoryTest {
                 """).executeUpdate();
         entityManager.flush();
         entityManager.clear();
-
-        var rows = repository.fetchDepartmentProgressRows();
-
-        assertThat(rows).hasSize(2);
-        assertThat(rows).extracting(DashboardSummaryQueryRepository.DepartmentProgressRow::departmentName)
-                .containsExactly("部门A", "部门B");
-        assertThat(rows.get(0).alertCount()).isEqualTo(1L);
-        assertThat(rows.get(0).totalIndicators()).isEqualTo(2L);
-        assertThat(rows.get(0).completedIndicators()).isEqualTo(1L);
-        assertThat(rows.get(1).alertCount()).isEqualTo(1L);
     }
 }

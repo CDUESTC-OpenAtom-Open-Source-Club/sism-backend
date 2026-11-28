@@ -15,7 +15,8 @@ import java.util.List;
  * <p>一次请求同时供三处使用，保证同一份审核结果在看板上口径一致（全部为选中月当月快照）：</p>
  * <ul>
  *   <li>{@code departments}：职能部门视角「指标完成情况分布」（选中月快照，
- *       只统计该月 APPROVED 鉴定；审批中部门 monthState=IN_REVIEW 鉴定值为 0）</li>
+ *       只统计该月 APPROVED 鉴定；审批中部门 monthState=IN_REVIEW 鉴定值为 0；
+ *       2026-11-27 起部门行只含部门自己上报的指标，不并入归口到该部门的学院线）</li>
  *   <li>{@code departmentMonths}：同上，1 月至选中月份逐月独立快照（各月互不沿用，
  *       用于下钻查看月度趋势）</li>
  *   <li>{@code laggingTasks}：「TOP 滞后任务响应清单」（选中月 APPROVED 鉴定 = DELAYED；
@@ -41,6 +42,7 @@ public class AppraisalSummaryResponseDTO {
     private int latestMonth;
 
     @Schema(description = "职能部门鉴定等级计数（选中月当月快照，只统计该月 APPROVED 鉴定；"
+            + "全量/职能部门视角下只含部门自己上报的指标，不并入归口到该部门的学院线；"
             + "审批中部门鉴定值为 0 且 monthState=IN_REVIEW，未填报部门不返回，各月互不沿用；"
             + "每部门带当年已下发指标数 dispatchedCount，置灰灰柱高度取该字段）")
     private List<DepartmentLevelDTO> departments;

@@ -6,6 +6,7 @@ import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.CollegeL
 import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.CollegeLevelMonthlyCountRow;
 import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.CollegeReportedMonthRow;
 import com.sism.analytics.domain.repository.CollegeLevelQueryRepository.DelayedIndicatorRow;
+import com.sism.analytics.domain.repository.DashboardScopeQueryRepository;
 import com.sism.analytics.interfaces.dto.CollegeLevelDTO;
 import com.sism.analytics.interfaces.dto.CollegeLevelsResponseDTO;
 import com.sism.analytics.interfaces.dto.CollegeLevelTrendResponseDTO;
@@ -19,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,9 +56,13 @@ public class CollegeLevelDashboardService {
     private static final int MAX_MONTH = 12;
 
     private final CollegeLevelQueryRepository collegeLevelQueryRepository;
+    private final DashboardScopeQueryRepository dashboardScopeQueryRepository;
 
-    public CollegeLevelDashboardService(CollegeLevelQueryRepository collegeLevelQueryRepository) {
+    public CollegeLevelDashboardService(
+            CollegeLevelQueryRepository collegeLevelQueryRepository,
+            DashboardScopeQueryRepository dashboardScopeQueryRepository) {
         this.collegeLevelQueryRepository = collegeLevelQueryRepository;
+        this.dashboardScopeQueryRepository = dashboardScopeQueryRepository;
     }
 
     /**
@@ -67,8 +73,21 @@ public class CollegeLevelDashboardService {
      * monthState=NOT_REPORTED 供前端画灰柱督办。
      */
     public CollegeLevelsResponseDTO getCollegeLevels(Integer year, Integer month) {
+        return getCollegeLevels(year, month, DashboardScope.full());
+    }
+
+    /**
+     * 指定视角的同口径聚合（2026-11-27 角色分流）。
+     *
+     * <p>学院视角只返回本院一行（总览统计/等级分布随之收敛为本院数据）；
+     * 职能部门视角只返回「本部门有下发关联」的学院——学院侧存在归口=本部门的线
+     * （学院线指标 → sys_task → plan.functional_org_id=本部门）才可见（2026-11-27 拍板）；
+     * 全量视角维持全校学院列表。</p>
+     */
+    public CollegeLevelsResponseDTO getCollegeLevels(Integer year, Integer month, DashboardScope scope) {
         requireYear(year);
         requireMonth(month);
+        DashboardScope effectiveScope = scope == null ? DashboardScope.full() : scope;
         String reportMonth = toReportMonth(year, month);
 
         Map<Long, CollegeDispatchCountRow> dispatchByOrgId = indexDispatchCounts(year);
@@ -79,8 +98,12 @@ public class CollegeLevelDashboardService {
         Set<Long> orgIds = new TreeSet<>(dispatchByOrgId.keySet());
         orgIds.addAll(reportedByOrgId.keySet());
 
+        Set<Long> visibleColleges = linkedCollegesOrNull(effectiveScope);
         List<CollegeLevelDTO> colleges = new ArrayList<>(orgIds.size());
         for (Long orgId : orgIds) {
+            if (!matchesScope(effectiveScope, orgId) || !isVisibleCollege(visibleColleges, orgId)) {
+                continue;
+            }
             colleges.add(toCollegeLevel(
                     orgId, month, dispatchByOrgId, levelsByOrgId, reportedByOrgId.get(orgId)));
         }
@@ -91,18 +114,51 @@ public class CollegeLevelDashboardService {
                 .build();
     }
 
+    /** 学院视角按本院 orgId 收敛行集合；全量/职能部门视角不收敛 */
+    private static boolean matchesScope(DashboardScope scope, Long orgId) {
+        return scope.isFull() || scope.kind() != DashboardScope.Kind.COLLEGE
+                || scope.orgId().equals(orgId);
+    }
+
+    /**
+     * 职能部门视角的可见学院集合（2026-11-27 拍板：只能看到本部门已下发指标关联的学院）；
+     * 学院/全量视角返回 null（不额外收敛）。
+     */
+    private Set<Long> linkedCollegesOrNull(DashboardScope scope) {
+        if (scope.kind() != DashboardScope.Kind.FUNCTIONAL) {
+            return null;
+        }
+        return new HashSet<>(dashboardScopeQueryRepository.findLinkedCollegeIds(scope.orgId()));
+    }
+
+    /** 职能部门视角按关联学院集合收敛；集合为 null 表示不收敛（学院/全量视角） */
+    private static boolean isVisibleCollege(Set<Long> visibleColleges, Long orgId) {
+        return visibleColleges == null || visibleColleges.contains(orgId);
+    }
+
     /**
      * 获取年度趋势。固定返回 1-12 月全量月份（升序，逐月独立快照，互不沿用），
      * 每月学院集合 = 当年有指标的学院 ∪ 当月已上报学院；口径同 {@link #getCollegeLevels}。
      */
     public CollegeLevelTrendResponseDTO getCollegeLevelsTrend(Integer year) {
+        return getCollegeLevelsTrend(year, DashboardScope.full());
+    }
+
+    /**
+     * 指定视角的年度趋势（2026-11-27 角色分流）：学院视角逐月只返回本院一行，
+     * 职能部门视角逐月只返回「本部门有下发关联」的学院，其余视角固定 1-12 月全量学院，
+     * 口径同 {@link #getCollegeLevels}。
+     */
+    public CollegeLevelTrendResponseDTO getCollegeLevelsTrend(Integer year, DashboardScope scope) {
         requireYear(year);
+        DashboardScope effectiveScope = scope == null ? DashboardScope.full() : scope;
         Map<Long, CollegeDispatchCountRow> dispatchByOrgId = indexDispatchCounts(year);
         Map<Integer, Map<Long, CollegeReportedMonthRow>> reportedByMonthAndOrg =
                 collectReportedOrgsByMonth(year);
         Map<Integer, Map<Long, CollegeLevelCountRow>> levelsByMonthAndOrg =
                 indexMonthlyLevelCounts(year);
 
+        Set<Long> visibleColleges = linkedCollegesOrNull(effectiveScope);
         List<CollegeLevelMonthDTO> months = new ArrayList<>(MAX_MONTH);
         for (int month = MIN_MONTH; month <= MAX_MONTH; month++) {
             Map<Long, CollegeReportedMonthRow> reportedByOrgId =
@@ -114,6 +170,9 @@ public class CollegeLevelDashboardService {
                     levelsByMonthAndOrg.getOrDefault(month, Map.of());
             List<CollegeLevelDTO> colleges = new ArrayList<>(orgIds.size());
             for (Long orgId : orgIds) {
+                if (!matchesScope(effectiveScope, orgId) || !isVisibleCollege(visibleColleges, orgId)) {
+                    continue;
+                }
                 colleges.add(toCollegeLevel(
                         orgId, month, dispatchByOrgId, levelsForMonth, reportedByOrgId.get(orgId)));
             }
@@ -135,12 +194,29 @@ public class CollegeLevelDashboardService {
      * 同一指标多轮已审批上报时按接口排序取首条去重，避免重复催办。
      */
     public DelayedIndicatorsResponseDTO getDelayedIndicators(Integer year, Integer month) {
+        return getDelayedIndicators(year, month, DashboardScope.full());
+    }
+
+    /**
+     * 指定视角的滞后指标清单（2026-11-27 角色分流）：
+     * 学院视角只保留责任单位=本院的行；职能部门视角保留责任单位=本部门的行，
+     * 外加「本部门有下发关联」学院（学院侧存在归口=本部门的线）的学院线行——
+     * 归口部门的催办场景需要看到自己线上的学院滞后（2026-11-27 拍板）；
+     * 全量视角不过滤。行 orgId 语义为「责任单位」=指标 target 组织。
+     */
+    public DelayedIndicatorsResponseDTO getDelayedIndicators(
+            Integer year, Integer month, DashboardScope scope) {
         requireYear(year);
         requireMonth(month);
+        DashboardScope effectiveScope = scope == null ? DashboardScope.full() : scope;
         String reportMonth = toReportMonth(year, month);
 
+        Set<Long> visibleColleges = linkedCollegesOrNull(effectiveScope);
         Map<Long, DelayedIndicatorDTO> byIndicatorId = new LinkedHashMap<>();
         for (DelayedIndicatorRow row : collegeLevelQueryRepository.fetchDelayedIndicators(reportMonth)) {
+            if (!matchesDelayedScope(effectiveScope, visibleColleges, row.orgId())) {
+                continue;
+            }
             byIndicatorId.computeIfAbsent(row.indicatorId(), indicatorId -> toDelayedIndicator(row));
         }
         List<DelayedIndicatorDTO> items = List.copyOf(byIndicatorId.values());
@@ -149,6 +225,21 @@ public class CollegeLevelDashboardService {
                 .month(month)
                 .items(items)
                 .build();
+    }
+
+    /**
+     * 学院/职能部门视角按责任单位（指标 target 组织）收敛；全量视角不收敛。
+     * 职能部门视角额外放行「本部门有下发关联」的学院行（visibleColleges）。
+     */
+    private static boolean matchesDelayedScope(DashboardScope scope, Set<Long> visibleColleges, Long rowOrgId) {
+        if (scope.isFull()) {
+            return true;
+        }
+        if (scope.orgId() != null && scope.orgId().equals(rowOrgId)) {
+            return true;
+        }
+        return scope.kind() == DashboardScope.Kind.FUNCTIONAL
+                && visibleColleges != null && visibleColleges.contains(rowOrgId);
     }
 
     // ------------------------------------------------------------------
